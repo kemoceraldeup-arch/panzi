@@ -1,0 +1,55 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Runtime logs from dev/tunnel sessions (cloudflared, expo, the server) —
+# regenerated every run, not source.
+*.log
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+#
+# Every .env variant is ignored, not just the bare name: a copy saved as
+# .env.backup or .env.old holds exactly the same secrets as the original, and
+# the whole point of this rule is that those never reach a commit. Only the
+# example file, which has no values in it, is allowed through.
+.env*
+!.env.example
+
+# Firebase service account key. Grants admin rights on the whole project.
+serviceAccount.json
+*-firebase-adminsdk-*.json
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android

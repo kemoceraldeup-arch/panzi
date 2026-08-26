@@ -1,0 +1,78 @@
+{
+  "expo": {
+    "name": "panzi",
+    "slug": "panzi",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.panzi.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Panzi uses the camera to read your groceries and their use-by dates, so it can fill your pantry in for you.",
+        "NSPhotoLibraryUsageDescription": "Choose a picture for your profile, or so an item you add by hand looks like the ones Panzi scanned.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.panzi.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2f6b41"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-video",
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Panzi uses the camera to read your groceries and their use-by dates, so it can fill your pantry in for you.",
+          "recordAudioAndroid": false,
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose a picture for your profile, or so an item you add by hand looks like the ones Panzi scanned."
+        }
+      ],
+      "expo-notifications",
+      "expo-web-browser",
+      [
+        "react-native-fbsdk-next",
+        {
+          "appID": "2471213273390235",
+          "clientToken": "a921a43b223549e5224d1f3cd426bb98",
+          "displayName": "Panzi",
+          "scheme": "fb2471213273390235",
+          "advertiserIDCollectionEnabled": false,
+          "autoLogAppEventsEnabled": false,
+          "isAutoInitEnabled": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e364f3da-d2e3-4f37-9a02-ad9a6fe76315"
+      }
+    }
+  }
+}
