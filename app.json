@@ -18,7 +18,15 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Panzi uses the camera to read your groceries and their use-by dates, so it can fill your pantry in for you.",
         "NSPhotoLibraryUsageDescription": "Choose a picture for your profile, or so an item you add by hand looks like the ones Panzi scanned.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "SKAdNetworkItems": [
+          {
+            "SKAdNetworkIdentifier": "v9wttpbfk9.skadnetwork"
+          },
+          {
+            "SKAdNetworkIdentifier": "n38lu8286q.skadnetwork"
+          }
+        ]
       }
     },
     "android": {
@@ -31,7 +39,9 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET"
       ]
     },
     "web": {
@@ -69,9 +79,10 @@
         }
       ]
     ],
+    "owner": "nnekethpogi",
     "extra": {
       "eas": {
-        "projectId": "e364f3da-d2e3-4f37-9a02-ad9a6fe76315"
+        "projectId": "dc726d0b-037c-4ef2-a10d-63d3464523eb"
       }
     }
   }

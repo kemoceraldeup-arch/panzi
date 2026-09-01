@@ -25,7 +25,21 @@ export type FoodEntry = {
 // puts the item in a category the List screen has no chip for; Tins & jars is
 // the closest thing to a general cupboard bucket.
 export const FALLBACK_CATEGORY = 'Tins & jars';
-export const FALLBACK_LOCATION = 'Cupboard';
+export const FALLBACK_LOCATION = 'Cabinet';
+
+// The subset of `unit` values that mean "portioned out by weight or volume,"
+// not just "has some unit word." A tin, a jar, a loaf, a block, a bulb are
+// each still one whole thing to the person buying them — only these five
+// are genuinely divisible into a fraction of themselves. A whitelist rather
+// than excluding the container words: the catalogue is small and
+// hand-written, so a new entry with a measured unit not yet in this set
+// simply falls back to the whole-number stepper until this list is updated
+// — the safe direction to fail in.
+const FRACTIONAL_UNITS = new Set(['kg', 'g', 'L', 'ml', 'oz', 'lb']);
+
+export function isFractionalUnit(unit: string): boolean {
+  return FRACTIONAL_UNITS.has(unit);
+}
 
 export const FOOD_CATALOGUE: FoodEntry[] = [
   // Dairy & eggs
@@ -51,13 +65,13 @@ export const FOOD_CATALOGUE: FoodEntry[] = [
   { name: 'Broccoli', category: 'Fruit & veg', location: 'Fridge', unit: '' },
   { name: 'Peppers', category: 'Fruit & veg', location: 'Fridge', unit: '' },
   { name: 'Mushrooms', category: 'Fruit & veg', location: 'Fridge', unit: 'g' },
-  { name: 'Onions', category: 'Fruit & veg', location: 'Cupboard', unit: '' },
-  { name: 'Garlic', category: 'Fruit & veg', location: 'Cupboard', unit: 'bulb' },
-  { name: 'Potatoes', category: 'Fruit & veg', location: 'Cupboard', unit: 'kg' },
-  { name: 'Bananas', category: 'Fruit & veg', location: 'Counter', unit: '' },
-  { name: 'Apples', category: 'Fruit & veg', location: 'Counter', unit: '' },
-  { name: 'Lemons', category: 'Fruit & veg', location: 'Counter', unit: '' },
-  { name: 'Avocado', category: 'Fruit & veg', location: 'Counter', unit: '' },
+  { name: 'Onions', category: 'Fruit & veg', location: 'Cabinet', unit: '' },
+  { name: 'Garlic', category: 'Fruit & veg', location: 'Cabinet', unit: 'bulb' },
+  { name: 'Potatoes', category: 'Fruit & veg', location: 'Cabinet', unit: 'kg' },
+  { name: 'Bananas', category: 'Fruit & veg', location: 'Kitchen Shelf', unit: '' },
+  { name: 'Apples', category: 'Fruit & veg', location: 'Kitchen Shelf', unit: '' },
+  { name: 'Lemons', category: 'Fruit & veg', location: 'Kitchen Shelf', unit: '' },
+  { name: 'Avocado', category: 'Fruit & veg', location: 'Kitchen Shelf', unit: '' },
   { name: 'Berries', category: 'Fruit & veg', location: 'Fridge', unit: 'g' },
 
   // Meat & fish
@@ -70,27 +84,27 @@ export const FOOD_CATALOGUE: FoodEntry[] = [
   { name: 'Prawns', category: 'Meat & fish', location: 'Freezer', unit: 'g' },
 
   // Bakery
-  { name: 'Bread', category: 'Bakery', location: 'Bread bin', unit: 'loaf' },
-  { name: 'Sourdough', category: 'Bakery', location: 'Bread bin', unit: 'loaf' },
-  { name: 'Bagels', category: 'Bakery', location: 'Bread bin', unit: '' },
-  { name: 'Tortilla wraps', category: 'Bakery', location: 'Cupboard', unit: '' },
+  { name: 'Bread', category: 'Bakery', location: 'Bread Shelf', unit: 'loaf' },
+  { name: 'Sourdough', category: 'Bakery', location: 'Bread Shelf', unit: 'loaf' },
+  { name: 'Bagels', category: 'Bakery', location: 'Bread Shelf', unit: '' },
+  { name: 'Tortilla wraps', category: 'Bakery', location: 'Cabinet', unit: '' },
 
   // Grains & pasta
-  { name: 'Pasta', category: 'Grains & pasta', location: 'Cupboard', unit: 'g' },
-  { name: 'Spaghetti', category: 'Grains & pasta', location: 'Cupboard', unit: 'g' },
-  { name: 'Rice', category: 'Grains & pasta', location: 'Cupboard', unit: 'kg' },
-  { name: 'Noodles', category: 'Grains & pasta', location: 'Cupboard', unit: 'g' },
-  { name: 'Oats', category: 'Grains & pasta', location: 'Cupboard', unit: 'g' },
-  { name: 'Couscous', category: 'Grains & pasta', location: 'Cupboard', unit: 'g' },
+  { name: 'Pasta', category: 'Grains & pasta', location: 'Cabinet', unit: 'g' },
+  { name: 'Spaghetti', category: 'Grains & pasta', location: 'Cabinet', unit: 'g' },
+  { name: 'Rice', category: 'Grains & pasta', location: 'Cabinet', unit: 'kg' },
+  { name: 'Noodles', category: 'Grains & pasta', location: 'Cabinet', unit: 'g' },
+  { name: 'Oats', category: 'Grains & pasta', location: 'Cabinet', unit: 'g' },
+  { name: 'Couscous', category: 'Grains & pasta', location: 'Cabinet', unit: 'g' },
 
   // Tins & jars
-  { name: 'Chopped tomatoes', category: 'Tins & jars', location: 'Cupboard', unit: 'tin' },
-  { name: 'Chickpeas', category: 'Tins & jars', location: 'Cupboard', unit: 'tin' },
-  { name: 'Black beans', category: 'Tins & jars', location: 'Cupboard', unit: 'tin' },
-  { name: 'Coconut milk', category: 'Tins & jars', location: 'Cupboard', unit: 'tin' },
-  { name: 'Tuna', category: 'Tins & jars', location: 'Cupboard', unit: 'tin' },
-  { name: 'Peanut butter', category: 'Tins & jars', location: 'Cupboard', unit: 'jar' },
-  { name: 'Olive oil', category: 'Tins & jars', location: 'Cupboard', unit: 'ml' },
+  { name: 'Chopped tomatoes', category: 'Tins & jars', location: 'Cabinet', unit: 'tin' },
+  { name: 'Chickpeas', category: 'Tins & jars', location: 'Cabinet', unit: 'tin' },
+  { name: 'Black beans', category: 'Tins & jars', location: 'Cabinet', unit: 'tin' },
+  { name: 'Coconut milk', category: 'Tins & jars', location: 'Cabinet', unit: 'tin' },
+  { name: 'Tuna', category: 'Tins & jars', location: 'Cabinet', unit: 'tin' },
+  { name: 'Peanut butter', category: 'Tins & jars', location: 'Cabinet', unit: 'jar' },
+  { name: 'Olive oil', category: 'Tins & jars', location: 'Cabinet', unit: 'ml' },
 
   // Frozen
   { name: 'Frozen peas', category: 'Frozen', location: 'Freezer', unit: 'g' },
@@ -101,18 +115,18 @@ export const FOOD_CATALOGUE: FoodEntry[] = [
   // Herbs & spices
   { name: 'Basil', category: 'Herbs & spices', location: 'Fridge', unit: '' },
   { name: 'Coriander', category: 'Herbs & spices', location: 'Fridge', unit: '' },
-  { name: 'Paprika', category: 'Herbs & spices', location: 'Cupboard', unit: '' },
-  { name: 'Cumin', category: 'Herbs & spices', location: 'Cupboard', unit: '' },
+  { name: 'Paprika', category: 'Herbs & spices', location: 'Cabinet', unit: '' },
+  { name: 'Cumin', category: 'Herbs & spices', location: 'Cabinet', unit: '' },
 
   // Drinks
   { name: 'Orange juice', category: 'Drinks', location: 'Fridge', unit: 'L' },
-  { name: 'Coffee', category: 'Drinks', location: 'Cupboard', unit: 'g' },
-  { name: 'Tea', category: 'Drinks', location: 'Cupboard', unit: '' },
+  { name: 'Coffee', category: 'Drinks', location: 'Cabinet', unit: 'g' },
+  { name: 'Tea', category: 'Drinks', location: 'Cabinet', unit: '' },
 
   // Snacks
-  { name: 'Crisps', category: 'Snacks', location: 'Cupboard', unit: '' },
-  { name: 'Dark chocolate', category: 'Snacks', location: 'Cupboard', unit: 'g' },
-  { name: 'Biscuits', category: 'Snacks', location: 'Cupboard', unit: '' },
+  { name: 'Crisps', category: 'Snacks', location: 'Cabinet', unit: '' },
+  { name: 'Dark chocolate', category: 'Snacks', location: 'Cabinet', unit: 'g' },
+  { name: 'Biscuits', category: 'Snacks', location: 'Cabinet', unit: '' },
 ];
 
 /**

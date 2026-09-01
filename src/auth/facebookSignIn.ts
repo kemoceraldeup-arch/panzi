@@ -7,16 +7,35 @@
 // can't drift into different permission sets or error handling.
 //
 // Requires a custom dev build — react-native-fbsdk-next is native code and
-// cannot run inside Expo Go.
+// cannot run inside Expo Go. Its own top-level import reaches for that
+// native module immediately, before any function here even runs, so a
+// plain `import ... from 'react-native-fbsdk-next'` at the top of this file
+// would crash the instant this module loads inside Expo Go — not just when
+// signInWithFacebook is called. The require() below is deferred inside the
+// function specifically so that only happens if this ever actually runs
+// outside Expo Go.
 
-import { LoginManager, AccessToken } from 'react-native-fbsdk-next';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { FacebookAuthProvider, signInWithCredential } from 'firebase/auth';
 import { Alert } from 'react-native';
 import { auth } from '../config/firebaseClient';
 
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
 /** Resolves once signed in to Firebase; resolves to false if the user
- *  cancelled or the flow failed (an alert has already been shown). */
+ *  cancelled, isn't able to (Expo Go), or the flow failed (an alert has
+ *  already been shown in every case). */
 export async function signInWithFacebook(): Promise<boolean> {
+  if (isExpoGo) {
+    Alert.alert(
+      'Not available yet',
+      "Facebook sign-in needs a custom build of the app — it can't run inside Expo Go. Use email or guest for now."
+    );
+    return false;
+  }
+
+  const { LoginManager, AccessToken } = require('react-native-fbsdk-next');
+
   try {
     const result = await LoginManager.logInWithPermissions(['public_profile', 'email']);
     if (result.isCancelled) return false;

@@ -51,6 +51,21 @@ function readBox(raw: any): ItemBox | null {
   return { x: raw.x, y: raw.y, width: raw.width, height: raw.height };
 }
 
+function readNutrition(raw: any): Nutrition | null {
+  if (!raw || typeof raw.foodId !== 'string' || typeof raw.matchedName !== 'string') return null;
+  const grams = [raw.calories, raw.proteinG, raw.carbsG, raw.fatG];
+  if (grams.some((n) => typeof n !== 'number')) return null;
+  return {
+    foodId: raw.foodId,
+    matchedName: raw.matchedName,
+    servingDescription: typeof raw.servingDescription === 'string' ? raw.servingDescription : null,
+    calories: raw.calories,
+    proteinG: raw.proteinG,
+    carbsG: raw.carbsG,
+    fatG: raw.fatG,
+  };
+}
+
 // What kind of food it is — drives the grouped sections on the List screen.
 export const FOOD_CATEGORIES = [
   'Fruit & veg',
@@ -67,7 +82,26 @@ export const FOOD_CATEGORIES = [
 
 // Where it physically lives — what the swipe "Move" action changes. This is a
 // separate axis from category: yoghurt is Dairy & eggs, kept in the Fridge.
-export const STORAGE_LOCATIONS = ['Fridge', 'Freezer', 'Cupboard', 'Counter', 'Bread bin', 'Other'];
+export const STORAGE_LOCATIONS = ['Fridge', 'Freezer', 'Cabinet', 'Kitchen Shelf', 'Bread Shelf', 'Other'];
+
+// Old wording, kept only so an item saved before this rename still resolves
+// to its new name instead of showing as an unrecognised location. Every read
+// of a stored location string goes through normaliseLocation() below, so a
+// document written with the old word never needs a migration pass of its
+// own — it just displays correctly the next time it's read.
+const RENAMED_LOCATIONS: Record<string, string> = {
+  Counter: 'Kitchen Shelf',
+  Cupboard: 'Cabinet',
+  'Bread bin': 'Bread Shelf',
+};
+
+/** Maps a possibly-old location string to its current name. Anything not in
+ *  RENAMED_LOCATIONS (including already-current names, 'Other', and null)
+ *  passes through unchanged. */
+export function normaliseLocation<T extends string | null>(location: T): T {
+  if (location === null) return location;
+  return (RENAMED_LOCATIONS[location] ?? location) as T;
+}
 
 /**
  * Where an item sits inside a capture, as fractions of each axis.
@@ -88,6 +122,26 @@ export type ItemBox = { x: number; y: number; width: number; height: number };
  * exactly as a scan reopened from history does.
  */
 export type ItemPhoto = { uri: string; width: number; height: number };
+
+/**
+ * Per-serving macros, matched from FatSecret's food database at scan time.
+ * `matchedName` and `foodId` are kept alongside the numbers so the review
+ * card and edit sheet can show what was actually matched — a user unsure
+ * whether "cheddar" matched the right cheddar needs to see the matched
+ * product's name, not just trust the numbers. Optional/absent (not present
+ * on the item at all) rather than null: an item added before this feature
+ * existed, or one FatSecret has nothing for, has no macros to show and no
+ * claim being made about them either way.
+ */
+export type Nutrition = {
+  foodId: string;
+  matchedName: string;
+  servingDescription: string | null;
+  calories: number;
+  proteinG: number;
+  carbsG: number;
+  fatG: number;
+};
 
 export type PantryItem = {
   id: string;
@@ -118,7 +172,28 @@ export type PantryItem = {
   dateSource: DateSource | null;
   ripeness: RipenessStage | null;
   ripenessSource: 'estimated' | 'user' | null;
+
+  // null on anything added before this feature existed, on a hand-typed item
+  // nobody looked up, or on a name FatSecret had no match for.
+  nutrition: Nutrition | null;
 };
+
+/**
+ * A pantry `quantity` string ("250 g", "1 pack", "2") split into the leading
+ * number and whatever unit word follows it. `value` is null when the string
+ * has no leading number at all ("a bit", "") — nothing safe to sort or
+ * compare numerically, so callers fall back to treating it as unknown rather
+ * than as zero.
+ */
+export type ParsedQuantity = { value: number | null; unit: string };
+
+/** Matches parseAmount in src/services/recipes.ts, applied to the pantry's own
+ *  free-text quantity field instead of a recipe's ingredient amount. */
+export function parseQuantity(quantity: string): ParsedQuantity {
+  const match = quantity.trim().match(/^(\d+(?:\.\d+)?)\s*(.*)$/);
+  if (!match) return { value: null, unit: '' };
+  return { value: Number(match[1]), unit: match[2].trim().toLowerCase() };
+}
 
 /**
  * The key every pantry read and write shares.
@@ -148,7 +223,7 @@ function toItem(raw: any): PantryItem {
     name: raw.name,
     quantity: raw.quantity,
     category: raw.category,
-    location: raw.location ?? null,
+    location: normaliseLocation(raw.location ?? null),
     expiryDate: raw.expiryDate ?? null,
     addedAt: typeof raw.addedAt === 'number' ? raw.addedAt : null,
     photoUri: typeof raw.photoUri === 'string' ? raw.photoUri : null,
@@ -160,6 +235,7 @@ function toItem(raw: any): PantryItem {
       raw.ripenessSource === 'estimated' || raw.ripenessSource === 'user'
         ? raw.ripenessSource
         : null,
+    nutrition: readNutrition(raw.nutrition),
   };
 }
 
@@ -211,6 +287,7 @@ export type NewPantryItem = {
   photoUri?: string | null;
   scanPhoto?: ItemPhoto | null;
   box?: ItemBox | null;
+  nutrition?: Nutrition | null;
 };
 
 /**

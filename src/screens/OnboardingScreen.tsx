@@ -141,12 +141,23 @@ export default function OnboardingScreen({ onDone }: Props) {
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
+  // Skip has nothing left to skip TO once the last page is reached — fades
+  // out over the same approach the footer's own last-page swap uses, so the
+  // two disappear/appear in the same rhythm rather than Skip cutting off
+  // abruptly mid-transition.
+  const skipOpacity = scrollXJS.interpolate({
+    inputRange: [fadeOut, width, lastStart, lastStart + fadeOut],
+    outputRange: [0, 1, 1, 0],
+    extrapolate: 'clamp',
+  });
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Skip button — shown on every page except the first, matching the design */}
+      {/* Skip button — shown on every page except the first and the last:
+          the first has nothing to skip past yet, and the last has nothing
+          left to skip TO — "Create my pantry" is already the way off it. */}
       <View style={styles.skipRow}>
-        <Animated.View style={{ opacity: chromeOpacity }} pointerEvents={isFirst ? 'none' : 'auto'}>
+        <Animated.View style={{ opacity: skipOpacity }} pointerEvents={isFirst || isLast ? 'none' : 'auto'}>
           <TouchableOpacity onPress={onDone}>
             <Text style={styles.skipText}>Skip</Text>
           </TouchableOpacity>
@@ -157,6 +168,13 @@ export default function OnboardingScreen({ onDone }: Props) {
         ref={scrollRef}
         horizontal
         pagingEnabled
+        // Locked to the welcome page until "Get started" is tapped — a swipe
+        // shouldn't be a second, undocumented way past a page whose whole
+        // point is that button. scrollEnabled only blocks the user's own
+        // touch-drag; goToIndex's own scrollTo() call still moves the
+        // scroller programmatically regardless of this, which is what lets
+        // "Get started" itself advance off this same page.
+        scrollEnabled={!isFirst}
         showsHorizontalScrollIndicator={false}
         onLayout={(e) => setScrollerHeight(e.nativeEvent.layout.height)}
         onScroll={Animated.event(
@@ -239,9 +257,6 @@ export default function OnboardingScreen({ onDone }: Props) {
         >
           <TouchableOpacity style={styles.primaryButton} onPress={() => goToIndex(1)}>
             <Text style={styles.primaryButtonText}>Get started</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.textButton} onPress={onDone}>
-            <Text style={styles.textButtonText}>I already have an account</Text>
           </TouchableOpacity>
         </Animated.View>
 
@@ -421,16 +436,6 @@ const useStyles = makeStyles((colors) => ({
     color: colors.onAccent,
     fontWeight: '800',
     fontSize: type.subtitle.fontSize,
-  },
-  textButton: {
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  textButtonText: {
-    color: colors.primaryDark,
-    fontWeight: '700',
-    fontSize: type.body.fontSize,
   },
   swipeHint: {
     flexDirection: 'row',

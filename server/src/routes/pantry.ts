@@ -32,6 +32,7 @@ const UPDATABLE = [
   'dateSource',
   'ripeness',
   'ripenessSource',
+  'nutrition',
 ] as const;
 
 function pickUpdatable(fields: Record<string, unknown>): Record<string, unknown> {
@@ -63,6 +64,7 @@ function toItem(doc: any) {
     dateSource: doc.dateSource ?? null,
     ripeness: doc.ripeness ?? null,
     ripenessSource: doc.ripenessSource ?? null,
+    nutrition: doc.nutrition ?? null,
   };
 }
 
@@ -119,6 +121,7 @@ pantryRouter.post(
       dateSource: item.dateSource ?? null,
       ripeness: item.ripeness ?? null,
       ripenessSource: item.ripenessSource ?? null,
+      nutrition: item.nutrition ?? null,
     }));
 
     await PantryItem.insertMany(docs, { ordered: true });

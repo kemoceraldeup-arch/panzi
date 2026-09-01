@@ -10,7 +10,9 @@ import cors from 'cors';
 import express from 'express';
 import { requireAuth } from './middleware/auth';
 import { chatRouter } from './routes/chat';
+import { estimateShelfLifeRouter } from './routes/estimateShelfLife';
 import { feedbackRouter } from './routes/feedback';
+import { nutritionRouter } from './routes/nutrition';
 import { pantryRouter } from './routes/pantry';
 import { profileRouter } from './routes/profile';
 import { recipesRouter } from './routes/recipes';
@@ -51,8 +53,10 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/scan', requireAuth, scanRouter);
+app.use('/api/estimate-shelf-life', requireAuth, estimateShelfLifeRouter);
 app.use('/api/recipes', requireAuth, recipesRouter);
 app.use('/api/profile', requireAuth, profileRouter);
+app.use('/api/nutrition', requireAuth, nutritionRouter);
 
 // The collections that moved off Firestore. Each one connects to Mongo lazily
 // on its first request, so a developer running only the scanner still needs no

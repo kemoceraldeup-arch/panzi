@@ -16,7 +16,7 @@ import {
   Nunito_700Bold,
   Nunito_800ExtraBold,
 } from '@expo-google-fonts/nunito';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, signOut } from 'firebase/auth';
 import { auth } from './src/config/firebaseClient';
 import { ThemeProvider, useColors, useTheme } from './src/theme/ThemeProvider';
 import OnboardingScreen from './src/screens/OnboardingScreen';
@@ -63,6 +63,20 @@ function Root() {
   // starting screen before the persisted session has been restored is exactly
   // what made the app ask for credentials on every launch.
   const [flow, setFlow] = useState<Flow | null>(null);
+  // Bumped once per AppTransition fade-in that lands on the auth screens —
+  // see AppTransition's onEntered. SignInScreen's own mascot slide-in reads
+  // this (via AuthSwipeStack's enteredTick prop) instead of its own mount
+  // effect for the paths that go through this fade (cold start after
+  // onboarding, "Skip"): starting that animation on mount ran it while the
+  // screen was still hidden behind the fade at opacity 0, so it was already
+  // partway or fully done by the time the fade-in actually made it visible.
+  const [enteredAuthTick, setEnteredAuthTick] = useState(0);
+  // Set right before AllSetScreen's "Scan my first shelf" transitions into
+  // dashboard, so MainTabs knows to open the camera on its very first mount
+  // rather than land on the empty dashboard the plain "Take me to the
+  // dashboard" button leads to. Read once by MainTabs; nothing resets it
+  // because flow only ever passes through 'allSet' once per session.
+  const [autoOpenScan, setAutoOpenScan] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,11 +96,24 @@ function Root() {
   // re-render would re-run the decision and stomp on the screen the user has
   // since moved to (survey -> allSet -> dashboard all share one signed-in uid).
   const decidedFor = useRef<string | null>(null);
+  // Read, not depended on: only needed once, at the moment this effect fires
+  // for a given authKey, to tell a cold start apart from a live transition —
+  // it must not itself retrigger the effect as flow changes afterward.
+  const flowRef = useRef(flow);
+  flowRef.current = flow;
 
   useEffect(() => {
     if (authKey === null || seenOnboarding === null) return;
     if (decidedFor.current === authKey) return;
     decidedFor.current = authKey;
+
+    // Cold start is exactly the case flow is still null right as this
+    // decision runs — a live sign-in/guest tap always leaves flow on
+    // 'account' or 'createAccount' up to this point. Only a cold start can
+    // be "reopening app with a session left over from before," which is the
+    // one case an incomplete anonymous session should be treated as
+    // abandoned rather than resumed.
+    const isColdStart = flowRef.current === null;
 
     if (authKey === 'signed-out') {
       // Returning users who have already sat through the intro go straight to
@@ -101,8 +128,29 @@ function Root() {
     // follows a sign-in tap the account screen stays up instead of blinking
     // through an empty frame on its way out.
     let cancelled = false;
+    const isAnonymous = auth.currentUser?.isAnonymous === true;
     hasCompletedProfile(authKey).then((done) => {
-      if (!cancelled) setFlow(done ? 'dashboard' : 'survey');
+      if (cancelled) return;
+      if (done) {
+        setFlow('dashboard');
+        return;
+      }
+      if (isAnonymous && isColdStart) {
+        // A guest who backed out of the survey (or force-closed mid-way)
+        // left behind a signed-in anonymous session — Firebase persists that
+        // across restarts exactly like a real account. Reopening the app
+        // must not silently resume the survey as if nothing happened; it
+        // should read as a fresh start, same as someone who never tapped
+        // "Continue as guest" at all. Signing out drops authKey back to
+        // 'signed-out' next render, which — since seenOnboarding was never
+        // marked for this never-finished guest — routes to onboarding.
+        void signOut(auth);
+        return;
+      }
+      // Either a real account resuming an incomplete survey, or a guest who
+      // just tapped "Continue as guest" moments ago in this same session —
+      // both proceed to the survey normally.
+      setFlow('survey');
     });
     return () => {
       cancelled = true;
@@ -110,8 +158,16 @@ function Root() {
   }, [authKey, seenOnboarding]);
 
   function finishOnboarding() {
-    setSeenOnboarding(true);
-    void setOnboardingSeen();
+    // Deliberately does NOT persist seenOnboarding here — merely reaching
+    // the end of the carousel isn't the same as actually using the app.
+    // This used to mark onboarding seen for good the instant "Skip" or
+    // "Create my pantry" was tapped, so someone who looked at Sign In and
+    // then closed the app without ever creating an account or signing in
+    // would never see the carousel again on a later cold start — the app
+    // silently assumed a decision that was never actually made. Persisting
+    // only happens once something real has happened: finishAccount() (a
+    // real sign-in/sign-up) or finishSurvey() (a guest who actually
+    // finished the survey) both still call setOnboardingSeen() themselves.
     setFlow('account');
   }
 
@@ -125,12 +181,21 @@ function Root() {
   }
 
   async function continueAsGuest() {
+    // Deliberately does not call finishAccount() / setOnboardingSeen(): a
+    // guest who never finishes the survey and reopens the app should land
+    // back on onboarding, not resume the survey as if they had genuinely
+    // committed to an account. Onboarding is only marked seen for a guest
+    // once the survey actually completes, in finishSurvey below — see the
+    // matching isAbandonedGuest check in the auth-listener effect above.
     await signInAnonymously(auth);
-    finishAccount();
+    // The auth listener decides where to go next (survey vs. dashboard); it
+    // fires on the sign-in this call triggers.
   }
 
   function finishSurvey() {
     if (uid) void setProfileDoneCached(uid);
+    setSeenOnboarding(true);
+    void setOnboardingSeen();
     setFlow('allSet');
   }
 
@@ -144,7 +209,10 @@ function Root() {
   const transitionKey = flow === 'account' || flow === 'createAccount' ? 'auth' : flow;
 
   return (
-    <AppTransition transitionKey={transitionKey}>
+    <AppTransition
+      transitionKey={transitionKey}
+      onEntered={() => setEnteredAuthTick((t) => t + 1)}
+    >
       {flow === 'onboarding' && <OnboardingScreen onDone={finishOnboarding} />}
       {(flow === 'account' || flow === 'createAccount') && (
         <AuthSwipeStack
@@ -153,12 +221,16 @@ function Root() {
           onCreateAccount={() => setFlow('createAccount')}
           onSignIn={() => setFlow('account')}
           onGuest={continueAsGuest}
+          enteredTick={enteredAuthTick}
         />
       )}
       {flow === 'survey' && <ProfileSurveyScreen onContinue={finishSurvey} />}
       {flow === 'allSet' && (
         <AllSetScreen
-          onScanFirstShelf={() => setFlow('dashboard')}
+          onScanFirstShelf={() => {
+            setAutoOpenScan(true);
+            setFlow('dashboard');
+          }}
           onGoToDashboard={() => setFlow('dashboard')}
         />
       )}
@@ -166,7 +238,9 @@ function Root() {
           the account screen on its own. MainTabs still takes the callback so
           the tab tree can unmount on the same frame as the tap rather than one
           listener hop later. */}
-      {flow === 'dashboard' && <MainTabs onSignOut={() => setFlow('account')} />}
+      {flow === 'dashboard' && (
+        <MainTabs onSignOut={() => setFlow('account')} autoOpenScan={autoOpenScan} />
+      )}
     </AppTransition>
   );
 }

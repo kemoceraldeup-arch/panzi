@@ -18,7 +18,7 @@
 // scanner actually has.
 
 import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, Animated, Easing, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, Image, Animated, Easing, TouchableOpacity, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../../components/Text';
@@ -51,7 +51,17 @@ const PROGRESS_EASE_MS = 320;
 // photo. Landing it makes it read as something the scanner found.
 const REGION_LAND_MS = 260;
 
+// Fallback only — used before a photo's real dimensions are known, and as
+// the height on the rare frame where `photo` is briefly null. Once a real
+// capture arrives, `stillHeight` below replaces it with the photo's actual
+// aspect ratio, so what this screen shows during analysis matches what the
+// camera actually framed rather than an arbitrary crop.
 const STILL_HEIGHT = 236;
+// A very tall portrait photo, shown at its true aspect ratio, would push the
+// found-count pill and the row list below the fold entirely — this caps how
+// much of the screen the preview can claim, same as the still box was always
+// implicitly capped at a fixed 236, just now derived rather than guessed.
+const MAX_STILL_HEIGHT = 320;
 
 // How many placeholder rows stand in before the answer lands. Two, because the
 // number is unknown at that point and a taller stack of skeletons would be a
@@ -111,6 +121,19 @@ export default function ScanReadingScreen({
 
   const stillWaiting = foundCount === null ? SKELETON_COUNT : foundCount - revealed.length;
 
+  // The box this photo sits in used to be a fixed 236px regardless of what
+  // was actually captured — cover-cropping a full-screen-ratio camera photo
+  // into a short wide box cut off most of its top and bottom, so what showed
+  // here during analysis didn't match what was framed in the viewfinder a
+  // moment earlier. Deriving the height from the photo's own width/height
+  // keeps the same crop the camera captured, still fit to the same
+  // horizontal margins the box always had.
+  const stillWidth = Dimensions.get('window').width - space.xxl * 2;
+  const stillHeight =
+    photo && photo.width > 0
+      ? Math.min(MAX_STILL_HEIGHT, Math.round((stillWidth * photo.height) / photo.width))
+      : STILL_HEIGHT;
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <LinearGradient
@@ -128,7 +151,7 @@ export default function ScanReadingScreen({
         </TouchableOpacity>
       </View>
 
-      <View style={styles.still}>
+      <View style={[styles.still, { height: stillHeight }]}>
         <LinearGradient colors={colors.captureDark} style={StyleSheet.absoluteFill} />
         {photo?.uri && (
           <Image source={{ uri: photo.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
@@ -149,7 +172,7 @@ export default function ScanReadingScreen({
                 {
                   translateY: sweep.interpolate({
                     inputRange: [0, 1],
-                    outputRange: [0, STILL_HEIGHT],
+                    outputRange: [0, stillHeight],
                   }),
                 },
               ],
@@ -287,7 +310,8 @@ const useStyles = makeStyles((colors) => ({
     color: colors.textSecondary,
   },
   still: {
-    height: STILL_HEIGHT,
+    // height is set inline per-render — see stillHeight, derived from the
+    // captured photo's own aspect ratio rather than fixed here.
     marginHorizontal: space.xxl,
     marginTop: space.lg,
     borderRadius: 26,

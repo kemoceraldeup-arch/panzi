@@ -18,7 +18,8 @@
 // "uses expiring" pill and its why line inside the band.
 
 import React from 'react';
-import { Image, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Text from '../Text';
 import { DishLook, dishGlyph, dishGradient } from '../../theme/dishLooks';
@@ -63,7 +64,7 @@ export default function DishTile({
   if (photo) {
     return (
       <View style={frame}>
-        <Image source={photo} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <Image source={photo} style={StyleSheet.absoluteFill} contentFit="cover" />
         {/* Photographs are unpredictable — a pale bowl of lugaw and a dark
             kaldereta both end up under the same white text. The scrim darkens
             only the lower half, where the text sits, so the food above it is

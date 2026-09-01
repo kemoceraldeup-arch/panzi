@@ -27,7 +27,14 @@ import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
-import { ChatError, ChatMessage, fetchChatHistory, sendChatMessage } from '../services/chat';
+import {
+  ChatError,
+  ChatMessage,
+  Conversation,
+  createConversation,
+  fetchChatHistory,
+  sendChatMessage,
+} from '../services/chat';
 import { PantryItem } from '../services/pantry';
 import { Recipe, withLiveIngredients } from '../services/recipes';
 
@@ -36,7 +43,10 @@ const MAX_LENGTH = 2000;
 const AVATAR_SIZE = 28;
 
 type Props = {
-  conversationId: string;
+  /** Null until the first message is actually sent — see the note in
+   *  ChatFlow on why creation is deferred to that point rather than to when
+   *  this screen opens. */
+  conversationId: string | null;
   title: string;
   /** The live pantry — see the note on withLiveIngredients in
    *  services/recipes.ts for why a recipe card recomputes `have` from this on
@@ -55,6 +65,11 @@ type Props = {
    *  rather than spawn a second empty conversation while the current one is
    *  already unused. */
   onEmptyChange: (empty: boolean) => void;
+  /** Fired once, the moment the first message actually creates a
+   *  conversation server-side — lets ChatFlow learn the real id so
+   *  HistoryDrawer's "which conversation is this" checks and a later reopen
+   *  both see it, instead of staying stuck on the local null placeholder. */
+  onConversationStarted: (conversation: Conversation) => void;
 };
 
 export default function ChatScreen({
@@ -66,6 +81,7 @@ export default function ChatScreen({
   onOpenHistory,
   onClose,
   onEmptyChange,
+  onConversationStarted,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
@@ -73,7 +89,20 @@ export default function ChatScreen({
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Nothing to load for a conversation that doesn't exist on the server yet
+  // — an unstarted chat opens straight to its empty state instead of a
+  // spinner over nothing.
+  const [loading, setLoading] = useState(conversationId !== null);
+  // The id `send()` itself just handed to onConversationStarted, so the
+  // effect below can tell "conversationId changed because I just created
+  // this conversation a moment ago" apart from "conversationId changed
+  // because the user opened a different one from History." The first case
+  // must not wipe and refetch `messages` — the optimistic user line and the
+  // real assistant reply that follows it are already correct and already
+  // in state; resetting to [] here would flash the empty state right after
+  // the user's first message, then have the fetch below just hand back the
+  // same one or two messages a moment later.
+  const selfAssignedId = useRef<string | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,9 +134,25 @@ export default function ChatScreen({
   }, [messages.length]);
 
   useEffect(() => {
+    // This id arrived because send() just created it a moment ago — the
+    // messages already in state are already correct and already include
+    // this conversation's first exchange. Consume the marker and skip the
+    // reset/refetch below; see the note on selfAssignedId above.
+    if (conversationId !== null && selfAssignedId.current === conversationId) {
+      selfAssignedId.current = null;
+      return;
+    }
+
+    setMessages([]);
+    // No id means nothing has ever been sent in this conversation — there is
+    // no history to fetch, and asking the server for one that doesn't exist
+    // yet would just be a guaranteed failure caught below.
+    if (conversationId === null) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
-    setMessages([]);
     fetchChatHistory(conversationId)
       .then((history) => {
         if (!cancelled) setMessages(history);
@@ -146,7 +191,19 @@ export default function ChatScreen({
     setMessages((prev) => [...prev, optimistic]);
 
     try {
-      const { user, assistant } = await sendChatMessage(conversationId, text);
+      // The conversation itself doesn't exist on the server until there is
+      // something worth saving — this is that moment. Everything before this
+      // send happened purely on the phone; a user who opened chat, read the
+      // empty state, and closed without typing never touched the server at
+      // all, so there is nothing left behind in History for it.
+      let id = conversationId;
+      if (id === null) {
+        const conversation = await createConversation();
+        id = conversation.id;
+        selfAssignedId.current = id;
+        onConversationStarted(conversation);
+      }
+      const { user, assistant } = await sendChatMessage(id, text);
       setMessages((prev) => [...prev.filter((m) => m.id !== optimistic.id), user, assistant]);
     } catch (err) {
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));

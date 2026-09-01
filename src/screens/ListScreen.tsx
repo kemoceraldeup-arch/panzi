@@ -49,9 +49,9 @@ import {
   PantryItem,
   FOOD_CATEGORIES,
   STORAGE_LOCATIONS,
+  parseQuantity,
 } from '../services/pantry';
 import EditItemSheet from './EditItemSheet';
-import { ItemThumb } from './scan/atoms';
 import { backfillItemPhotos } from '../services/scans';
 import { formatExpiry, getDaysLeft, isUseSoon } from '../utils/freshness';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
@@ -68,18 +68,42 @@ const USE_SOON_PREVIEW = 3;
 const ACTION_WIDTH = 74;
 const ACTIONS_TOTAL = ACTION_WIDTH * 2;
 
-type SortMode = 'category' | 'expiry' | 'recent';
+type SortMode =
+  | 'category'
+  | 'expiry'
+  | 'recent'
+  | 'oldest'
+  | 'qtyAsc'
+  | 'qtyDesc';
 type ShowFilter = 'all' | 'useSoon';
 
 const SORT_LABELS: Record<SortMode, string> = {
   category: 'Category',
-  expiry: 'Expiry',
-  recent: 'Recently added',
+  recent: 'Latest added',
+  oldest: 'Oldest added',
+  qtyAsc: 'Quantity: Low → High',
+  qtyDesc: 'Quantity: High → Low',
+  expiry: 'Expiring soon',
 };
+
+/**
+ * Least quantity first, undated/unparsable quantities last (same "unknown
+ * isn't urgent" reasoning the expiry sort already uses) — then by name so
+ * equal quantities keep a stable, predictable order rather than whatever
+ * order Firestore happened to return.
+ */
+function compareQuantity(a: PantryItem, b: PantryItem, ascending: boolean): number {
+  const av = parseQuantity(a.quantity).value;
+  const bv = parseQuantity(b.quantity).value;
+  if (av === null && bv === null) return a.name.localeCompare(b.name);
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return ascending ? av - bv : bv - av;
+}
 
 const SHOW_LABELS: Record<ShowFilter, string> = {
   all: 'Everything',
-  useSoon: 'Only use soon',
+  useSoon: 'Expiring soon',
 };
 
 type Props = {
@@ -209,12 +233,43 @@ export default function ListScreen({
     });
   }, [items, search, activeCategory, showFilter]);
 
+  // Shared row order for every view — Use Soon, category sections, and the
+  // flat filtered list all read off this one comparator, so the sort menu
+  // means the same thing wherever items are shown. "Category" isn't a row
+  // order at all (it only decides whether cards split into sections, below),
+  // so it falls back to quantity ascending — feature default: least first.
+  const compareRows = useMemo(() => {
+    return (a: PantryItem, b: PantryItem) => {
+      switch (sortMode) {
+        case 'expiry': {
+          // No date sorts last — an undated tin isn't urgent, it's just unknown.
+          const ad = getDaysLeft(a.expiryDate);
+          const bd = getDaysLeft(b.expiryDate);
+          if (ad === null && bd === null) return a.name.localeCompare(b.name);
+          if (ad === null) return 1;
+          if (bd === null) return -1;
+          return ad - bd;
+        }
+        case 'recent':
+          return (b.addedAt ?? 0) - (a.addedAt ?? 0);
+        case 'oldest':
+          return (a.addedAt ?? 0) - (b.addedAt ?? 0);
+        case 'qtyDesc':
+          return compareQuantity(a, b, false);
+        case 'qtyAsc':
+        case 'category':
+        default:
+          return compareQuantity(a, b, true);
+      }
+    };
+  }, [sortMode]);
+
   const useSoonItems = useMemo(
     () =>
       visible
         .filter((i) => isUseSoon(i.expiryDate))
-        .sort((a, b) => (getDaysLeft(a.expiryDate) ?? 0) - (getDaysLeft(b.expiryDate) ?? 0)),
-    [visible]
+        .sort(compareRows),
+    [visible, compareRows]
   );
 
   // Category cards only in the default view; otherwise one flat card. Note
@@ -222,34 +277,17 @@ export default function ListScreen({
   // the list, or every row moves the moment you long-press one.
   const grouped = activeCategory === 'All' && sortMode === 'category';
 
-  const flatItems = useMemo(() => {
-    const copy = [...visible];
-    if (sortMode === 'expiry') {
-      // No date sorts last — an undated tin isn't urgent, it's just unknown.
-      return copy.sort((a, b) => {
-        const ad = getDaysLeft(a.expiryDate);
-        const bd = getDaysLeft(b.expiryDate);
-        if (ad === null && bd === null) return a.name.localeCompare(b.name);
-        if (ad === null) return 1;
-        if (bd === null) return -1;
-        return ad - bd;
-      });
-    }
-    if (sortMode === 'recent') return copy.sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0));
-    return copy.sort((a, b) => a.name.localeCompare(b.name));
-  }, [visible, sortMode]);
+  const flatItems = useMemo(() => [...visible].sort(compareRows), [visible, compareRows]);
 
   const sections = useMemo(() => {
     if (!grouped) return [];
     return categories
       .map((category) => ({
         category,
-        rows: visible
-          .filter((i) => i.category === category)
-          .sort((a, b) => a.name.localeCompare(b.name)),
+        rows: visible.filter((i) => i.category === category).sort(compareRows),
       }))
       .filter((s) => s.rows.length > 0);
-  }, [grouped, categories, visible]);
+  }, [grouped, categories, visible, compareRows]);
 
   function enterSelection(item: PantryItem) {
     setOpenSwipeId(null);
@@ -708,13 +746,6 @@ function JustAddedRow({ item, onEdit }: { item: PantryItem; onEdit: () => void }
 
   return (
     <TouchableOpacity style={styles.justAddedRow} onPress={onEdit} activeOpacity={0.7}>
-      <ItemThumb
-        size={34}
-        tone={urgent ? 'warn' : 'good'}
-        photo={item.scanPhoto}
-        box={item.box}
-        ownPhotoUri={item.photoUri}
-      />
       <View style={styles.justAddedBody}>
         <Text style={styles.justAddedName} numberOfLines={1}>
           {item.name}
@@ -853,16 +884,6 @@ function ItemRow({
 
   const body = (
     <>
-      {/* The same crop the review page drew, out of the same capture. An item
-          that showed its packet while being checked and a coloured tile forever
-          after would read as the app having lost track of what it looked at. */}
-      <ItemThumb
-        size={38}
-        tone={expiring ? 'warn' : 'good'}
-        photo={item.scanPhoto}
-        box={item.box}
-        ownPhotoUri={item.photoUri}
-      />
       <View style={styles.rowMain}>
         <Text style={styles.rowName} numberOfLines={1}>
           {item.name}

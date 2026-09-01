@@ -16,6 +16,8 @@ import { apiFetch, ApiError } from '../config/api';
 import { ScanBox, ScanCandidate } from './scan';
 import { RipenessStage, isRipenessStage } from '../utils/ripeness';
 import { dateInDays } from '../utils/freshness';
+import { normaliseLocation } from './pantry';
+import { classifyMeasure } from './quantity';
 
 export type { ScanBox };
 
@@ -48,6 +50,7 @@ type RemoteItem = {
   count: number;
   sizeValue: number;
   sizeUnit: string;
+  measuredByWeight: boolean;
   category: string;
   location: string;
   expiryDate: string;
@@ -94,6 +97,21 @@ async function prepareImage(photo: { uri: string; width: number; height: number 
   return saved.base64;
 }
 
+// oz/lb are read off a label often enough to be worth converting rather than
+// dropping — approximate is fine here, this only seeds the stepper's
+// starting amount, and the user is looking straight at the packet.
+const TO_GRAMS: Record<string, number> = { g: 1, kg: 1000, oz: 28.35, lb: 453.6 };
+const TO_ML: Record<string, number> = { ml: 1, l: 1000 };
+
+function toBaseUnitAmount(value: number, unit: string): number {
+  const lower = unit.trim().toLowerCase();
+  const grams = TO_GRAMS[lower];
+  if (grams !== undefined) return Math.round(value * grams);
+  const ml = TO_ML[lower];
+  if (ml !== undefined) return Math.round(value * ml);
+  return value;
+}
+
 /**
  * One remote item to one candidate — and the one place a date acquires a
  * provenance.
@@ -110,10 +128,38 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
 
   const ripeness = isRipenessStage(item.ripeness) ? item.ripeness : null;
 
+  // Best guess from what the server read off the packet — the review card
+  // overrides this from a remembered per-product correction, if there is
+  // one, once it has the user's uid (see ScanReviewScreen's EditCard).
+  const quantity = classifyMeasure({
+    name: item.name,
+    category: item.category,
+    unit: item.measuredByWeight ? item.sizeUnit : null,
+    measuredByWeight: item.measuredByWeight === true,
+  });
+  if (quantity.measure === 'pieces' && item.count > 0) {
+    // count from the server is only meaningful for a plain pieces reading.
+    quantity.amount = item.count;
+  } else if (
+    (quantity.measure === 'weight' || quantity.measure === 'volume') &&
+    item.sizeValue > 0 &&
+    item.sizeUnit
+  ) {
+    // The printed size is the actual amount for a measured-by-weight/volume
+    // item — grams/ml stay as-is, kg/L/oz/lb convert up to the base unit
+    // the amount is always stored in (see services/quantity.ts).
+    quantity.amount = toBaseUnitAmount(item.sizeValue, item.sizeUnit);
+  }
+
   return {
     id,
     name: item.name,
-    count: item.count,
+    quantity,
+    // A scanned bag's own printed size unit ("kg") is already the natural
+    // unit noun for a pack reading — reused rather than asking for a second
+    // source of truth for the same thing. Pieces/weight/volume have no unit
+    // noun of their own from a camera scan.
+    unit: quantity.measure === 'pack' ? item.sizeUnit || '' : '',
     // A size needs both halves to mean anything: "500" with no unit is not a
     // measurement, and a stray "g" with no number is noise.
     size:
@@ -123,10 +169,13 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
     category: item.category,
     // Empty strings are the route's stand-in for "couldn't tell" — the schema
     // it constrains the model to has no nullable primitive.
-    location: item.location || null,
+    location: normaliseLocation(item.location || null),
 
     expiryDate: printed ?? estimated,
     dateSource: printed ? 'label' : estimated ? 'estimated' : null,
+    // Only meaningful for a hand-typed row's "I don't know" estimate — a
+    // scanned item already has the server's own shelf-life read above.
+    openedState: null,
 
     nameUnsure: item.nameUnsure === true,
     nameUnsureReason: item.nameUnsureReason || null,

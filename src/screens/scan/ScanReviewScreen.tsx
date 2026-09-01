@@ -23,12 +23,15 @@
 // perfect data before saving would mean a user with six items and one bad
 // reading either fixes it now or loses all six.
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   TextInput,
   TouchableOpacity,
@@ -39,7 +42,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../../components/Text';
 import { fonts, type } from '../../theme/typography';
-import { STORAGE_LOCATIONS } from '../../services/pantry';
+import { useAuth } from '../../auth/AuthProvider';
+import { FOOD_CATEGORIES, STORAGE_LOCATIONS } from '../../services/pantry';
 import {
   ScanCandidate,
   attentionChips,
@@ -47,21 +51,22 @@ import {
   provenanceChip,
   splitByAttention,
 } from '../../services/scan';
+import { ItemQuantity, classifyMeasure, loadMeasurePref, saveMeasurePref } from '../../services/quantity';
 import { suggestFoods, lookupFood, FALLBACK_LOCATION } from '../../data/foodCatalogue';
-import { Capture, AttentionChip, DateChip, Eyebrow, HIT_SLOP, ItemThumb } from './atoms';
+import { Capture, AttentionChip, DateChip, Eyebrow, MeasureControl, HIT_SLOP, ItemThumb } from './atoms';
 import DateField from './DateField';
-import { offerToScan, pickItemPhoto } from './pickItemPhoto';
 import { makeStyles } from '../../theme/makeStyles';
 import { useColors } from '../../theme/ThemeProvider';
 import { space } from '../../theme/spacing';
 
-// The most the stepper will climb to. Not a limit on what the user can type —
-// it is a guard on the plus button, which is a held finger away from absurd.
-const MAX_COUNT = 99;
-
 // How many confident rows show before the "Show all" link takes over. The group
 // is collapsed because it is the part the user does *not* need to read.
 const COLLAPSED_LOOKS_RIGHT = 3;
+
+// Everything the location picker can select directly. A candidate whose
+// location falls outside this set — empty, or something typed in for Other —
+// is what tells the card to show the free-text field and read Other as picked.
+const FIXED_LOCATIONS = new Set<string>(STORAGE_LOCATIONS.filter((l) => l !== 'Other'));
 
 type Props = {
   candidates: ScanCandidate[];
@@ -90,6 +95,12 @@ type Props = {
   onAddByHand: () => void;
   /** Reads a photo attached to a hand-added row, replacing that row. */
   onScanAttached: (id: string, photo: Capture) => void;
+  /** Asks the server to guess a hand-typed row's shelf life from its name,
+   *  category and opened/unopened state — owned by ScanModal, same pattern
+   *  as onOpenFreshness. */
+  onEstimateShelfLife: (candidate: ScanCandidate) => void;
+  /** Which row, if any, currently has an estimate call in flight. */
+  estimatingId: string | null;
   onSubmit: () => void;
 };
 
@@ -111,12 +122,15 @@ export default function ScanReviewScreen({
   onOpenFreshness,
   onAddByHand,
   onScanAttached,
+  onEstimateShelfLife,
+  estimatingId,
   onSubmit,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const [showAll, setShowAll] = useState(false);
+  const [photoPreviewOpen, setPhotoPreviewOpen] = useState(false);
 
   const { needsLook, looksRight } = useMemo(() => splitByAttention(candidates), [candidates]);
   const editing = editingId !== null;
@@ -155,7 +169,15 @@ export default function ScanReviewScreen({
           header was paying that cost for an emphasis that was already made. */}
       <View style={styles.header}>
         {photo?.uri ? (
-          <TouchableOpacity onPress={onClose} hitSlop={HIT_SLOP} activeOpacity={0.7}>
+          // A tap here is someone checking the shot, not leaving the page — the
+          // way out moved to its own X button so the two intents can't collide.
+          <TouchableOpacity
+            onPress={() => setPhotoPreviewOpen(true)}
+            hitSlop={HIT_SLOP}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="View full photo"
+          >
             <Image source={{ uri: photo.uri }} style={styles.headerThumb} />
           </TouchableOpacity>
         ) : (
@@ -192,7 +214,45 @@ export default function ScanReviewScreen({
         <TouchableOpacity onPress={onRetake} hitSlop={HIT_SLOP} activeOpacity={0.7}>
           <Text style={styles.retake}>Retake</Text>
         </TouchableOpacity>
+        {/* The only control on this page that can discard the scan — everything
+            else either edits a row or leaves by a path that keeps the batch
+            (Retake keeps it in preRetake; the thumbnail now just previews). */}
+        <TouchableOpacity
+          onPress={onClose}
+          hitSlop={HIT_SLOP}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Close scan"
+          style={styles.headerClose}
+        >
+          <Ionicons name="close" size={20} color={colors.primaryDark} />
+        </TouchableOpacity>
       </View>
+
+      {photo?.uri && (
+        <Modal
+          visible={photoPreviewOpen}
+          animationType="fade"
+          transparent
+          onRequestClose={() => setPhotoPreviewOpen(false)}
+          statusBarTranslucent
+        >
+          <StatusBar barStyle="light-content" />
+          <Pressable style={styles.previewBackdrop} onPress={() => setPhotoPreviewOpen(false)}>
+            <Image source={{ uri: photo.uri }} style={styles.previewImage} resizeMode="contain" />
+            <TouchableOpacity
+              onPress={() => setPhotoPreviewOpen(false)}
+              hitSlop={HIT_SLOP}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Close preview"
+              style={[styles.previewClose, { top: insets.top + space.md }]}
+            >
+              <Ionicons name="close" size={22} color="#fff" />
+            </TouchableOpacity>
+          </Pressable>
+        </Modal>
+      )}
 
       <ScrollView
         style={styles.scroll}
@@ -220,6 +280,8 @@ export default function ScanReviewScreen({
                     onConfirm={() => onConfirmItem(candidate.id)}
                     onRemove={() => onRemove(candidate.id)}
                     onOpenFreshness={() => onOpenFreshness(candidate)}
+                    onEstimateShelfLife={() => onEstimateShelfLife(candidate)}
+                    estimating={estimatingId === candidate.id}
                   />
                 ) : (
                   <AttentionCard
@@ -260,6 +322,8 @@ export default function ScanReviewScreen({
                     onConfirm={() => onConfirmItem(candidate.id)}
                     onRemove={() => onRemove(candidate.id)}
                     onOpenFreshness={() => onOpenFreshness(candidate)}
+                    onEstimateShelfLife={() => onEstimateShelfLife(candidate)}
+                    estimating={estimatingId === candidate.id}
                   />
                 ) : (
                   <CleanCard
@@ -284,7 +348,9 @@ export default function ScanReviewScreen({
             for a new blank one is worse than no action at all. */}
         {!editing && (
           <TouchableOpacity style={styles.addByHand} onPress={onAddByHand} activeOpacity={0.7}>
-            <View style={styles.addByHandBox} />
+            <View style={styles.addByHandIcon}>
+              <Ionicons name="add" size={16} color={colors.primaryDark} />
+            </View>
             <Text style={styles.addByHandText}>Add an item by hand</Text>
           </TouchableOpacity>
         )}
@@ -385,13 +451,14 @@ function AttentionCard({
           photo={photo}
           box={candidate.box}
           ownPhotoUri={candidate.photoUri}
+          hideIfEmpty
         />
         <View style={styles.cardBody}>
           <Text style={styles.cardName} numberOfLines={1}>
             {displayName(candidate)}
           </Text>
           <Text style={styles.cardMeta} numberOfLines={1}>
-            {candidate.location ?? FALLBACK_LOCATION} · {describeQuantity(candidate)}
+            {candidate.location || FALLBACK_LOCATION} · {describeQuantity(candidate)}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={17} color={colors.chevron} />
@@ -433,6 +500,7 @@ function CleanCard({
           photo={photo}
           box={candidate.box}
           ownPhotoUri={candidate.photoUri}
+          hideIfEmpty
         />
         <View style={styles.cardBody}>
           <Text style={styles.cardName} numberOfLines={1}>
@@ -465,6 +533,8 @@ function EditCard({
   onConfirm,
   onRemove,
   onOpenFreshness,
+  onEstimateShelfLife,
+  estimating,
 }: {
   candidate: ScanCandidate;
   photo?: Capture | null;
@@ -474,10 +544,14 @@ function EditCard({
   onConfirm: () => void;
   onRemove: () => void;
   onOpenFreshness: () => void;
+  onEstimateShelfLife: () => void;
+  estimating: boolean;
 }) {
   const styles = useStyles();
   const colors = useColors();
+  const { uid } = useAuth();
   const [locationsOpen, setLocationsOpen] = useState(false);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
 
   // The model's own alternatives first — it was looking at the packet. The food
   // catalogue fills in behind when it offered none.
@@ -488,53 +562,78 @@ function EditCard({
       .slice(0, 3);
   }, [candidate.nameAlternatives, candidate.name]);
 
+  // Whether this row's measure has been decided this session — either by a
+  // manual pill pick, or by a remembered preference already applied. Guards
+  // both setName's reclassification and the memory-lookup effect below from
+  // clobbering a choice already settled, in either direction.
+  const measureTouched = useRef(false);
+
   function setName(name: string) {
     // Typing a catalogue name adopts its category, the same way the hand-entry
-    // form used to — the chips are a shortcut, not the only route.
+    // form used to — the chips are a shortcut, not the only route. It also
+    // reclassifies the measure from the catalogue's own unit (picking "Rice"
+    // should offer pack/¼ steps, not stay on whatever pieces defaulted to) —
+    // but only until the user or a remembered preference has actually settled
+    // this row's measure, matching the guard the memory-lookup effect uses.
     const match = lookupFood(name);
-    onPatch(match ? { name, category: match.category } : { name });
-  }
-
-  function setCount(next: number) {
-    // Never below 1 — zero of something isn't a pantry entry, it's a delete,
-    // and Remove is the control for that.
-    onPatch({ count: Math.min(MAX_COUNT, Math.max(1, next)) });
-  }
-
-  async function addPhoto() {
-    const picked = await pickItemPhoto();
-    if (!picked) return;
-
-    // A picture attached to a row the user hasn't named yet is very often a
-    // photo of several things — they reached for the camera instead of the
-    // keyboard. Reading it is almost certainly what they wanted, and it is the
-    // only way they get real per-item crops and dates out of that photo. Asked,
-    // never assumed: a scan they didn't request would spend a model call and
-    // throw away the row they were part-way through.
-    if (!candidate.name.trim() && (await offerToScan())) {
-      onScanAttached(picked);
+    if (!match) {
+      onPatch({ name });
       return;
     }
-
-    onPatch({ photoUri: picked.uri });
+    const patch: Partial<ScanCandidate> = { name, category: match.category };
+    if (!measureTouched.current) {
+      const quantity = classifyMeasure({ name, category: match.category, unit: match.unit });
+      patch.quantity = quantity;
+      patch.unit = quantity.measure === 'pack' ? match.unit : '';
+    }
+    onPatch(patch);
   }
 
   const chip = provenanceChip(candidate);
 
+  // A past correction for this exact product name, applied once it loads —
+  // "the choice is remembered for that product" from the spec. Read-only
+  // here; handleMeasurePicked below is what writes a new one. Skipped once
+  // the row already carries a measure the user themselves chose this
+  // session (measureTouched), so a remembered preference can never stomp a
+  // pick made two seconds ago on this very card.
+  useEffect(() => {
+    if (!uid || !candidate.name.trim() || measureTouched.current) return;
+    let cancelled = false;
+    loadMeasurePref(uid, candidate.name).then((pref) => {
+      if (!cancelled && pref && !measureTouched.current) {
+        onPatch({ quantity: { ...candidate.quantity, measure: pref.measure, splittable: pref.splittable } });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Only re-checks when the name settles onto something new — not on every
+    // keystroke, and not when the quantity itself changes underneath it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, candidate.name]);
+
+  function handleMeasurePicked(next: ItemQuantity) {
+    measureTouched.current = true;
+    if (uid && candidate.name.trim()) {
+      void saveMeasurePref(uid, candidate.name, { measure: next.measure, splittable: next.splittable });
+    }
+  }
+
   return (
     <View style={styles.editCard}>
       <View style={styles.editHead}>
-        {/* The item itself, cropped out of the capture. On a card asking
-            "is this a cheddar?" the picture is most of the answer — and when
-            there is no capture to crop, this is where a hand-added item gets a
-            picture of its own. */}
+        {/* The item itself, cropped out of the capture, when there is one. A
+            hand-typed row has no capture to crop and renders nothing here —
+            hideIfEmpty skips the empty tile rather than showing an unexplained
+            blank square. */}
         <ItemThumb
           size={52}
           tone="neutral"
           photo={photo}
           box={candidate.box}
           ownPhotoUri={candidate.photoUri}
-          onPressAdd={addPhoto}
+          hideIfEmpty
         />
         <View style={styles.cardBody}>
           <Text style={styles.editName} numberOfLines={1}>
@@ -598,7 +697,7 @@ function EditCard({
       )}
 
       <View style={styles.fieldLabelRow}>
-        <Eyebrow>Use by</Eyebrow>
+        <Eyebrow>Expiry date</Eyebrow>
         <DateChip chip={chip} />
       </View>
       <DateField
@@ -616,6 +715,51 @@ function EditCard({
         }
       />
 
+      {/* Only a hand-typed row gets asked this — a scanned item already has
+          either a printed date or the vision model's own estimate, so
+          "opened or unopened" has nothing left to inform. A row that started
+          blank and later has a photo attached is no longer blank (box or
+          photoUri is set), so this correctly stops applying the moment that
+          happens. */}
+      {!candidate.box && !candidate.photoUri && (
+        <>
+          <Eyebrow style={styles.openedLabel}>Opened?</Eyebrow>
+          <View style={styles.suggestionRow}>
+            {(['unopened', 'opened'] as const).map((state) => (
+              <TouchableOpacity
+                key={state}
+                style={[styles.suggestion, candidate.openedState === state && styles.suggestionOn]}
+                onPress={() => onPatch({ openedState: state })}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.suggestionText,
+                    candidate.openedState === state && styles.suggestionTextOn,
+                  ]}
+                >
+                  {state === 'unopened' ? 'Unopened' : 'Opened'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {!candidate.expiryDate && candidate.openedState && (
+            <TouchableOpacity
+              style={styles.estimateLink}
+              onPress={onEstimateShelfLife}
+              activeOpacity={0.7}
+              disabled={estimating}
+            >
+              <Ionicons name="sparkles-outline" size={15} color={colors.primaryDark} />
+              <Text style={styles.estimateLinkText}>
+                {estimating ? 'Estimating…' : "I don't know — estimate it"}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </>
+      )}
+
       {/* Loose produce keeps its own screen for the ripeness read — the scale,
           the reasoning and the override are too much to inline here. */}
       {candidate.looseProduce && (
@@ -626,88 +770,115 @@ function EditCard({
         </TouchableOpacity>
       )}
 
-      <View style={styles.editColumns}>
-        <View style={styles.editColumn}>
-          <View style={styles.fieldLabelRow}>
-            <Eyebrow>How many</Eyebrow>
-            {/* The pack size, stated but not editable here. It is read off the
-                packaging and almost never wrong; putting it in a stepper is
-                what produced a quantity of 70 for a 70 g bag of crisps. */}
-            {candidate.size && (
-              <Text style={styles.sizeNote}>
-                {candidate.size.value} {candidate.size.unit} each
-              </Text>
-            )}
-          </View>
-          <View style={styles.stepper}>
-            <TouchableOpacity
-              style={styles.stepDown}
-              onPress={() => setCount(candidate.count - 1)}
-              hitSlop={HIT_SLOP}
-              activeOpacity={0.7}
-              accessibilityLabel="One fewer"
-            >
-              <Text style={styles.stepDownText}>−</Text>
-            </TouchableOpacity>
-            {/* Typeable as well as steppable: getting from 1 to 12 is eleven
-                taps, and the number is right there on the box. */}
-            <TextInput
-              style={styles.stepValue}
-              value={String(candidate.count)}
-              onChangeText={(t) => {
-                const digits = t.replace(/[^0-9]/g, '').slice(0, 2);
-                // An empty box mid-edit is not a count of zero — it is a box
-                // being retyped, so it holds at 1 rather than snapping.
-                setCount(digits ? Number(digits) : 1);
-              }}
-              keyboardType="number-pad"
-              selectTextOnFocus
-              maxLength={2}
-              selectionColor={colors.primaryDark}
-              accessibilityLabel="How many"
-            />
-            <TouchableOpacity
-              style={styles.stepUp}
-              onPress={() => setCount(candidate.count + 1)}
-              hitSlop={HIT_SLOP}
-              activeOpacity={0.7}
-              accessibilityLabel="One more"
-            >
-              <Text style={styles.stepUpText}>+</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.editColumn}>
-          <Eyebrow style={styles.fieldLabel}>Store in</Eyebrow>
-          <TouchableOpacity
-            style={styles.field}
-            onPress={() => setLocationsOpen((v) => !v)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.fieldValue} numberOfLines={1}>
-              {candidate.location ?? FALLBACK_LOCATION}
-            </Text>
-            <Ionicons name="chevron-down" size={14} color={colors.chevron} />
-          </TouchableOpacity>
-        </View>
+      {/* How many is always a full-width block, whatever the measure — a
+          two-column layout next to Store in used to fit the plain pieces
+          stepper, but the measure pill needs the row's whole width to sit
+          clear of the label without crowding it, and the quick-amount grid
+          needs it for all four measures alike. Store in always follows on
+          its own row below. */}
+      <View style={styles.howManyFull}>
+        {/* The pack size, stated but not editable here. It is read off the
+            packaging and almost never wrong; putting it in a stepper is what
+            produced a quantity of 70 for a 70 g bag of crisps. */}
+        {candidate.size && (
+          <Text style={styles.sizeNote}>
+            {candidate.size.value} {candidate.size.unit} each
+          </Text>
+        )}
+        <MeasureControl
+          quantity={candidate.quantity}
+          unit={candidate.unit}
+          onChange={(quantity) => onPatch({ quantity })}
+          onPickMeasure={handleMeasurePicked}
+        />
+      </View>
+      <View style={styles.storeInRow}>
+        <StoreInField
+          location={candidate.location}
+          onPress={() => setLocationsOpen((v) => !v)}
+        />
       </View>
       {locationsOpen && (
         <View style={styles.suggestionRow}>
           {STORAGE_LOCATIONS.map((location) => {
-            const selected = candidate.location === location;
+            // A saved custom location ("Pantry cart") is not itself one of the
+            // fixed chips, but it came from picking Other — so Other is what
+            // should read as selected, not nothing.
+            const selected =
+              location === 'Other'
+                ? !!candidate.location && !FIXED_LOCATIONS.has(candidate.location)
+                : candidate.location === location;
             return (
               <TouchableOpacity
                 key={location}
                 style={[styles.suggestion, selected && styles.suggestionOn]}
                 onPress={() => {
-                  onPatch({ location });
-                  setLocationsOpen(false);
+                  if (location === 'Other') {
+                    onPatch({ location: candidate.location && !FIXED_LOCATIONS.has(candidate.location) ? candidate.location : '' });
+                  } else {
+                    onPatch({ location });
+                    setLocationsOpen(false);
+                  }
                 }}
                 activeOpacity={0.7}
               >
                 <Text style={[styles.suggestionText, selected && styles.suggestionTextOn]}>
                   {location}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+      {locationsOpen && candidate.location !== null && !FIXED_LOCATIONS.has(candidate.location) && (
+        <View style={styles.fieldFocused}>
+          <TextInput
+            style={styles.fieldInput}
+            value={candidate.location}
+            onChangeText={(location) => onPatch({ location, editedByUser: true })}
+            placeholder="Where do you keep it?"
+            placeholderTextColor={colors.mutedLight}
+            selectionColor={colors.primaryDark}
+            autoCapitalize="sentences"
+            returnKeyType="done"
+          />
+        </View>
+      )}
+
+      {/* The category is otherwise silently guessed from the name (see
+          setName above, via the food catalogue) — a hand-typed item whose
+          name isn't in that catalogue, or whose guess is wrong, would
+          otherwise have no way to say what it actually is. This makes the
+          guess visible and correctable the same way location already is,
+          rather than a hidden field only the pantry's own grouping reveals
+          after the fact. */}
+      <Eyebrow style={styles.categoryLabel}>Category</Eyebrow>
+      <TouchableOpacity
+        style={styles.field}
+        onPress={() => setCategoriesOpen((v) => !v)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.fieldValue} numberOfLines={1}>
+          {candidate.category || 'Pick one'}
+        </Text>
+        <Ionicons name="chevron-down" size={14} color={colors.chevron} />
+      </TouchableOpacity>
+      {categoriesOpen && (
+        <View style={styles.suggestionRow}>
+          {FOOD_CATEGORIES.map((category) => {
+            const selected = candidate.category === category;
+            return (
+              <TouchableOpacity
+                key={category}
+                style={[styles.suggestion, selected && styles.suggestionOn]}
+                onPress={() => {
+                  onPatch({ category });
+                  setCategoriesOpen(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.suggestionText, selected && styles.suggestionTextOn]}>
+                  {category}
                 </Text>
               </TouchableOpacity>
             );
@@ -730,6 +901,25 @@ function EditCard({
         </TouchableOpacity>
       </View>
     </View>
+  );
+}
+
+/** The "Store in" field's chevron row — always its own full-width row below
+ *  How many (see EditCard above), so its top spacing comes from the
+ *  surrounding storeInRow rather than from fieldLabel itself. */
+function StoreInField({ location, onPress }: { location: string | null; onPress: () => void }) {
+  const styles = useStyles();
+  const colors = useColors();
+  return (
+    <>
+      <Eyebrow style={styles.fieldLabel}>Store in</Eyebrow>
+      <TouchableOpacity style={styles.field} onPress={onPress} activeOpacity={0.7}>
+        <Text style={styles.fieldValue} numberOfLines={1}>
+          {location || FALLBACK_LOCATION}
+        </Text>
+        <Ionicons name="chevron-down" size={14} color={colors.chevron} />
+      </TouchableOpacity>
+    </>
   );
 }
 
@@ -762,6 +952,29 @@ const useStyles = makeStyles((colors) => ({
     height: 54,
     borderRadius: 16,
     backgroundColor: colors.backgroundAlt,
+  },
+  headerClose: {
+    marginLeft: space.sm,
+  },
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  previewClose: {
+    position: 'absolute',
+    right: space.lg,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerBack: {
     flexDirection: 'row',
@@ -872,21 +1085,25 @@ const useStyles = makeStyles((colors) => ({
   addByHand: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: space.sm2,
-    paddingVertical: space.xs,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    borderRadius: 999,
+    backgroundColor: colors.primaryLighter,
   },
-  addByHandBox: {
-    width: 19,
-    height: 19,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderStyle: 'dashed',
-    borderColor: colors.tan,
+  addByHandIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   addByHandText: {
     fontWeight: '700',
     fontSize: type.bodySmall.fontSize,
-    color: colors.textSecondary,
+    color: colors.primaryDark,
   },
 
   // ─── Edit card ──────────────────────────────────────────────────────────
@@ -922,6 +1139,24 @@ const useStyles = makeStyles((colors) => ({
     color: colors.textSecondary,
   },
   fieldLabel: {
+    marginBottom: space.sm,
+  },
+  // "Opened?" follows DateField directly, which — unlike the fields
+  // fieldLabel's other call sites open — is a bordered box with no trailing
+  // margin of its own, so fieldLabel's bare marginBottom left this label
+  // sitting flush against the "Or estimate" chips above it. Every other
+  // section label on this card gets space.lg above it (categoryLabel,
+  // fieldLabelRow, howManyFull, storeInRow) — this matches that.
+  openedLabel: {
+    marginTop: space.lg,
+    marginBottom: space.sm,
+  },
+  // Category sits right after the How many / Store in row, with nothing of
+  // its own separating them — fieldLabel's plain marginBottom (no top
+  // margin, since it usually opens a row that already has its own top
+  // spacing) left it flush against Store in's box above it.
+  categoryLabel: {
+    marginTop: space.lg,
     marginBottom: space.sm,
   },
   fieldLabelRow: {
@@ -1011,64 +1246,36 @@ const useStyles = makeStyles((colors) => ({
     fontSize: type.label.fontSize,
     color: colors.primaryDark,
   },
-  editColumns: {
+  estimateLink: {
     flexDirection: 'row',
-    gap: space.sm2,
-    marginTop: space.md,
+    alignItems: 'center',
+    gap: space.sm,
+    minHeight: 44,
+    marginTop: space.xs,
   },
-  editColumn: {
+  estimateLinkText: {
     flex: 1,
-  },
-  stepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 48,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.backgroundAlt,
-    borderRadius: 14,
-    paddingVertical: space.sm,
-    paddingHorizontal: space.sm2,
-  },
-  stepDown: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepDownText: {
     fontWeight: '800',
-    fontSize: type.bodyLarge.fontSize,
-    color: colors.textSecondary,
+    fontSize: type.label.fontSize,
+    color: colors.primaryDark,
   },
-  stepValue: {
-    flex: 1,
-    fontFamily: 'Nunito_800ExtraBold',
-    fontSize: type.bodyLarge.fontSize,
-    color: colors.primaryDarker,
-    textAlign: 'center',
-    padding: space.none,
+  // How many — always a full-width block regardless of measure, so the
+  // pill never has to share horizontal room with anything (see the defect
+  // this replaced: a two-column layout crowded the pill against Store in's
+  // label at some label lengths). Same top spacing every section label on
+  // this card uses — see sectionSpacing below.
+  howManyFull: {
+    marginTop: space.lg,
+  },
+  // Store in's own row, always below How many now.
+  storeInRow: {
+    marginTop: space.lg,
   },
   sizeNote: {
     fontWeight: '700',
     fontSize: type.micro.fontSize,
     color: colors.textSecondary,
-  },
-  stepUp: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    backgroundColor: colors.primaryLighter,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepUpText: {
-    fontWeight: '800',
-    fontSize: type.bodyLarge.fontSize,
-    color: colors.primaryDark,
+    marginBottom: space.sm,
   },
   editActions: {
     flexDirection: 'row',

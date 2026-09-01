@@ -42,6 +42,7 @@ function normaliseMessage(raw: any): ChatMessage {
           ...raw.recipe,
           look: lookFor(raw.recipe.look),
           dishKey: dishKeyFor(raw.recipe.dishKey),
+          description: raw.recipe.description ?? '',
           needsShopping: raw.recipe.needsShopping === true,
           usesExpiring: raw.recipe.usesExpiring ?? [],
           pantryUsed: raw.recipe.pantryUsed ?? [],

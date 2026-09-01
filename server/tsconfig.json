@@ -11,7 +11,13 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noUnusedLocals": true,
-    "noImplicitReturns": true
+    "noImplicitReturns": true,
+    // Without this, TypeScript's @types auto-discovery walks up to the repo
+    // root's node_modules/@types and pulls in @types/react-native too — its
+    // own global fetch/URLSearchParams/Response overrides (for RN's polyfills)
+    // then silently replace the real Node/undici ones @types/node provides,
+    // breaking any route that calls the real fetch() directly.
+    "types": ["node"]
   },
   "include": ["src"]
 }

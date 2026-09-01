@@ -14,7 +14,7 @@
 // every card so the title/description always start at the same place.
 
 import React from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import Text from '../Text';
 import { makeStyles } from '../../theme/makeStyles';
 import { useColors } from '../../theme/ThemeProvider';
@@ -35,10 +35,7 @@ export default function OnboardingCardPage({ eyebrow, title, description, childr
   const styles = useStyles();
   const colors = useColors();
   return (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
+    <View style={styles.content}>
       <View style={[styles.cardSlot, { marginBottom: TEXT_GAP }]}>{children}</View>
 
       <View>
@@ -46,13 +43,13 @@ export default function OnboardingCardPage({ eyebrow, title, description, childr
         <Text style={styles.title}>{title}</Text>
         <Text style={styles.description}>{description}</Text>
       </View>
-    </ScrollView>
+    </View>
   );
 }
 
 const useStyles = makeStyles((colors) => ({
   content: {
-    flexGrow: 1,
+    flex: 1,
     paddingHorizontal: space.xxl,
     paddingTop: space.xxl,
     paddingBottom: space.xxl,

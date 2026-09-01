@@ -35,6 +35,23 @@ type Props = {
   /** How far the screen drifts. Smaller reads as a settle rather than a slide. */
   slideDistance?: number;
   /**
+   * Fired once the fade-IN of a genuinely new key finishes — i.e. once the
+   * new screen is actually fully visible, not merely mounted. A screen
+   * mounts while still at opacity 0 (see `shown` below) and stays there for
+   * the whole fade-in; anything that screen starts animating on its own
+   * mount — a slide-in mascot, say — runs that entire animation behind an
+   * invisible curtain and is already partway or fully done by the time the
+   * curtain lifts, reading as an instant pop no matter how the animation
+   * itself is tuned. This is the hook a screen's own entrance animation
+   * should wait on instead of its own mount effect, on any path that goes
+   * through this fade (unlike AuthSwipeStack's internal transition, which
+   * mounts its screens once and never re-fades them).
+   *
+   * Not fired for the very first render (nothing faded in — the initial
+   * `shown` is just there) or when the key hasn't actually changed.
+   */
+  onEntered?: () => void;
+  /**
    * Which way the swap is going, on the horizontal axis: 1 for forwards, -1 for
    * back, 0 for neither.
    *
@@ -57,11 +74,28 @@ export default function AppTransition({
   halfDuration = HALF_DURATION,
   slideDistance = SLIDE_DISTANCE,
   direction = 0,
+  onEntered,
   children,
 }: Props) {
+  // Read through a ref rather than closed over directly: the fade-in's
+  // completion callback below is created once per transition and can run
+  // well after this render, by which point a fresh onEntered identity
+  // (a new inline arrow function, say) may already have replaced this one.
+  const onEnteredRef = useRef(onEntered);
+  onEnteredRef.current = onEntered;
   const styles = useStyles();
   const colors = useColors();
-  const opacity = useRef(new Animated.Value(1)).current;
+  // Starts at 0, not 1: the very first screen this component ever shows
+  // used to skip the fade entirely and appear at full opacity on the very
+  // first frame, on the reasoning that there was nothing to fade in FROM.
+  // But a child screen's own entrance animation (SignInScreen's mascot, via
+  // onEntered) needs a real gap between "not visible yet" and "now visible"
+  // to read as motion at all — with the mascot's container visible from
+  // frame one and its slide-in starting only a couple of frames later, the
+  // whole animation completed close enough to that first paint that it read
+  // as an instant appearance, not a slide. Fading this first screen in too,
+  // exactly like every transition after it, is what gives that gap back.
+  const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
   const translateX = useRef(new Animated.Value(0)).current;
 
@@ -105,6 +139,22 @@ export default function AppTransition({
   // before React caught up, which is visible as the old tab appearing inside
   // the new tab's entrance.
   const pendingEnter = useRef<{ drift: Animated.Value; enter: number } | null>(null);
+
+  // The very first screen this component ever shows never runs the
+  // fade-OUT half below at all — `shown` starts equal to it directly (see
+  // the useState initializer above), so there is nothing to fade out FROM.
+  // It still needs the fade-IN half though, for the same reason opacity now
+  // starts at 0 instead of 1 (see that comment): a child screen's own
+  // entrance animation needs a real gap between "not visible" and "visible"
+  // to read as motion, and onEntered is what tells it that gap has passed.
+  // Handing pendingEnter straight to the fade-in useLayoutEffect below,
+  // synchronously on mount, makes this first screen just play the ordinary
+  // fade-in every later transition also plays — not a separate mechanism.
+  const firedInitialEnter = useRef(false);
+  if (!firedInitialEnter.current) {
+    firedInitialEnter.current = true;
+    pendingEnter.current = { drift: translateY, enter: slideDistance };
+  }
 
   useEffect(() => {
     if (transitionKey === shownKeyRef.current) {
@@ -187,6 +237,7 @@ export default function AppTransition({
     ]).start((end) => {
       if (!end.finished) return;
       animating.current = false;
+      onEnteredRef.current?.();
       // Anything that arrived while the transition was running.
       setShown({ key: shownKeyRef.current, node: latest.current });
     });

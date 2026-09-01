@@ -61,6 +61,8 @@ function fromRow(row: any): SavedRecipe | null {
       look: lookFor(recipe.look),
       dishKey: dishKeyFor(recipe.dishKey),
       minutes: typeof recipe.minutes === 'number' ? recipe.minutes : 0,
+      servings: typeof recipe.servings === 'number' ? recipe.servings : 0,
+      description: typeof recipe.description === 'string' ? recipe.description : '',
       why: typeof recipe.why === 'string' ? recipe.why : '',
       // Always false on a saved dish. It described the pantry on the night the
       // recipe was suggested; whether a trip to the shop is needed now is a

@@ -19,7 +19,7 @@
 // user scrolled to, and growing one row mid-list would push everything else
 // out from under their thumb.
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -33,15 +33,25 @@ import {
 } from 'react-native';
 import Text from '../components/Text';
 import { Ionicons } from '@expo/vector-icons';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateField from './scan/DateField';
-import { pickItemPhoto } from './scan/pickItemPhoto';
-import { DateChip, Eyebrow, HIT_SLOP, ItemThumb } from './scan/atoms';
+import { DateChip, Eyebrow, MeasureControl, HIT_SLOP } from './scan/atoms';
 import { provenanceChip } from '../services/scan';
+import { formatQuantityString, parseQuantityString } from '../services/quantity';
+import { isFractionalUnit, lookupFood } from '../data/foodCatalogue';
 import {
   FOOD_CATEGORIES,
   STORAGE_LOCATIONS,
   NewPantryItem,
+  Nutrition,
   PantryItem,
 } from '../services/pantry';
 import { makeStyles } from '../theme/makeStyles';
@@ -58,9 +68,15 @@ type Draft = {
   expiryDate: string | null;
   dateSource: PantryItem['dateSource'];
   photoUri: string | null;
+  nutrition: Nutrition | null;
 };
 
-const FALLBACK_LOCATION = 'Cupboard';
+const FALLBACK_LOCATION = 'Cabinet';
+
+// Everything the chip row can select directly. A location outside this set —
+// empty, or something typed in for Other — is what tells the form to show the
+// free-text field and read the Other chip as selected.
+const FIXED_LOCATIONS = new Set<string>(STORAGE_LOCATIONS.filter((l) => l !== 'Other'));
 
 function toDraft(item: PantryItem): Draft {
   return {
@@ -71,6 +87,7 @@ function toDraft(item: PantryItem): Draft {
     expiryDate: item.expiryDate,
     dateSource: item.dateSource,
     photoUri: item.photoUri,
+    nutrition: item.nutrition,
   };
 }
 
@@ -129,6 +146,58 @@ function EditSheetBody({
     setDraft((current) => ({ ...current, ...next }));
   }
 
+  // Live drag-to-dismiss: the sheet's own vertical offset, tracking the
+  // finger 1:1 while dragging, rather than the plain fixed-duration slide
+  // the bare Modal animation gave — that played the same close animation
+  // regardless of touch, which is why a swipe read as "not responding"
+  // rather than "following". Scoped to the grabber + header only (see
+  // dragHandle below), not the whole sheet: the form body is a ScrollView,
+  // and a drag gesture covering it too would have to arbitrate against the
+  // ScrollView's own pan on every touch, which is a lot of extra failure
+  // surface for a sheet whose header already gives a dedicated, discoverable
+  // drag target — the same place users already expect to grab it from.
+  const translateY = useSharedValue(0);
+  const closing = useRef(false);
+
+  function requestClose() {
+    // onClose unmounts this component (its parent keys on item.id / renders
+    // null once item is null) — guarded so a fast double-fire from both the
+    // gesture's onEnd and a subsequent tap can't call it twice.
+    if (closing.current) return;
+    closing.current = true;
+    onClose();
+  }
+
+  const dragHandle = Gesture.Pan()
+    // Needs 8px of vertical movement before it takes over — small enough to
+    // feel immediate once a real drag starts, large enough that a plain tap
+    // on Cancel or Save (which sit in this same drag zone) still reaches
+    // its own TouchableOpacity instead of being swallowed as a micro-drag.
+    .activeOffsetY([-8, 8])
+    // A mostly-horizontal touch (brushing a header button on the way past)
+    // isn't a vertical drag — bail out rather than fight it.
+    .failOffsetX([-20, 20])
+    .onChange((e) => {
+      // Dragging up past the resting position would peel the sheet off the
+      // top of its own content, which looks like a glitch rather than a
+      // gesture doing anything — clamp to "closed or lower", never negative.
+      translateY.value = Math.max(0, translateY.value + e.changeY);
+    })
+    .onEnd((e) => {
+      const shouldClose = translateY.value > 120 || e.velocityY > 800;
+      if (shouldClose) {
+        translateY.value = withTiming(600, { duration: 220 }, () => {
+          runOnJS(requestClose)();
+        });
+      } else {
+        translateY.value = withSpring(0, { damping: 28, stiffness: 300 });
+      }
+    });
+
+  const sheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
+
   // The chip reads off the draft, not the saved item, so retyping a date
   // switches it to "you set this" while the sheet is still open — the same
   // feedback the review card gives.
@@ -145,10 +214,11 @@ function EditSheetBody({
     const out: Partial<NewPantryItem> = {};
     const name = draft.name.trim();
     const quantity = draft.quantity.trim();
+    const location = draft.location.trim();
     if (name !== item.name) out.name = name;
     if (quantity !== item.quantity) out.quantity = quantity;
     if (draft.category !== item.category) out.category = draft.category;
-    if (draft.location !== (item.location ?? FALLBACK_LOCATION)) out.location = draft.location;
+    if (location !== (item.location ?? FALLBACK_LOCATION)) out.location = location;
     if (draft.expiryDate !== item.expiryDate) {
       out.expiryDate = draft.expiryDate;
       out.dateSource = draft.dateSource;
@@ -159,11 +229,32 @@ function EditSheetBody({
     // one over the other; deleting the fallback would only cost the item its
     // picture if this one is later removed.
     if (draft.photoUri !== item.photoUri) out.photoUri = draft.photoUri;
+    // Comparing foodId rather than the whole object: two lookups of the same
+    // match wouldn't be identical objects even with equal fields, and that
+    // would mark the sheet dirty for a field the user never touched.
+    if ((draft.nutrition?.foodId ?? null) !== (item.nutrition?.foodId ?? null)) {
+      out.nutrition = draft.nutrition;
+    }
     return out;
   }, [draft, item]);
 
   const nameEmpty = draft.name.trim().length === 0;
+  const locationEmpty = draft.location.trim().length === 0;
   const dirty = Object.keys(changes).length > 0;
+
+  // Re-derived from the string on every edit rather than held as its own
+  // piece of state — PantryItem.quantity is a plain opaque string with no
+  // measure of its own (see services/quantity.ts's parseQuantityString for
+  // the recovery rules, and its formatQuantityString for the inverse this
+  // sheet writes back through). An item saved before this feature existed,
+  // or whose quantity doesn't parse, falls back to {pieces, amount:1,
+  // splittable:false} here and self-heals the next time it's edited.
+  const quantity = useMemo(() => parseQuantityString(draft.quantity), [draft.quantity]);
+  const catalogueMatch = useMemo(() => lookupFood(draft.name), [draft.name]);
+  // The catalogue's own unit noun for a pieces/pack item ("loaf", "jar")
+  // when the name matches one — nothing to offer for a name it doesn't
+  // recognise, same as ScanReviewScreen's candidate.unit for a hand-typed row.
+  const unit = catalogueMatch && !isFractionalUnit(catalogueMatch.unit) ? catalogueMatch.unit : '';
 
   return (
     <View style={styles.backdrop}>
@@ -175,25 +266,38 @@ function EditSheetBody({
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.sheetWrap}
       >
-        <View style={[styles.sheet, { paddingBottom: space.lg + insetBottom }]}>
-          <View style={styles.grabber} />
+        <Animated.View
+          style={[styles.sheet, sheetAnimatedStyle, { paddingBottom: space.lg + insetBottom }]}
+        >
+          {/* The drag target: grabber + header together, so both the visual
+              handle and the row it sits in respond to a swipe, not just the
+              4px bar itself — a hitbox that thin would miss most real
+              thumbs. */}
+          <GestureDetector gesture={dragHandle}>
+            <View>
+              <View style={styles.grabber} />
 
-          <View style={styles.header}>
-            <TouchableOpacity onPress={onClose} hitSlop={HIT_SLOP} activeOpacity={0.7}>
-              <Text style={styles.cancel}>Cancel</Text>
-            </TouchableOpacity>
-            <Text style={styles.heading}>Edit item</Text>
-            <TouchableOpacity
-              onPress={() => onSave(changes)}
-              hitSlop={HIT_SLOP}
-              activeOpacity={0.7}
-              // Nothing to write, or nothing to call it — either way Save would
-              // be a lie, so it greys out rather than silently doing nothing.
-              disabled={!dirty || nameEmpty}
-            >
-              <Text style={[styles.save, (!dirty || nameEmpty) && styles.saveOff]}>Save</Text>
-            </TouchableOpacity>
-          </View>
+              <View style={styles.header}>
+                <TouchableOpacity onPress={onClose} hitSlop={HIT_SLOP} activeOpacity={0.7}>
+                  <Text style={styles.cancel}>Cancel</Text>
+                </TouchableOpacity>
+                <Text style={styles.heading}>Edit item</Text>
+                <TouchableOpacity
+                  onPress={() => onSave(changes)}
+                  hitSlop={HIT_SLOP}
+                  activeOpacity={0.7}
+                  // Nothing to write, or nothing to call it — either way Save
+                  // would be a lie, so it greys out rather than silently
+                  // doing nothing.
+                  disabled={!dirty || nameEmpty || locationEmpty}
+                >
+                  <Text style={[styles.save, (!dirty || nameEmpty || locationEmpty) && styles.saveOff]}>
+                    Save
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </GestureDetector>
 
           <ScrollView
             style={styles.body}
@@ -201,33 +305,19 @@ function EditSheetBody({
             keyboardShouldPersistTaps="handled"
           >
             <Eyebrow style={styles.fieldLabel}>Name</Eyebrow>
-            <View style={styles.nameRow}>
-              {/* Tappable: hand-added items have no capture to crop, and this is
-                  the only place they can be given a picture after the fact. */}
-              <ItemThumb
-                size={48}
-                photo={item.scanPhoto}
-                box={item.box}
-                ownPhotoUri={draft.photoUri}
-                onPressAdd={async () => {
-                  const picked = await pickItemPhoto();
-                  if (picked) patch({ photoUri: picked.uri });
-                }}
-              />
-              <TextInput
-                style={[styles.input, styles.nameInput]}
-                value={draft.name}
-                onChangeText={(name) => patch({ name })}
-                placeholder="What is it?"
-                placeholderTextColor={colors.mutedLight}
-                selectionColor={colors.primaryDark}
-                autoCapitalize="sentences"
-              />
-            </View>
+            <TextInput
+              style={styles.input}
+              value={draft.name}
+              onChangeText={(name) => patch({ name })}
+              placeholder="What is it?"
+              placeholderTextColor={colors.mutedLight}
+              selectionColor={colors.primaryDark}
+              autoCapitalize="sentences"
+            />
             {nameEmpty && <Text style={styles.error}>An item needs a name.</Text>}
 
             <View style={styles.fieldLabelRow}>
-              <Eyebrow>Use by</Eyebrow>
+              <Eyebrow>Expiry date</Eyebrow>
               <DateChip chip={chip} />
             </View>
             <DateField
@@ -241,27 +331,45 @@ function EditSheetBody({
               }
             />
 
-            <Eyebrow style={styles.fieldLabel}>How many</Eyebrow>
-            <TextInput
-              style={styles.input}
-              value={draft.quantity}
-              onChangeText={(quantity) => patch({ quantity })}
-              placeholder="1"
-              placeholderTextColor={colors.mutedLight}
-              selectionColor={colors.primaryDark}
-            />
+            <View style={styles.fieldLabel}>
+              <MeasureControl
+                quantity={quantity}
+                unit={unit}
+                onChange={(next) => patch({ quantity: formatQuantityString(next, unit) })}
+              />
+            </View>
 
             <Eyebrow style={styles.fieldLabel}>Store in</Eyebrow>
             <View style={styles.chipRow}>
-              {STORAGE_LOCATIONS.map((location) => (
-                <Chip
-                  key={location}
-                  label={location}
-                  selected={draft.location === location}
-                  onPress={() => patch({ location })}
-                />
-              ))}
+              {STORAGE_LOCATIONS.map((location) => {
+                // A saved custom location ("Pantry cart") is not itself one of
+                // the fixed chips, but it came from picking Other — so Other is
+                // what should read as selected, not nothing.
+                const selected =
+                  location === 'Other'
+                    ? !FIXED_LOCATIONS.has(draft.location)
+                    : draft.location === location;
+                return (
+                  <Chip
+                    key={location}
+                    label={location}
+                    selected={selected}
+                    onPress={() => patch({ location: location === 'Other' ? '' : location })}
+                  />
+                );
+              })}
             </View>
+            {!FIXED_LOCATIONS.has(draft.location) && (
+              <TextInput
+                style={[styles.input, styles.otherLocationInput]}
+                value={draft.location}
+                onChangeText={(location) => patch({ location })}
+                placeholder="Where do you keep it?"
+                placeholderTextColor={colors.mutedLight}
+                selectionColor={colors.primaryDark}
+                autoCapitalize="sentences"
+              />
+            )}
 
             <Eyebrow style={styles.fieldLabel}>Category</Eyebrow>
             <View style={styles.chipRow}>
@@ -280,7 +388,7 @@ function EditSheetBody({
               <Text style={styles.deleteText}>Delete this item</Text>
             </TouchableOpacity>
           </ScrollView>
-        </View>
+        </Animated.View>
       </KeyboardAvoidingView>
     </View>
   );
@@ -402,6 +510,9 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '700',
     fontSize: type.caption.fontSize,
     color: colors.accent,
+  },
+  otherLocationInput: {
+    marginTop: space.sm,
   },
   chipRow: {
     flexDirection: 'row',

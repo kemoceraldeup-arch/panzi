@@ -41,6 +41,26 @@ const photoSchema = new Schema(
   { _id: false }
 );
 
+/** Per-serving macros looked up from FatSecret at scan time. `matchedName` and
+ *  `foodId` are kept alongside the numbers so a user who overrides a bad match
+ *  can be shown what was actually matched, and so a future re-lookup (picking
+ *  a different match) has the id to search from rather than guessing again
+ *  off the item's own name. Absent (null) rather than zeroed when no match was
+ *  found or the item was added by hand — a zero is a real answer ("0 calories")
+ *  and must never be confused with "we don't know". */
+const nutritionSchema = new Schema(
+  {
+    foodId: { type: String, required: true },
+    matchedName: { type: String, required: true },
+    servingDescription: { type: String, default: null },
+    calories: { type: Number, required: true },
+    proteinG: { type: Number, required: true },
+    carbsG: { type: Number, required: true },
+    fatG: { type: Number, required: true },
+  },
+  { _id: false }
+);
+
 // ---------------------------------------------------------------------------
 // users
 // ---------------------------------------------------------------------------
@@ -89,6 +109,7 @@ const pantryItemSchema = new Schema(
     dateSource: { type: String, enum: ['label', 'estimated', 'user', null], default: null },
     ripeness: { type: String, default: null },
     ripenessSource: { type: String, enum: ['estimated', 'user', null], default: null },
+    nutrition: { type: nutritionSchema, default: null },
   },
   { timestamps: true, collection: 'pantry_items' }
 );

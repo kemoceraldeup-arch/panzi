@@ -174,9 +174,26 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
   const top = anchor ? anchor.y + anchor.height + CARET : insets.top + 56;
   // Never past the bottom of the screen, whatever the log has grown to.
   const maxHeight = Math.min(MAX_HEIGHT, screen.height - top - Math.max(insets.bottom, EDGE) - EDGE);
-  // The caret points at the middle of the bell.
+  // The caret points at the middle of the bell. `right` here means distance
+  // from the caret's OWN right edge to the panel's right edge — the panel's
+  // right edge sits `right` from the screen's right edge, so the bell's
+  // midpoint's own distance from the screen's right edge
+  // (screen.width - (anchor.x + anchor.width / 2)) minus that same `right`
+  // offset is exactly how far the caret needs to sit from the panel's right
+  // edge. The previous formula measured from the panel's LEFT edge instead
+  // while being applied as a right-anchored position, which only looked
+  // right when the panel happened to sit near-centered under the bell and
+  // drifted off target otherwise — this version is anchor-relative,
+  // independent of panel width.
+  const caretHalfWidth = 6;
   const caretRight = anchor
-    ? Math.max(space.md, anchor.x + anchor.width / 2 - (screen.width - right - width) - 6)
+    ? Math.min(
+        width - space.md - caretHalfWidth * 2,
+        Math.max(
+          space.md,
+          screen.width - (anchor.x + anchor.width / 2) - right - caretHalfWidth
+        )
+      )
     : space.xl;
 
   return (

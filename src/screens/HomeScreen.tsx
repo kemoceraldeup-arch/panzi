@@ -17,7 +17,7 @@ import { useAuth } from '../auth/AuthProvider';
 import { subscribeToProfile } from '../services/profile';
 import { FOOD_CATEGORIES, PantryItem, subscribeToPantryItems } from '../services/pantry';
 import { ScanRecord, subscribeToScans } from '../services/scans';
-import { formatExpiry, getDaysLeft, USE_SOON_DAYS } from '../utils/freshness';
+import { getDaysLeft, USE_SOON_DAYS } from '../utils/freshness';
 import { attentionCount, currentAttention } from '../services/notifications';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
 import PulsingMascot from '../components/PulsingMascot';
@@ -110,7 +110,7 @@ function pickUrgent(items: PantryItem[]): PantryItem[] {
 }
 
 /**
- * Why this item is on the list — "eat today", "2 days left", "very ripe".
+ * Why this item is on the list — "use today", "use soon", "very ripe".
  *
  * Ripeness wins when there is one, because it is the more useful sentence: it
  * describes the fruit in the bowl rather than a date nobody printed on it.
@@ -121,8 +121,8 @@ function urgentReason(item: PantryItem): string {
   }
   const days = getDaysLeft(item.expiryDate);
   if (days !== null && days < 0) return 'past its date';
-  if (days === 0) return 'eat today';
-  return formatExpiry(item.expiryDate);
+  if (days === 0) return 'use today';
+  return 'use soon';
 }
 
 // The greeting's third line. The design's "3 recipes use what's expiring" is
@@ -440,12 +440,16 @@ export default function HomeScreen({
               <Ionicons name="time-outline" size={18} color={colors.rust} />
             </View>
             <View style={styles.unfinishedBody}>
+              {/* Titled by what the card is for, not by the AI's own read of the
+                  photo — a scene guess like "Snacks on lace tablecloth" is an
+                  image caption, not something a person would call a to-do. What
+                  actually needs doing is a missing date, so the card says that. */}
               <Text style={styles.unfinishedTitle} numberOfLines={1}>
-                {unfinished.sceneLabel}
+                {unfinished.unresolvedCount === 1 ? 'Expiration date needed' : 'Expiration dates needed'}
               </Text>
               <Text style={styles.unfinishedMeta} numberOfLines={1}>
                 {unfinished.unresolvedCount} of {unfinished.candidates.length}
-                {unfinished.unresolvedCount === 1 ? ' still needs' : ' still need'} a date
+                {unfinished.unresolvedCount === 1 ? ' item still needs' : ' items still need'} a date
               </Text>
             </View>
             <Text style={styles.unfinishedAction}>Finish</Text>

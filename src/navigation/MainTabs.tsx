@@ -79,9 +79,15 @@ type Props = {
   /** Fired after the Profile tab signs the user out, so the app can drop back
       to the auth flow. */
   onSignOut: () => void;
+  /** "Scan my first shelf" on AllSetScreen lands here instead of the plain
+   *  dashboard — opens the camera immediately rather than making a
+   *  brand-new user find the scan tab themselves. Consumed once, on mount:
+   *  the flow transition into MainTabs only ever happens this one time per
+   *  session, so there's no later re-trigger to guard against. */
+  autoOpenScan?: boolean;
 };
 
-export default function MainTabs({ onSignOut }: Props) {
+export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const [active, setActive] = useState<TabKey>('home');
@@ -243,6 +249,16 @@ export default function MainTabs({ onSignOut }: Props) {
     setScanMode('camera');
     setScanOpen(true);
   }
+
+  // "Scan my first shelf" — opens the camera the moment this screen mounts,
+  // rather than landing a brand-new user on an empty dashboard and making
+  // them find the scan tab themselves. Runs once: MainTabs is only ever
+  // reached this way the one time per session the flow transitions in from
+  // AllSetScreen, so there's no later remount to guard against re-firing.
+  useEffect(() => {
+    if (autoOpenScan) openScan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** Home's "finish this scan" card — straight into the rows missing a date. */
   function finishScan(scan: ScanRecord) {

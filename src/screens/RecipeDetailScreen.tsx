@@ -12,19 +12,27 @@
 // ScanModal is — the tab bar has no place in a recipe, and this keeps the
 // navigation shape unchanged.
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../components/Text';
 import DishTile from '../components/recipes/DishTile';
-import { Recipe } from '../services/recipes';
+import { Eyebrow, MacroPill } from './scan/atoms';
+import { Recipe, scaleAmount } from '../services/recipes';
+import { lookupRecipeNutrition, RecipeNutritionEstimate } from '../services/nutrition';
 import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
 
 const HIT_SLOP = { top: 12, bottom: 12, left: 12, right: 12 };
+
+// Mirrors the server's own MIN_SERVINGS/MAX_SERVINGS (server/src/routes/
+// recipes.ts) — the stepper simply can't be pushed past what the model was
+// ever asked to produce a believable figure within.
+const MIN_SERVINGS = 1;
+const MAX_SERVINGS = 12;
 
 type Props = {
   recipe: Recipe | null;
@@ -82,8 +90,46 @@ function Body({
   const colors = useColors();
   const insets = useSafeAreaInsets();
 
+  // Serving count as chosen on this screen, independent of the recipe's own
+  // authored value — Cook Mode is a separate navigation away and keeps
+  // showing the original amounts, so this state doesn't need to travel
+  // anywhere. Seeded once per recipe: Body remounts whenever the modal opens
+  // on a different recipe (see the parent component below), so reopening
+  // always starts back at the authored serving count.
+  const [servings, setServings] = useState(recipe.servings > 0 ? recipe.servings : 0);
+  const ratio = recipe.servings > 0 && servings > 0 ? servings / recipe.servings : 1;
+
   const have = recipe.ingredients.filter((i) => i.have);
   const need = recipe.ingredients.filter((i) => !i.have);
+
+  // Looked up on demand, from the recipe's own ingredient list — the model
+  // that wrote the recipe doesn't reliably know real macros, and searching
+  // FatSecret for the dish's title ("Chicken adobo") matches whatever
+  // unrelated packaged product ranks first, with that product's own serving
+  // size rather than anything to do with this recipe. Summing each real
+  // ingredient at its real amount (services/nutrition.ts) is slower but
+  // actually describes this dish.
+  // undefined: not looked up yet (or this recipe). null: looked up, no match.
+  const [nutrition, setNutrition] = useState<RecipeNutritionEstimate | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setNutrition(undefined);
+    lookupRecipeNutrition(
+      recipe.ingredients.map((i) => ({ name: i.name, amount: i.amount })),
+      recipe.servings > 0 ? recipe.servings : 1
+    )
+      .then((result) => {
+        if (!cancelled) setNutrition(result ?? null);
+      })
+      .catch(() => {
+        // Same as the scan review card: a failed lookup (offline, rate
+        // limited) leaves this at undefined rather than asserting "no
+        // match" — the section just doesn't render rather than lying.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [recipe.ingredients, recipe.servings]);
 
   return (
     <View style={styles.container}>
@@ -117,10 +163,25 @@ function Body({
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title}>{recipe.title}</Text>
+          {/* What the dish IS, not why it's suggested tonight — that's
+              `why`, shown further down in its own card. '' on anything
+              cached before this field existed, so it collapses cleanly. */}
+          {!!recipe.description && (
+            <Text style={styles.description}>{recipe.description}</Text>
+          )}
           {/* `minutes` is 0 when the model returned something implausible and
               the route zeroed it. Showing "0 min" would be worse than showing
-              nothing, so the line collapses to whatever is real. */}
-          {recipe.minutes > 0 && <Text style={styles.minutes}>{recipe.minutes} min</Text>}
+              nothing, so the line collapses to whatever is real. Servings is
+              the same idea — the stepper only appears when there is a real
+              base figure to scale from. */}
+          {(recipe.minutes > 0 || recipe.servings > 0) && (
+            <View style={styles.factsRow}>
+              {recipe.minutes > 0 && <Text style={styles.minutes}>{recipe.minutes} min</Text>}
+              {recipe.servings > 0 && (
+                <ServingsStepper value={servings} onChange={setServings} />
+              )}
+            </View>
+          )}
         </View>
       </View>
 
@@ -136,6 +197,29 @@ function Body({
           </View>
         )}
 
+        {/* Nothing renders while the lookup is still in flight (undefined)
+            or came back with no match (null) — an estimate per serving, not
+            per the whole dish, so it's offered rather than asserted; see
+            the note on FatSecret's own serving_description on the pantry
+            item version of this same card. */}
+        {nutrition && (
+          <View style={styles.nutritionSection}>
+            <Eyebrow>Nutrition</Eyebrow>
+            <Text style={styles.nutritionMatchedName} numberOfLines={1}>
+              Estimated per serving
+              {nutrition.matchedCount < nutrition.totalCount
+                ? ` · based on ${nutrition.matchedCount} of ${nutrition.totalCount} ingredients`
+                : ''}
+            </Text>
+            <View style={styles.macroRow}>
+              <MacroPill label="Calories" value={Math.round(nutrition.perServing.calories * ratio)} />
+              <MacroPill label="Protein" value={Math.round(nutrition.perServing.proteinG * ratio)} unit="g" />
+              <MacroPill label="Carbs" value={Math.round(nutrition.perServing.carbsG * ratio)} unit="g" />
+              <MacroPill label="Fat" value={Math.round(nutrition.perServing.fatG * ratio)} unit="g" />
+            </View>
+          </View>
+        )}
+
         {have.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>You have</Text>
@@ -146,7 +230,7 @@ function Body({
                   <Text style={styles.rowName} numberOfLines={2}>
                     {item.name}
                   </Text>
-                  <Text style={styles.rowAmount}>{item.amount}</Text>
+                  <Text style={styles.rowAmount}>{scaleAmount(item.amount, ratio)}</Text>
                 </View>
               ))}
             </View>
@@ -168,7 +252,7 @@ function Body({
                   <Text style={styles.rowName} numberOfLines={2}>
                     {item.name}
                   </Text>
-                  <Text style={styles.rowAmount}>{item.amount}</Text>
+                  <Text style={styles.rowAmount}>{scaleAmount(item.amount, ratio)}</Text>
                 </View>
               ))}
             </View>
@@ -191,6 +275,46 @@ function Body({
           <Text style={styles.cookButtonText}>Start cooking</Text>
         </TouchableOpacity>
       </ScrollView>
+    </View>
+  );
+}
+
+/** −/+ around the serving count, reusing the hero's own round-button look at
+ *  a smaller size rather than inventing a new control style. */
+function ServingsStepper({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (next: number) => void;
+}) {
+  const styles = useStyles();
+  const colors = useColors();
+  return (
+    <View style={styles.servingsRow}>
+      <TouchableOpacity
+        style={[styles.stepButton, value <= MIN_SERVINGS && styles.stepButtonDisabled]}
+        onPress={() => onChange(Math.max(MIN_SERVINGS, value - 1))}
+        disabled={value <= MIN_SERVINGS}
+        hitSlop={HIT_SLOP}
+        accessibilityRole="button"
+        accessibilityLabel="Fewer servings"
+      >
+        <Ionicons name="remove" size={15} color={colors.primaryDark} />
+      </TouchableOpacity>
+      <Text style={styles.servingsValue}>
+        {value} {value === 1 ? 'serving' : 'servings'}
+      </Text>
+      <TouchableOpacity
+        style={[styles.stepButton, value >= MAX_SERVINGS && styles.stepButtonDisabled]}
+        onPress={() => onChange(Math.min(MAX_SERVINGS, value + 1))}
+        disabled={value >= MAX_SERVINGS}
+        hitSlop={HIT_SLOP}
+        accessibilityRole="button"
+        accessibilityLabel="More servings"
+      >
+        <Ionicons name="add" size={15} color={colors.primaryDark} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -235,11 +359,44 @@ const useStyles = makeStyles((colors) => ({
     lineHeight: 29,
     color: colors.primaryDarker,
   },
+  description: {
+    fontWeight: '600',
+    fontSize: type.body.fontSize,
+    lineHeight: 20,
+    color: colors.textSecondary,
+    marginTop: space.xs,
+  },
   minutes: {
     fontWeight: '600',
     fontSize: type.label.fontSize,
     color: colors.textSecondary,
+  },
+  factsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
     marginTop: space.xs,
+  },
+  servingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm2,
+  },
+  stepButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    backgroundColor: colors.primaryLighter,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepButtonDisabled: {
+    opacity: 0.4,
+  },
+  servingsValue: {
+    fontWeight: '600',
+    fontSize: type.label.fontSize,
+    color: colors.textSecondary,
   },
   scroll: {
     flex: 1,
@@ -263,6 +420,19 @@ const useStyles = makeStyles((colors) => ({
     fontSize: type.label.fontSize,
     lineHeight: 18,
     color: colors.primaryDark,
+  },
+  nutritionSection: {
+    marginBottom: space.xl2,
+  },
+  nutritionMatchedName: {
+    fontSize: type.caption.fontSize,
+    color: colors.textSecondary,
+    marginTop: -2,
+    marginBottom: space.sm,
+  },
+  macroRow: {
+    flexDirection: 'row',
+    gap: space.sm2,
   },
   sectionLabel: {
     fontWeight: '800',

@@ -41,6 +41,7 @@ import {
   withUserRipeness,
 } from '../../services/scan';
 import { RecognitionError, recognize } from '../../services/recognition';
+import { estimateShelfLife } from '../../services/shelfLifeEstimate';
 import {
   ScanRecord,
   newScanId,
@@ -168,6 +169,7 @@ export default function ScanModal({
   const readId = useRef(0);
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [estimatingId, setEstimatingId] = useState<string | null>(null);
   const [freshnessId, setFreshnessId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorCause, setErrorCause] = useState<ScanErrorCause>('unrecognised');
@@ -413,6 +415,22 @@ export default function ScanModal({
 
   function patch(id: string, changes: Partial<ScanCandidate>) {
     setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, ...changes } : c)));
+  }
+
+  async function requestEstimate(candidate: ScanCandidate) {
+    if (!candidate.openedState) return;
+    setEstimatingId(candidate.id);
+    const result = await estimateShelfLife(candidate.name, candidate.category, candidate.openedState);
+    setEstimatingId(null);
+    if ('error' in result) {
+      // Scoped to the one row, not the whole scan — unlike runRead's
+      // failure, everything else on the page is still fine, so the alert
+      // just leaves this row exactly as it was: no date, still fully
+      // savable, same as any other undated row in "Needs a look."
+      Alert.alert('Could not estimate', result.error);
+      return;
+    }
+    patch(candidate.id, { expiryDate: result.expiryDate, dateSource: 'estimated' });
   }
 
   function confirmItem(id: string) {
@@ -816,6 +834,8 @@ export default function ScanModal({
               }}
               onAddByHand={addByHand}
               onScanAttached={scanAttachedPhoto}
+              onEstimateShelfLife={requestEstimate}
+              estimatingId={estimatingId}
               onSubmit={submit}
             />
           )}

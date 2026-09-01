@@ -11,11 +11,12 @@ import {
   View,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
-  ScrollView,
 } from 'react-native';
 import Text from '../components/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -79,25 +80,25 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
   const [focus, setFocus] = useState<'email' | 'password' | 'confirm' | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Touched independently of focus: a field shouldn't turn red just for
-  // having been visited, only once the user has left it behind.
+  // Touched once a field has had any content typed into it — from then on
+  // its error updates live on every keystroke, not just after leaving it.
+  // Still not from the very first render, so a blank fresh field doesn't
+  // open already showing "Enter your email."
   const [emailTouched, setEmailTouched] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
   const [confirmTouched, setConfirmTouched] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
 
   const emailError = getEmailError(email);
   const passwordError = getPasswordError(password);
   const confirmError = getConfirmError(password, confirmPassword);
 
-  const showEmailError = (emailTouched || submitted) && !!emailError;
-  const showPasswordError = (passwordTouched || submitted) && !!passwordError;
-  const showConfirmError = (confirmTouched || submitted) && !!confirmError;
+  const showEmailError = emailTouched && !!emailError;
+  const showPasswordError = passwordTouched && !!passwordError;
+  const showConfirmError = confirmTouched && !!confirmError;
 
   const canSubmit = !emailError && !passwordError && !confirmError;
 
   async function handleCreate() {
-    setSubmitted(true);
     if (!canSubmit) return;
 
     setLoading(true);
@@ -122,7 +123,18 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
     setLoading(false);
   }
 
-  async function handleGuest() {
+  function handleGuest() {
+    Alert.alert(
+      'Continue as guest?',
+      'You can create an account anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Continue', onPress: confirmGuest },
+      ]
+    );
+  }
+
+  async function confirmGuest() {
     setLoading(true);
     try {
       await onGuest();
@@ -148,11 +160,8 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={styles.scrollContent}>
           <View style={styles.navRow}>
             <TouchableOpacity
               style={styles.back}
@@ -185,7 +194,10 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
                 <TextInput
                   style={styles.inputText}
                   value={email}
-                  onChangeText={setEmail}
+                  onChangeText={(text) => {
+                    setEmail(text);
+                    setEmailTouched(true);
+                  }}
                   onFocus={() => setFocus('email')}
                   onBlur={() => {
                     setFocus(null);
@@ -213,7 +225,15 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
                 <TextInput
                   style={styles.inputText}
                   value={password}
-                  onChangeText={setPassword}
+                  onChangeText={(text) => {
+                    setPassword(text);
+                    setPasswordTouched(true);
+                    // Confirm Password's own error depends on password too
+                    // (must match it) — once Confirm has been touched, its
+                    // error needs to re-evaluate live as password changes,
+                    // not just when confirmPassword itself changes.
+                    if (confirmPassword) setConfirmTouched(true);
+                  }}
                   onFocus={() => setFocus('password')}
                   onBlur={() => {
                     setFocus(null);
@@ -246,7 +266,10 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
                 <TextInput
                   style={styles.inputText}
                   value={confirmPassword}
-                  onChangeText={setConfirmPassword}
+                  onChangeText={(text) => {
+                    setConfirmPassword(text);
+                    setConfirmTouched(true);
+                  }}
                   onFocus={() => setFocus('confirm')}
                   onBlur={() => {
                     setFocus(null);
@@ -266,7 +289,7 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
             <TouchableOpacity
               style={[styles.cta, !canSubmit && styles.ctaDisabled]}
               onPress={handleCreate}
-              disabled={loading || (submitted && !canSubmit)}
+              disabled={loading || !canSubmit}
               activeOpacity={0.9}
             >
               {loading ? (
@@ -304,7 +327,12 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
           </View>
 
           <View style={styles.guestRow}>
-            <TouchableOpacity onPress={handleGuest} disabled={loading} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.guestButton}
+              onPress={handleGuest}
+              disabled={loading}
+              activeOpacity={0.7}
+            >
               <Text style={styles.guestText}>Continue as guest</Text>
             </TouchableOpacity>
           </View>
@@ -315,7 +343,8 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
               <Text style={styles.footerLink}>Sign in</Text>
             </TouchableOpacity>
           </View>
-        </ScrollView>
+          </View>
+        </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -491,14 +520,20 @@ const useStyles = makeStyles((colors) => ({
     flexDirection: 'row',
     justifyContent: 'center',
   },
-  guestText: {
+  guestButton: {
     height: 48,
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: colors.backgroundAlt,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  guestText: {
     fontSize: type.body.fontSize,
     fontWeight: '700',
     color: colors.textSecondary,
-    textAlignVertical: 'center',
-    lineHeight: 48,
   },
   footer: {
     marginTop: 'auto',

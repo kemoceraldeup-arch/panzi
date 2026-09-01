@@ -159,7 +159,7 @@ export default function DateField({ value, onChange }: Props) {
         />
       </View>
 
-      <Eyebrow style={styles.roughLabel}>Or roughly</Eyebrow>
+      <Eyebrow style={styles.roughLabel}>Or estimate</Eyebrow>
       <View style={styles.presets}>
         {ROUGH_PRESETS.map((preset) => {
           const selected = activePreset?.label === preset.label;

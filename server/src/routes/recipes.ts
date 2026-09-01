@@ -35,6 +35,22 @@ const MODEL = 'claude-sonnet-5';
 // screen becomes a list nobody reads; fewer and "shuffle" has nowhere to go.
 const ALTERNATE_COUNT = 2;
 
+// "All Recipes" — a browse list, not a suggestion set, so it isn't capped at
+// three the way the pantry-anchored path is. Requested as a target, not
+// enforced as a floor: fewer good ones beats padding, same philosophy as
+// ALTERNATE_COUNT above. Kept deliberately smaller than a "real" cookbook
+// page (5, not 8+) because every recipe here comes with a full ingredients
+// list and method in the same call — at 8 the response regularly took
+// 35-40 seconds, long enough to still be running when the user tapped
+// something else, whose own quick reachability check then timed out
+// against the same tunnel and reported the server as unreachable even
+// though it was still working. Fewer recipes per call is the fix, not a
+// longer timeout — the user is also waiting on this call themselves.
+const BROWSE_COUNT = 5;
+// A ceiling on what's returned after the safety gates run, so a model that
+// over-delivers doesn't turn one call into an unbounded response.
+const BROWSE_MAX = 6;
+
 // A pantry larger than this is trimmed before sending. Past a point the extra
 // items don't improve the suggestion, they just cost input tokens on every
 // call — and the items that matter most are sorted to the front by the client.
@@ -45,10 +61,20 @@ const MAX_ITEMS = 60;
 const MIN_MINUTES = 2;
 const MAX_MINUTES = 480;
 
+// A household serving count, not a headcount for a wedding. 1 covers a solo
+// cook; 12 covers a fiesta-sized batch of something like kaldereta. Outside
+// this range the model has confused servings with something else — pieces,
+// minutes — and the figure is unusable rather than displayed.
+const MIN_SERVINGS = 1;
+const MAX_SERVINGS = 12;
+
 export type Ingredient = {
   name: string;
   amount: string;
   have: boolean;
+  /** have is false because this is an assumed-present staple (rice, salt,
+   *  oil, ...), not because the dish genuinely needs a trip to the shop. */
+  assumedStaple: boolean;
 };
 
 // Kept in step with src/theme/dishLooks.ts on the client, which owns the glyph
@@ -141,6 +167,13 @@ export type Recipe = {
   look: DishLook;
   dishKey: DishKey;
   minutes: number;
+  /** How many people this recipe as written feeds. 0 when the model gave a
+   *  figure that wasn't believable, or on anything cached before this field
+   *  existed — screens hide the servings control rather than showing "0". */
+  servings: number;
+  /** What the dish IS, for someone who's never heard of it — distinct from
+   *  `why`, which is the reason it's being suggested tonight specifically. */
+  description: string;
   why: string;
   needsShopping: boolean;
   usesExpiring: string[];
@@ -155,17 +188,16 @@ type Skipped = { reason: 'diet' | 'allergy'; term: string };
 
 // What the user tapped on the chip row. Each one turns into a line in the user
 // turn, never the system prompt — see the note where `brief` is built.
-const MOODS = ['anything', 'quick', 'ulam', 'merienda', 'no_shopping'] as const;
+const MOODS = ['anything', 'quick', 'ulam', 'merienda'] as const;
 type Mood = (typeof MOODS)[number];
 
 const MOOD_LINES: Record<Mood, string | null> = {
-  anything: null,
+  anything:
+    "They haven't narrowed it down, so show them the spread rather than three versions of the same idea: across the featured dish and the two alternates, cover different kinds of eating — at least one proper ulam for rice, and at least one that is quick or light (a snack, a merienda, a fast one-pan dish). Do not make all three the same category of meal.",
   quick: 'Tonight they want something quick: every suggestion must be under 20 minutes from starting to eating.',
   ulam: 'Tonight they want ulam — a main dish to eat with rice. Not a snack, not a dessert, not a one-pot noodle bowl.',
   merienda:
     'Tonight they want merienda — an afternoon snack. Small, quick, sweet or savoury. Turon, banana cue, kakanin, sandwiches, pancit canton. Not a full meal.',
-  no_shopping:
-    'They do not want to go out. Every ingredient must either be in the pantry list above or be a basic staple already in a Filipino kitchen — rice, salt, oil, toyo, suka, sugar, garlic, onion, water. If you cannot manage that for a dish, choose a different dish.',
 };
 
 function readMood(value: unknown): Mood {
@@ -175,6 +207,11 @@ function readMood(value: unknown): Mood {
 type Result = {
   featured: Recipe | null;
   alternates: Recipe[];
+  skipped: Skipped[];
+};
+
+type BrowseResult = {
+  recipes: Recipe[];
   skipped: Skipped[];
 };
 
@@ -201,7 +238,19 @@ export const RECIPE_SCHEMA = {
       type: 'string',
       enum: DISH_LOOKS,
       description:
-        'What kind of dish this is, for the picture on the card. Choose by what it IS at the table, not by its main ingredient — sinigang na hipon is "soup", not "seafood"; chicken adobo is "stew", not "chicken". Use "chicken", "seafood" or "vegetables" only when the dish is that thing plainly cooked. "merienda" for afternoon snacks, "other" when nothing fits.',
+        'What kind of dish this is, for the picture on the card. Choose by what it IS at the table — how it is plated and eaten — never by its main ingredient. This is the single most common mistake: naming the protein instead of the dish. Work through these in order and stop at the first one that fits:\n\n' +
+        '1. Is it wet/saucy, meant to be eaten with rice or bread, spooned rather than picked up? That is "soup" (thin, broth-forward — sinigang, tinola, nilaga, bulalo) or "stew" (thick, sauce clings to the meat — adobo, kaldereta, mechado, menudo, afritada). Almost every classic Filipino ulam with a sauce falls here, regardless of whether the protein is chicken, pork, beef, or seafood: chicken adobo is "stew", not "chicken"; sinigang na hipon is "soup", not "seafood"; beef caldereta is "stew", not... there is no "beef" option, which is the point — protein never wins over dish shape.\n' +
+        '2. Is it cooked directly over or in open flame/coals, or skewered? "grilled" — inasal, liempo, isaw, BBQ, grilled bangus.\n' +
+        '3. Is it pan-fried, deep-fried, or breaded/crispy as its defining trait, with no real sauce? "fried" — fried chicken, lumpia, tokwa, torta, fried fish.\n' +
+        '4. Is rice the actual subject of the dish, not just a side? "rice" — fried rice, rice bowls, sinangag, arroz caldo (the rice-forward version, not the soup version).\n' +
+        '5. Is it a noodle dish? "noodles" — pancit, sotanghon, spaghetti, mami.\n' +
+        '6. Is it a plate of vegetables with no meat, or where vegetables are unambiguously the point (a salad, a veggie stir-fry, ginisang gulay)? "vegetables". Do NOT use this just because a dish contains vegetables alongside meat — pinakbet with pork belly is "stew"/"vegetables" only if pork is a minor garnish, not the point; when in doubt and there is meat, prefer stew/soup/grilled/fried over vegetables.\n' +
+        '7. Bread, pastry, or a baked item eaten by hand? "bread" — pandesal, ensaymada, siopao (yes, even though it is steamed, it reads as bread at the table).\n' +
+        '8. An afternoon snack, not a full meal? "merienda" — turon, banana cue, kakanin, maruya.\n' +
+        '9. Sweet, eaten after or between meals? "dessert" — leche flan, halo-halo, buko pandan.\n' +
+        '10. Something drunk, not eaten? "drink".\n' +
+        '11. "chicken", "seafood" are reserved almost exclusively for a plainly cooked, unsauced piece of that protein with nothing else going on — a whole roasted chicken, steamed fish, boiled shrimp with no marinade or gravy. If there is a sauce, a marinade that cooked down, or it is part of a composed dish, use the dish-shape category from steps 1-10 instead. These two are meant to be picked rarely.\n' +
+        '12. "other" only when truly nothing above fits — not a default for uncertainty. If a dish is close to two categories, prefer the one describing how it is served (steps 1-3) over the one describing an ingredient (step 11).',
     },
     dishKey: {
       type: 'string',
@@ -212,6 +261,16 @@ export const RECIPE_SCHEMA = {
     minutes: {
       type: 'number',
       description: 'Realistic total time from starting to eating, in minutes.',
+    },
+    servings: {
+      type: 'number',
+      description:
+        'How many people this recipe as written feeds — a realistic household serving count, e.g. 2, 4, 6. Not the number of pieces or ingredients; the number of people who could eat this amount of food as a meal.',
+    },
+    description: {
+      type: 'string',
+      description:
+        'One short sentence describing the DISH ITSELF, for someone who has never heard of it — what it is and where it is from, not why it is being suggested tonight. "A Filipino classic of chicken braised in soy sauce, vinegar and garlic." "A simple Ilocano vegetable stew." Never repeat the title verbatim inside it.',
     },
     why: {
       type: 'string',
@@ -251,8 +310,13 @@ export const RECIPE_SCHEMA = {
             description:
               'True only when this ingredient is in the pantry list you were given. Staples the user did not list — salt, pepper, water, oil — are false. Guessing true is worse than guessing false: it sends someone to the kitchen expecting something that is not there.',
           },
+          assumedStaple: {
+            type: 'boolean',
+            description:
+              'True when this is one of the basic Filipino-kitchen staples this whole suggestion set already assumes are in the house — rice, salt, oil, toyo, suka, sugar, garlic, onion, water — and have is false only because it was never in the pantry list, not because the dish actually needs a trip to the shop for it. False for everything else, including a genuinely missing ingredient that have is also false for. This is what lets the app tell "nothing left to buy" apart from "needs one real thing."',
+          },
         },
-        required: ['name', 'amount', 'have'],
+        required: ['name', 'amount', 'have', 'assumedStaple'],
         additionalProperties: false,
       },
     },
@@ -268,6 +332,8 @@ export const RECIPE_SCHEMA = {
     'look',
     'dishKey',
     'minutes',
+    'servings',
+    'description',
     'why',
     'needsShopping',
     'usesExpiring',
@@ -292,6 +358,19 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const BROWSE_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
+    recipes: {
+      type: 'array',
+      description: `Around ${BROWSE_COUNT} varied Filipino dishes for someone browsing, not cooking from a specific pantry tonight.`,
+      items: RECIPE_SCHEMA,
+    },
+  },
+  required: ['recipes'],
+  additionalProperties: false,
+} as const;
+
 const SYSTEM = `You suggest what to cook tonight for a pantry-tracking app called Panzi.
 
 You are given everything the user currently has, with what is known about how long each item has left. Suggest one featured dish and two alternates.
@@ -300,9 +379,13 @@ WHAT MAKES A GOOD SUGGESTION HERE.
 
 Cook what is about to go off. That is the reason this app exists — the user is trying not to waste food, not to browse recipes. A dish that uses two items expiring in two days beats a nicer dish that uses none of them. Say so in the "why" line, naming the actual items.
 
-Lean on what they have. A recipe needing eight things they do not own is a shopping list, not a suggestion. Aim for most ingredients already in the list; a couple of common missing items is fine. Staples like salt, oil and water can be assumed present but must still be marked have:false, because they were not listed.
+Cook only what is actually there. Every suggestion — the featured dish and every alternate — must be made from the pantry list plus basic staples already in a Filipino kitchen: rice, salt, oil, toyo, suka, sugar, garlic, onion, water. Nothing else may appear in a recipe's ingredients, not even one thing, however common or however small the gap looks. A dish that needs one thing they do not have is exactly as unusable tonight as a dish that needs eight — do not suggest either.
 
-Make the three genuinely different — not one dish and two variations of it. Vary the effort: if the featured one takes 40 minutes, make at least one alternate quick.
+This is the hard constraint the rest of this prompt sits inside. It is not "lean on" or "mostly" — an ingredient is either in the pantry list, or it is one of the staples named above, or it does not go in the recipe.
+
+Offer as many alternates as the pantry genuinely supports real, different dishes for this way — up to two — and no more than that. A pantry that only supports one real dish gets one suggestion, not one real dish plus two padded out to look like a full page. Fewer honest suggestions beats three where two are not really cookable tonight.
+
+Make whatever alternates you do offer genuinely different from the featured dish and from each other — not the same dish with a side swapped, and vary the effort where the pantry allows it.
 
 WHOSE KITCHEN THIS IS.
 
@@ -312,7 +395,7 @@ Use the names they use. "Ginisang munggo", not "sauteed mung bean stew". "Ulam",
 
 Missing ingredients must be things a Philippine palengke or sari-sari store actually stocks. Do not send someone out for creme fraiche or fresh basil. If calamansi fits, ask for calamansi, not lemon.
 
-Foreign food is allowed only when the pantry pushes you there — imported pasta sauce makes spaghetti the obvious dish, and pretending otherwise to stay on theme is worse than just saying it. But cook it the way it is cooked here: Filipino spaghetti is sweet, with hotdogs. When you do step outside, make at least one of the other two suggestions Filipino.
+Every suggestion is Filipino, no exceptions — this is not a preference to lean toward, it is the whole brief. An imported ingredient does not excuse a foreign dish: a jar of pasta sauce becomes Filipino-style spaghetti (sweet, with hotdogs), not Italian spaghetti. If a pantry only really supports something that has no Filipino version at all, that is what "cook only what is actually there" and the shorter-list rule above are for — offer fewer suggestions, never a non-Filipino one.
 
 READING THE PANTRY.
 
@@ -337,6 +420,47 @@ Allergies are absolute. Do not include an allergen in any form, in any quantity,
 VOICE.
 
 Panzi speaks plainly and in the first person. Titles are short and ordinary. The "why" line is one sentence about their food, not a sales pitch — "Uses the spinach before it turns", not "A vibrant and healthy weeknight delight".`;
+
+// A second, separate cached prompt for "All Recipes" — a browse list with no
+// pantry behind it at all, not a variant of SYSTEM. Sharing SYSTEM would mean
+// fighting its opening framing ("suggest one featured dish and two
+// alternates") and its "cook only what is actually there" section, both of
+// which are wrong instructions when there is no pantry to be "actually
+// there." Kitchen/diet/voice rules are copied verbatim from SYSTEM above —
+// those hold regardless of whether a pantry was sent.
+const SYSTEM_BROWSE = `You suggest Filipino dishes to browse for a pantry-tracking app called Panzi.
+
+This is not built around anyone's shelves — there is no pantry list. The user is looking for ideas, the way they'd flip through a cookbook, not asking what to cook from what they already have.
+
+Suggest a spread of about ${BROWSE_COUNT} different Filipino dishes a household might want to cook this week. Vary category — some ulam for rice, a merienda, a soup or stew, a noodle or rice dish, something grilled, something sweet — and vary effort, so the list reads as a real menu, not eight versions of the same idea. Never repeat a dish or a near-duplicate (two different adobo variants, two fried-rice dishes back to back) in the same list.
+
+Every ingredient still needs an amount, and every dish still needs full steps — someone may cook straight from this without ever adding anything to a pantry first.
+
+If, and only if, a pantry list is included with the user's message below, check every ingredient's "have" against it truthfully — true when it is genuinely in that list, false otherwise — exactly the same rule the pantry-anchored suggestion route uses, and set "assumedStaple" true for a basic Filipino-kitchen staple (rice, salt, oil, toyo, suka, sugar, garlic, onion, water) whose only reason for "have" being false is that it was never listed. This does not change what you suggest — browse freely, unconstrained by the pantry — it only changes whether each ingredient is marked correctly for someone checking what they'd need to buy. Leave "pantryUsed" and "usesExpiring" empty and "needsShopping" false regardless — those describe a suggestion built around a pantry, which this never is.
+
+If no pantry list is included, there is nothing to check ingredients against: set every ingredient's "have" to false unless it is one of the staples above, in which case "have" stays false and "assumedStaple" is true. Never set "have" to true for anything else in that case.
+
+WHOSE KITCHEN THIS IS.
+
+Cook Filipino. This is a Filipino household, so suggest the food they actually eat and can actually shop for — adobo, sinigang, tinola, ginisang gulay, tortang talong, pancit, arroz caldo, sinangag, silog plates, ulam over rice. Rice is assumed to be in the house whether or not it is listed.
+
+Use the names they use. "Ginisang munggo", not "sauteed mung bean stew". "Ulam", "sawsawan", "toyo", "suka", "patis", "bagoong", "calamansi", "gata", "sitaw", "talong", "kangkong", "malunggay" — write them plainly, no translation in brackets.
+
+Missing ingredients must be things a Philippine palengke or sari-sari store actually stocks. Do not send someone out for creme fraiche or fresh basil. If calamansi fits, ask for calamansi, not lemon.
+
+Every suggestion is Filipino, no exceptions — this is not a preference to lean toward, it is the whole brief. An imported ingredient does not excuse a foreign dish: a jar of pasta sauce becomes Filipino-style spaghetti (sweet, with hotdogs), not Italian spaghetti.
+
+DIET AND ALLERGIES.
+
+Dietary requirements are absolute, and they are not a reason to suggest worse food. A rule takes things off the table; it does not take the cuisine away. Filipino cooking without pork is still chicken adobo, tinola, sinigang na hipon, ginataang manok, beef kaldereta, pancit, ginisang gulay, tortang talong. Cook the good version of what they can eat, not an apologetic salad. Where a dish would normally use something they avoid, substitute and name it plainly in the title — "Chicken adobo", not "Adobo (no pork)".
+
+You will often be given specific rules. Follow those exactly; they override anything general here.
+
+Allergies are absolute. Do not include an allergen in any form, in any quantity, including as a garnish, a substitution note, or an optional extra. Do not suggest a dish that merely leaves it out — choose a different dish. Someone will cook what you write and eat it.
+
+VOICE.
+
+Panzi speaks plainly and in the first person. Titles are short and ordinary. The "description" line says what the dish is, plainly, for someone who has never heard of it.`;
 
 let client: Anthropic | null = null;
 
@@ -421,6 +545,7 @@ export function cleanRecipe(raw: unknown): Recipe | null {
       name: text((entry as Ingredient)?.name, 60),
       amount: text((entry as Ingredient)?.amount, 40),
       have: (entry as Ingredient)?.have === true,
+      assumedStaple: (entry as Ingredient)?.assumedStaple === true,
     }))
     .filter((entry) => entry.name.length > 0)
     .slice(0, 25);
@@ -431,12 +556,15 @@ export function cleanRecipe(raw: unknown): Recipe | null {
   if (ingredients.length === 0 || steps.length === 0) return null;
 
   const minutes = Number.isFinite(value.minutes) ? Math.round(value.minutes as number) : 0;
+  const servings = Number.isFinite(value.servings) ? Math.round(value.servings as number) : 0;
 
   return {
     title,
     look: DISH_LOOKS.includes(value.look as DishLook) ? (value.look as DishLook) : 'other',
     dishKey: DISH_KEYS.includes(value.dishKey as DishKey) ? (value.dishKey as DishKey) : 'other',
     minutes: minutes >= MIN_MINUTES && minutes <= MAX_MINUTES ? minutes : 0,
+    servings: servings >= MIN_SERVINGS && servings <= MAX_SERVINGS ? servings : 0,
+    description: text(value.description, 200),
     why: text(value.why, 160),
     needsShopping: value.needsShopping === true,
     usesExpiring: stringList(value.usesExpiring, 8),
@@ -480,6 +608,7 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     dietary?: unknown;
     allergies?: unknown;
     mood?: unknown;
+    avoidTitles?: unknown;
   };
 
   const sent = (Array.isArray(body.items) ? body.items : [])
@@ -499,6 +628,7 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
   const allergies = stringList(body.allergies, 20);
   const mood = readMood(body.mood);
   const moodLine = MOOD_LINES[mood];
+  const avoidTitles = stringList(body.avoidTitles, 20);
 
   // Food the user doesn't eat never reaches the model.
   //
@@ -531,6 +661,12 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
       ? `ALLERGIES (must never appear in any form): ${allergies.join(', ')}`
       : 'No known allergies.',
     ...(moodLine ? ['', moodLine] : []),
+    ...(avoidTitles.length > 0
+      ? [
+          '',
+          `They have already been shown these dishes recently: ${avoidTitles.join(', ')}. Suggest different ones this time. Only repeat one of these if the pantry genuinely does not support any other real option.`,
+        ]
+      : []),
     '',
     `Suggest one featured dish and exactly ${ALTERNATE_COUNT} alternates.`,
   ].join('\n');
@@ -662,4 +798,174 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     alternates: safe.slice(1, 1 + ALTERNATE_COUNT),
     skipped,
   } satisfies Result);
+});
+
+/**
+ * "All Recipes" — a browse list, not a suggestion set.
+ *
+ * Deliberately its own route rather than a mood on the route above: no
+ * featured/alternates split, and none of the pantry-anchored "cook only what
+ * is actually there" rules apply — a browse suggestion is never constrained
+ * by the pantry. Diet and allergies still do — the two gates below are the
+ * same functions the pantry route uses, applied the same way.
+ *
+ * The pantry itself is optional here, unlike the route above (which 400s
+ * without one). Sent only so each ingredient's "have" can be marked
+ * truthfully — see SYSTEM_BROWSE — which is what lets the client compute a
+ * Pantry Only filter on this list the same way it does on the pantry-anchored
+ * one. Its absence changes nothing about what gets suggested.
+ */
+recipesRouter.post('/browse', async (req: Request, res: Response): Promise<void> => {
+  const uid = req.uid;
+  const body = (req.body ?? {}) as {
+    dietary?: unknown;
+    allergies?: unknown;
+    items?: PantryLine[];
+    avoidTitles?: unknown;
+  };
+
+  const sent = (Array.isArray(body.items) ? body.items : [])
+    .map(cleanPantryLine)
+    .filter((line): line is Record<string, unknown> => line !== null)
+    .slice(0, MAX_ITEMS);
+
+  const dietary = stringList(body.dietary, 20);
+  const allergies = stringList(body.allergies, 20);
+  const guidance = dietGuidance(dietary);
+  const avoidTitles = stringList(body.avoidTitles, 20);
+
+  // Same reasoning as the pantry route: food the user doesn't eat never
+  // reaches the model.
+  const items = sent.filter((line) => !forbidsItem(String(line.name ?? ''), dietary));
+
+  const brief = [
+    ...(items.length > 0
+      ? ['Here is everything in the pantry right now, so ingredients can be checked against it:', JSON.stringify(items, null, 1)]
+      : []),
+    '',
+    ...(guidance.length > 0
+      ? ['THEIR DIET — follow these exactly:', ...guidance]
+      : ['No dietary requirements.']),
+    '',
+    allergies.length
+      ? `ALLERGIES (must never appear in any form): ${allergies.join(', ')}`
+      : 'No known allergies.',
+    ...(avoidTitles.length > 0
+      ? [
+          '',
+          `They have already been shown these dishes recently: ${avoidTitles.join(', ')}. Suggest different ones this time, unless there is genuinely nothing else varied left to suggest.`,
+        ]
+      : []),
+    '',
+    `Suggest about ${BROWSE_COUNT} Filipino dishes.`,
+  ].join('\n');
+
+  const startedAt = Date.now();
+
+  let response;
+  try {
+    response = await anthropic().messages.create({
+      model: MODEL,
+      max_tokens: 8000,
+      system: [
+        {
+          type: 'text',
+          text: SYSTEM_BROWSE,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      output_config: {
+        effort: 'low',
+        format: {
+          type: 'json_schema',
+          schema: BROWSE_RESULT_SCHEMA as unknown as Record<string, unknown>,
+        },
+      },
+      messages: [{ role: 'user', content: brief }],
+    });
+  } catch (err: any) {
+    console.error('Recipe browse call failed', { uid, message: err?.message });
+    const status = err?.status === 429 ? 429 : 503;
+    res.status(status).json({
+      error: status === 429 ? 'resource-exhausted' : 'unavailable',
+      message: 'Could not think of anything just now — try again in a moment.',
+    });
+    return;
+  }
+
+  if (response.stop_reason === 'refusal') {
+    console.warn('Model declined the recipe browse request', { uid });
+    res.json({ recipes: [], skipped: [] } satisfies BrowseResult);
+    return;
+  }
+
+  const block = response.content.find((entry) => entry.type === 'text');
+  if (!block || block.type !== 'text') {
+    console.error('No text block in recipe browse response', {
+      uid,
+      stopReason: response.stop_reason,
+    });
+    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
+    return;
+  }
+
+  let parsed: { recipes?: unknown };
+  try {
+    parsed = JSON.parse(block.text);
+  } catch {
+    console.error('Recipe browse response was not valid JSON', { uid });
+    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
+    return;
+  }
+
+  const candidates = (Array.isArray(parsed.recipes) ? parsed.recipes : [])
+    .map(cleanRecipe)
+    .filter((recipe): recipe is Recipe => recipe !== null);
+
+  const skipped: Skipped[] = [];
+  const safe = candidates.filter((recipe) => {
+    if (containsAllergen(recipe, allergies)) {
+      skipped.push({ reason: 'allergy', term: '' });
+      return false;
+    }
+    const clash = violatesDiet(recipe, dietary);
+    if (clash) {
+      skipped.push({ reason: 'diet', term: clash.term });
+      return false;
+    }
+    return true;
+  });
+
+  console.info('Recipe browse complete', {
+    uid,
+    ms: Date.now() - startedAt,
+    suggested: candidates.length,
+    blockedByAllergy: skipped.filter((s) => s.reason === 'allergy').length,
+    blockedByDiet: skipped.filter((s) => s.reason === 'diet').length,
+    inputTokens: response.usage.input_tokens,
+    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
+    outputTokens: response.usage.output_tokens,
+  });
+
+  // TEMP DIAGNOSTIC — remove once Pantry Only on All Recipes is confirmed
+  // working. Logs exactly what pantry names went in and what have/
+  // assumedStaple came back, to see whether the model is matching them.
+  console.info('DEBUG browse pantry sent', { uid, names: items.map((i) => i.name) });
+  for (const recipe of safe) {
+    console.info('DEBUG browse recipe ingredients', {
+      uid,
+      title: recipe.title,
+      ingredients: recipe.ingredients.map((i) => ({
+        name: i.name,
+        have: i.have,
+        assumedStaple: i.assumedStaple,
+      })),
+    });
+  }
+
+  res.json({
+    recipes: safe.slice(0, BROWSE_MAX),
+    skipped,
+  } satisfies BrowseResult);
 });

@@ -29,14 +29,7 @@ import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
 import { type } from '../theme/typography';
 
-const DIETARY_OPTIONS = [
-  'No restrictions',
-  'Vegetarian',
-  'Vegan',
-  'Pescatarian',
-  'Gluten-free',
-  'Dairy-free',
-];
+const DIETARY_OPTIONS = ['Vegetarian', 'Vegan', 'Pescatarian', 'Gluten-free', 'Dairy-free'];
 
 const NAME_MAX_LENGTH = 40;
 const ALLERGIES_MAX_LENGTH = 200;
@@ -79,26 +72,20 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
 
   const nameError = getNameError(name);
   const allergiesError = getAllergiesError(allergies);
-  const dietaryError = dietary.length === 0 ? 'Pick at least one — "No restrictions" counts.' : null;
 
-  const canContinue = !nameError && !allergiesError && !dietaryError;
+  // Dietary preferences are optional — an empty selection just means "no
+  // preference stated," which is a real, valid answer, not an unanswered
+  // question the user needs to be stopped and told about.
+  const canContinue = !nameError && !allergiesError;
 
   // Each field turns red once it has been left, or once Continue has been
   // pressed and it is the reason nothing happened.
   const showNameError = (nameTouched || submitted) && !!nameError;
-  const showDietaryError = submitted && !!dietaryError;
 
   function toggleDietary(option: string) {
-    if (option === 'No restrictions') {
-      setDietary(['No restrictions']);
-      return;
-    }
-    setDietary((prev) => {
-      const withoutNoRestrictions = prev.filter((o) => o !== 'No restrictions');
-      return withoutNoRestrictions.includes(option)
-        ? withoutNoRestrictions.filter((o) => o !== option)
-        : [...withoutNoRestrictions, option];
-    });
+    setDietary((prev) =>
+      prev.includes(option) ? prev.filter((o) => o !== option) : [...prev, option]
+    );
   }
 
   async function handleContinue() {
@@ -184,8 +171,8 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
                 />
                 {showNameError && <Text style={styles.errorText}>{nameError}</Text>}
 
-                <Text style={styles.label}>Any dietary preferences?</Text>
-                <View style={[styles.chipRow, showDietaryError && styles.chipRowError]}>
+                <Text style={styles.label}>Any dietary preferences? (optional)</Text>
+                <View style={styles.chipRow}>
                   {DIETARY_OPTIONS.map((option) => {
                     const selected = dietary.includes(option);
                     return (
@@ -201,8 +188,6 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
                     );
                   })}
                 </View>
-
-                {showDietaryError && <Text style={styles.errorText}>{dietaryError}</Text>}
 
                 <Text style={styles.label}>Allergies or foods to avoid (optional)</Text>
                 <TextInput
@@ -314,16 +299,6 @@ const useStyles = makeStyles((colors) => ({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: space.sm,
-  },
-  // The chips are the answer to a required question but are not a field with a
-  // border of its own, so the red has to be drawn around the group. Padding
-  // rather than a bare border, or the ring would sit on top of the outer chips.
-  chipRowError: {
-    borderWidth: 1,
-    borderColor: colors.error,
-    borderRadius: 16,
-    padding: space.sm,
-    margin: -8,
   },
   chip: {
     paddingVertical: space.sm2,

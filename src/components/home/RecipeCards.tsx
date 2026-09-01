@@ -1,15 +1,18 @@
 // src/components/home/RecipeCards.tsx
 //
-// The recipe cards. Fed live by the recipe route from real pantry contents,
-// expiry dates and the dietary profile.
+// The recipe card — one design for every suggestion the Recipes screen
+// shows, the AI's top pick and its alternates alike. A photo when the dish
+// has one (see theme/dishPhotos.ts), the gradient-and-glyph tile otherwise;
+// underneath, how well it matches what's actually on the shelf, since that
+// match is the whole reason one suggestion beats another here.
 //
-// There is no photo — see theme/dishLooks.ts for why. The band is a gradient
-// and a glyph chosen from the kind of dish it is, with the reason it was picked
-// written across it. Words the user will act on, rather than a picture of food
-// they haven't decided to cook.
+// Only the top (first visible, post-filter) card gets Start cooking and
+// Shuffle — those are actions for the dish being cooked tonight, not for
+// something still being browsed. Pass onStartCooking to turn one on.
 
-import React from 'react';
-import { View, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, View, StyleSheet, TouchableOpacity } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import Text from '../Text';
 import DishTile from '../recipes/DishTile';
@@ -21,27 +24,27 @@ import { space } from '../../theme/spacing';
 import { type } from '../../theme/typography';
 
 const HIT_SLOP = { top: 10, bottom: 10, left: 10, right: 10 };
+const PROGRESS_DURATION_MS = 400;
 
 export type FeaturedRecipe = {
   title: string;
   look: DishLook;
   dishKey: DishKey;
   minutes: number;
-  ingredientsHave: number;
-  ingredientsTotal: number;
+  /** Omitted for a browse-mode card with no pantry to match against — the
+   *  on-hand line and progress bar are skipped entirely when absent, rather
+   *  than showing a meaningless "0 of 0". */
+  ingredientsHave?: number;
+  ingredientsTotal?: number;
   usesExpiringCount: number;
   /** The pantry couldn't carry a dish on its own, so this one needs a real
    *  shop. Takes the pill slot, because it is the more useful thing to know. */
   needsShopping?: boolean;
   /** One line on why this was picked tonight, laid over the tile. */
   why?: string;
-};
-
-export type MiniRecipe = {
-  title: string;
-  look: DishLook;
-  dishKey: DishKey;
-  minutes: number;
+  /** What the dish IS — shown in place of the on-hand line when there's no
+   *  pantry match to report (a browse-mode card). */
+  description?: string;
 };
 
 export function FeaturedRecipeCard({
@@ -54,8 +57,12 @@ export function FeaturedRecipeCard({
 }: {
   recipe: FeaturedRecipe;
   saved: boolean;
-  onStartCooking: () => void;
-  onShuffle: () => void;
+  /** Present only on the card that is actually actionable right now — see
+   *  the file header. Its absence is what turns this into a plain
+   *  browse-and-open card: no button row, and the whole body becomes part
+   *  of the tap target since there's nothing else on the card to press. */
+  onStartCooking?: () => void;
+  onShuffle?: () => void;
   onToggleSave: () => void;
   /** Tapping the tile reads the recipe; the button below starts cooking it.
    *  Two different intentions, and conflating them sends someone who wanted a
@@ -64,31 +71,60 @@ export function FeaturedRecipeCard({
 }) {
   const styles = useStyles();
   const colors = useColors();
+  const actionable = !!onStartCooking;
+  const hasPantryMatch = recipe.ingredientsHave !== undefined && recipe.ingredientsTotal !== undefined;
+  const inPantry =
+    hasPantryMatch && recipe.ingredientsTotal! > 0 && recipe.ingredientsHave === recipe.ingredientsTotal;
+
+  const progress = useRef(new Animated.Value(0)).current;
+  const ratio =
+    hasPantryMatch && recipe.ingredientsTotal! > 0
+      ? recipe.ingredientsHave! / recipe.ingredientsTotal!
+      : 0;
+  useEffect(() => {
+    Animated.timing(progress, {
+      toValue: ratio,
+      duration: PROGRESS_DURATION_MS,
+      // Width can't run on the native driver.
+      useNativeDriver: false,
+    }).start();
+  }, [ratio, progress]);
+  const fillWidth = progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+
   return (
-    <View style={styles.featuredCard}>
+    <View style={styles.card}>
       <TouchableOpacity activeOpacity={0.9} onPress={onOpen}>
         <DishTile
           look={recipe.look}
           dishKey={recipe.dishKey}
           size="card"
-          style={styles.featuredPhoto}
+          style={styles.photo}
         >
           <View style={styles.bandTop}>
-            {/* Hidden at zero. "USES 0 EXPIRING" is a badge announcing that the
-                card has nothing to boast about. */}
-            {recipe.needsShopping ? (
-              <View style={[styles.expiringPill, styles.shoppingPill]}>
-                <Text style={styles.expiringPillText}>WORTH A QUICK TRIP</Text>
-              </View>
-            ) : recipe.usesExpiringCount > 0 ? (
-              <View style={styles.expiringPill}>
-                <Text style={styles.expiringPillText}>
-                  USES {recipe.usesExpiringCount} EXPIRING
-                </Text>
-              </View>
-            ) : (
-              <View />
-            )}
+            {/* Up to two pills, stacked — a dish can be both fully on hand
+                and built from something about to go off, and that is the
+                best kind of match this screen can offer, not a conflict to
+                resolve down to one badge. */}
+            <View style={styles.pillStack}>
+              {inPantry && (
+                <View style={styles.pantryPill}>
+                  <Text style={styles.pantryPillText}>In your pantry</Text>
+                </View>
+              )}
+              {recipe.needsShopping ? (
+                <View style={[styles.expiringPill, styles.shoppingPill]}>
+                  <Text style={styles.expiringPillText}>WORTH A QUICK TRIP</Text>
+                </View>
+              ) : (
+                recipe.usesExpiringCount > 0 && (
+                  <View style={styles.expiringPill}>
+                    <Text style={styles.expiringPillText}>
+                      USES {recipe.usesExpiringCount} EXPIRING
+                    </Text>
+                  </View>
+                )
+              )}
+            </View>
             <TouchableOpacity
               onPress={onToggleSave}
               hitSlop={HIT_SLOP}
@@ -111,52 +147,75 @@ export function FeaturedRecipeCard({
         </DishTile>
       </TouchableOpacity>
 
-      <View style={styles.featuredBody}>
-        <Text style={styles.featuredTitle}>{recipe.title}</Text>
-        <Text style={styles.featuredSubtitle}>
-          {recipe.minutes > 0 ? `${recipe.minutes} min · ` : ''}
-          {recipe.ingredientsHave} of {recipe.ingredientsTotal} ingredients on hand
-        </Text>
-        <View style={styles.featuredButtonRow}>
-          <TouchableOpacity style={styles.startButton} onPress={onStartCooking}>
-            <Text style={styles.startButtonText}>Start cooking</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.shuffleButton}
-            onPress={onShuffle}
-            accessibilityLabel="Suggest something else"
-          >
-            <Text style={styles.shuffleIcon}>⟲</Text>
-          </TouchableOpacity>
+      <TouchableOpacity
+        activeOpacity={actionable ? 1 : 0.7}
+        onPress={actionable ? undefined : onOpen}
+        disabled={actionable}
+        style={styles.body}
+      >
+        <View style={styles.titleRow}>
+          <Text style={styles.title} numberOfLines={2}>
+            {recipe.title}
+          </Text>
+          {recipe.minutes > 0 && <Text style={styles.minutes}>{recipe.minutes} MIN</Text>}
         </View>
-      </View>
+        {hasPantryMatch ? (
+          <>
+            <Text style={styles.onHand}>
+              {recipe.ingredientsHave} of {recipe.ingredientsTotal} on hand
+            </Text>
+            <View style={styles.progressTrack}>
+              <Animated.View style={[styles.progressFill, { width: fillWidth }]}>
+                <LinearGradient
+                  colors={[colors.primaryBright, colors.primaryMid]}
+                  start={{ x: 0, y: 0.5 }}
+                  end={{ x: 1, y: 0.5 }}
+                  style={StyleSheet.absoluteFill}
+                />
+              </Animated.View>
+            </View>
+          </>
+        ) : (
+          !!recipe.description && (
+            <Text style={styles.onHand} numberOfLines={2}>
+              {recipe.description}
+            </Text>
+          )
+        )}
+
+        {actionable && (
+          <View style={styles.buttonRow}>
+            <TouchableOpacity style={styles.startButton} onPress={onStartCooking}>
+              <Text style={styles.startButtonText}>Start cooking</Text>
+            </TouchableOpacity>
+            {onShuffle && (
+              <TouchableOpacity
+                style={styles.shuffleButton}
+                onPress={onShuffle}
+                accessibilityLabel="Suggest something else"
+              >
+                <Text style={styles.shuffleIcon}>⟲</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+      </TouchableOpacity>
     </View>
   );
 }
 
-export function MiniRecipeCard({ recipe, onPress }: { recipe: MiniRecipe; onPress: () => void }) {
-  const styles = useStyles();
-  const colors = useColors();
-  return (
-    <TouchableOpacity style={styles.miniCard} onPress={onPress} activeOpacity={0.85}>
-      <DishTile look={recipe.look} dishKey={recipe.dishKey} size="mini" />
-      <View style={styles.miniBody}>
-        <Text style={styles.miniTitle} numberOfLines={2}>
-          {recipe.title}
-        </Text>
-        {recipe.minutes > 0 && <Text style={styles.miniMinutes}>{recipe.minutes} min</Text>}
-      </View>
-    </TouchableOpacity>
-  );
-}
-
 const useStyles = makeStyles((colors) => ({
-  featuredCard: {
-    borderRadius: 26,
+  card: {
+    borderRadius: 24,
     overflow: 'hidden',
-    backgroundColor: colors.inkFill,
+    backgroundColor: colors.card,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.09,
+    shadowRadius: 12,
+    elevation: 2,
   },
-  featuredPhoto: {
+  photo: {
     padding: space.md2,
     justifyContent: 'space-between',
   },
@@ -164,6 +223,21 @@ const useStyles = makeStyles((colors) => ({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+  },
+  pillStack: {
+    gap: space.xs,
+  },
+  pantryPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.overlayStrong,
+    borderRadius: 999,
+    paddingVertical: space.xs2,
+    paddingHorizontal: space.md,
+  },
+  pantryPillText: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+    fontSize: type.micro.fontSize,
   },
   expiringPill: {
     alignSelf: 'flex-start',
@@ -178,8 +252,8 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: 'rgba(194,87,31,0.75)',
   },
   heart: {
-    width: 32,
-    height: 32,
+    width: 38,
+    height: 38,
     borderRadius: 999,
     backgroundColor: 'rgba(23,23,15,0.28)',
     alignItems: 'center',
@@ -206,24 +280,49 @@ const useStyles = makeStyles((colors) => ({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
-  featuredBody: {
+  body: {
     padding: space.lg2,
   },
-  featuredTitle: {
-    color: colors.onAccent,
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: space.sm2,
+    marginBottom: space.sm,
+  },
+  title: {
+    flex: 1,
+    color: colors.primaryDarker,
     fontWeight: '800',
     fontSize: type.title.fontSize,
-    marginBottom: space.xs,
   },
-  featuredSubtitle: {
-    color: colors.primaryLight,
-    fontWeight: '600',
+  minutes: {
+    color: colors.textMuted,
+    fontWeight: '800',
     fontSize: type.label.fontSize,
-    marginBottom: space.lg,
+    letterSpacing: 0.4,
   },
-  featuredButtonRow: {
+  onHand: {
+    color: colors.textSecondary,
+    fontWeight: '500',
+    fontSize: type.bodySmall.fontSize,
+    marginBottom: space.sm2,
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: colors.backgroundAlt,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  buttonRow: {
     flexDirection: 'row',
     gap: space.sm2,
+    marginTop: space.lg,
   },
   startButton: {
     flex: 1,
@@ -243,35 +342,13 @@ const useStyles = makeStyles((colors) => ({
     height: 48,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: colors.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
   shuffleIcon: {
-    color: colors.onAccent,
+    color: colors.primaryDarker,
     fontSize: type.subtitle.fontSize,
     fontWeight: '700',
-  },
-  miniCard: {
-    flex: 1,
-    borderRadius: 20,
-    backgroundColor: colors.card,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: colors.backgroundAlt,
-  },
-  miniBody: {
-    padding: space.md,
-  },
-  miniTitle: {
-    fontWeight: '700',
-    fontSize: type.bodySmall.fontSize,
-    color: colors.primaryDarker,
-    marginBottom: space.xs,
-  },
-  miniMinutes: {
-    fontWeight: '600',
-    fontSize: type.caption.fontSize,
-    color: colors.textSecondary,
   },
 }));

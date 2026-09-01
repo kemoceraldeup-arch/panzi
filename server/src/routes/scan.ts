@@ -120,6 +120,11 @@ const RESULT_SCHEMA = {
             description:
               'The measured unit that goes with sizeValue, read off the label: g, kg, ml, L, oz, lb. Empty string when sizeValue is 0. Never a container word — not "pack", "bag", "box" or "each".',
           },
+          measuredByWeight: {
+            type: 'boolean',
+            description:
+              'True when this item is something a person portions out by weight or volume rather than counting individual units — rice, flour, sugar, pasta, loose spices, cooking oil, milk. False for anything counted as whole items even when it also has a printed weight — a bag of crisps, a tin of chickpeas, a dozen eggs, a loaf of bread, six yoghurt pots. The test: would a person say "add half a kilo more" (true) or "add one more" (false)? A different question from count and size above — a 1 kg bag of rice is still count 1, sizeValue 1000, sizeUnit "g", and measuredByWeight true, all at once.',
+          },
           category: { type: 'string', enum: FOOD_CATEGORIES },
           location: {
             type: 'string',
@@ -156,7 +161,7 @@ const RESULT_SCHEMA = {
           shelfLifeDays: {
             type: 'number',
             description:
-              'Your estimate of how many days this has left, worked out from how it looks and what kind of food it is. 0 when you have no basis for an estimate. This is always shown to the user as an estimate, never as a printed date, so an honest rough number here is useful — but 0 is better than a number you made up.',
+              'Your estimate of how many days this has left, worked out from how it looks and, just as often, from general knowledge of how that kind of food typically keeps — canned, dried, and shelf-stable goods included, not only fresh produce. Fill this in whenever expiryDate is empty, which is most items. 0 only when you cannot identify the food well enough to know its typical shelf life at all.',
           },
           box: {
             type: 'object',
@@ -180,6 +185,7 @@ const RESULT_SCHEMA = {
           'count',
           'sizeValue',
           'sizeUnit',
+          'measuredByWeight',
           'category',
           'location',
           'expiryDate',
@@ -204,6 +210,8 @@ The user sees everything you return and checks it before anything is saved, so y
 
 List each distinct product once. Six eggs in a box is one item with a quantity of 6, not six items. Do not list crockery, packaging, appliances, hands, or anything you cannot eat.
 
+BE EXHAUSTIVE. A shelf or fridge photo is very often crowded — several rows, items partly behind one another, small jars and packets at the edges or in the background. Scan the entire frame methodically, corner to corner and front to back, before you finish your answer. Missing an item the user can plainly see is a worse mistake than being unsure about one you did list — an uncertain guess can be marked nameUnsure and fixed with one tap, but a skipped item never appears at all and the user has to notice it is missing and add it by hand. When a photo shows many items, err toward listing every plausible one, including partially hidden or small items at the back or edges, rather than stopping once you have found the obvious ones at the front.
+
 Name things the way a person would say them while unpacking a bag — short. The name and the quantity sit side by side in a narrow row, so a name that runs past four words gets cut off and the user cannot read what you found.
 
 COUNT AND SIZE ARE DIFFERENT NUMBERS.
@@ -212,11 +220,15 @@ count is how many things a person would pick up. size is how big one of them is,
 
 count is what the user's own quantity control shows, and it is nearly always between 1 and about a dozen. If you find yourself writing a large number there, it is almost certainly a weight and belongs in sizeValue.
 
+MEASURED VS COUNTED IS A THIRD, SEPARATE QUESTION.
+
+measuredByWeight says whether the user's own quantity control should let them enter a fraction — half a bag of rice, a cup and a half of flour — or only whole numbers. Rice, flour, sugar, pasta, loose herbs and spices, cooking oil, milk are measuredByWeight true. A tin of chickpeas, a dozen eggs, a loaf of bread, a bag of crisps are measuredByWeight false — the user counts these as whole items, however much any one of them weighs. This never changes what goes in count or sizeValue; it only tells the app which kind of "how many" control to draw.
+
 THE TWO DATE FIELDS ARE NOT INTERCHANGEABLE.
 
 expiryDate is for a date printed on the packaging that you can actually read in the image. If no date is printed, or you cannot read it, expiryDate is an empty string. Never put a calculated or remembered date here. The app shows this field to the user as a fact read off their label, and a guess wearing that badge is the single worst thing you can return.
 
-shelfLifeDays is for your own estimate of how long the food has left, from how it looks and what it is. The app always shows this as an estimate, in a visibly different style, with the words "a guess, not a printed date" next to it. An estimate is genuinely useful here — loose fruit never has a date printed on it — so give one when you have a basis for it. Give 0 when you do not.
+shelfLifeDays is for your own estimate of how long the food has left, from how it looks and what it is. The app always shows this as an estimate, in a visibly different style, with the words "a guess, not a printed date" next to it. Give one whenever expiryDate is empty — which is most of the time, since most packaging has no legible date in a shelf photo. You have a real basis for this far more often than not: general knowledge of how that category of food keeps is itself a basis. An unopened tin of chickpeas, a bag of rice, a jar of peanut butter, a carton of long-life milk, a box of pasta — every one of these has a well-known typical shelf life you already know, sealed or not, even with no visible date and no visible spoilage. Use that knowledge. Reach for 0 only when you genuinely cannot place the item into any food category with a known shelf life at all — not merely because the packaging itself is unlabelled. A rough estimate the user can correct in one tap is far more useful to them than an empty field that quietly asks them to type in a date from memory.
 
 An item can have both: a printed use-by date and your own view of how long it will really last. It can have neither. They never substitute for one another.
 
@@ -242,6 +254,7 @@ type Candidate = {
   count: number;
   sizeValue: number;
   sizeUnit: string;
+  measuredByWeight: boolean;
   category: string;
   location: string;
   expiryDate: string;
@@ -269,13 +282,17 @@ const MAX_BASE64_LENGTH = 7_000_000;
 
 // No food keeps for a decade, and a four-figure estimate rendered as "2739
 // days" in the review page is a bug the user has to notice on our behalf.
-const MAX_SHELF_LIFE_DAYS = 730;
+// Exported: routes/estimateShelfLife.ts enforces the same product rule
+// ("no food keeps forever") for its own, photo-less estimate.
+export const MAX_SHELF_LIFE_DAYS = 730;
 
 // Built once per process rather than per request: the client is a thin wrapper
 // around fetch, and rebuilding it on every scan throws away keep-alive.
+// Exported so routes/estimateShelfLife.ts shares this one instance rather
+// than opening a second connection pool for the same API key.
 let client: Anthropic | null = null;
 
-function anthropic(): Anthropic {
+export function anthropic(): Anthropic {
   if (!client) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set — copy .env.example to .env');
@@ -421,7 +438,7 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
   // date, handwritten note — and the item-scanner design collapsed them into
   // this: a photo of food, read for all three things at once.
   const brief =
-    'This is a photo of food — on a counter, in a fridge, in a cupboard, or just unpacked. List the distinct food items you can see. Read pack sizes and printed dates off the labels where they are legible, and judge the ripeness of any loose fruit or vegetables.';
+    'This is a photo of food — on a counter, in a fridge, in a cupboard, or just unpacked. List every distinct food item you can see, including ones that are small, partly hidden behind something else, or sitting at the back or edges of the shot — not just the items at the front. Read pack sizes and printed dates off the labels where they are legible, and judge the ripeness of any loose fruit or vegetables.';
 
   let response;
   try {
@@ -537,6 +554,7 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
             ? Math.round(item.sizeValue * 100) / 100
             : 0,
         sizeUnit: cleanUnit(name, item.sizeUnit),
+        measuredByWeight: item.measuredByWeight === true,
         expiryDate: cleanPrintedDate(item.expiryDate),
         looseProduce,
         ripeness,

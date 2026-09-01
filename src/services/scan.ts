@@ -15,20 +15,21 @@
 //      or because its ripeness couldn't be judged, and the review page says
 //      which in plain English.
 
-import { PantryItem, DateSource, ItemBox, ItemPhoto } from './pantry';
+import { PantryItem, DateSource, ItemBox, ItemPhoto, Nutrition } from './pantry';
 import { RipenessStage, DEFAULT_SHELF_LIFE_DAYS, ripenessChipText } from '../utils/ripeness';
 import { dateInDays, getDaysLeft, formatCalendarDate } from '../utils/freshness';
+import { ItemQuantity, defaultQuantity, formatAmount, formatQuantityString } from './quantity';
 
 export type { DateSource };
 
 /**
  * How big one of them is, as printed on the packet — 500 g, 1 L.
  *
- * Deliberately separate from the count, and that separation is the whole point.
- * The two used to share one field, and a 70 g bag of crisps arrived as a
- * quantity of 70: the review page then offered a stepper reading seventy, which
- * is not a number of bags anyone has. Size is read off packaging and rarely
- * edited; count is what the user actually adjusts. One control each.
+ * Deliberately separate from the quantity's own amount, and that separation
+ * is the whole point. A 70 g bag of crisps is a "how many" of 1 (pieces),
+ * with size 70 g printed on the packet — the two used to share one field,
+ * and a bag arrived as a quantity of 70. Size is read off packaging and
+ * rarely edited; the quantity's amount is what the user actually adjusts.
  *
  * Null when nothing is printed, which is normal for loose produce.
  */
@@ -56,8 +57,17 @@ export type ScanBox = ItemBox;
 export type ScanCandidate = {
   id: string;
   name: string;
-  /** How many of them. What the stepper edits; always a small number. */
-  count: number;
+  /** The "How many" control's whole state — which of the four measures this
+   *  item uses, whether it can be split, and the amount itself (pieces:
+   *  count · pack: number of packs · weight: grams · volume: millilitres).
+   *  Set from a past correction for this product name when there is one,
+   *  else classified from the food catalogue's unit on a typed name or the
+   *  server's own reading on a camera scan — see services/quantity.ts. */
+  quantity: ItemQuantity;
+  /** The unit noun quantity's pieces/pack amount is counted in — "egg",
+   *  "loaf", "bag" — or '' for a bare count. Distinct from `size.unit`,
+   *  which is a printed pack size rather than what the stepper counts. */
+  unit: string;
   /** How big one of them is, or null when nothing is printed. */
   size: ScanSize | null;
   category: string;
@@ -68,6 +78,11 @@ export type ScanCandidate = {
   expiryDate: string | null;
   /** Always set when expiryDate is; always null when it isn't. */
   dateSource: DateSource | null;
+  /** Whether a hand-typed item has been opened — the input the "I don't
+   *  know" shelf-life estimate needs, since it has no photo to judge
+   *  condition from. Only meaningful before the item is saved; not carried
+   *  onto the pantry item itself. Null until the user picks one. */
+  openedState: 'opened' | 'unopened' | null;
 
   /** The name is a guess. Sends the card to "Needs a look". */
   nameUnsure: boolean;
@@ -122,6 +137,16 @@ export type ScanCandidate = {
    * wins over the crop.
    */
   photoUri: string | null;
+
+  /**
+   * Macros matched from FatSecret by the item's recognized name, looked up
+   * once the candidate has a name to search on. Undefined before the lookup
+   * has run at all (so the card can show a loading state rather than "no
+   * match"), null once it has run and found nothing.
+   */
+  nutrition?: Nutrition | null;
+  /** Other FatSecret matches for the same search — the "not this?" list. */
+  nutritionAlternates?: Nutrition[];
 };
 
 /**
@@ -265,12 +290,14 @@ export function blankCandidate(): ScanCandidate {
   return {
     id: `manual-${Date.now()}`,
     name: '',
-    count: 1,
+    quantity: defaultQuantity(),
+    unit: '',
     size: null,
     category: 'Snacks',
     location: null,
     expiryDate: null,
     dateSource: null,
+    openedState: null,
     nameUnsure: true,
     nameUnsureReason: null,
     nameAlternatives: [],
@@ -288,23 +315,26 @@ export function blankCandidate(): ScanCandidate {
 }
 
 /**
- * The pantry's single quantity string — "500 g", "2 × 500 g", "5".
+ * The pantry's single quantity string — "6 eggs", "1.5 kg", "¾ bag".
  *
- * Count and size are kept apart everywhere they are edited and only combined
- * here, on the way out. One of something says its size and nothing else, since
- * "1 × 500 g" is a sentence nobody says out loud.
+ * Written through formatQuantityString (services/quantity.ts) so it stays
+ * parseable back into {measure, amount} by parseQuantityString — the format
+ * EditItemSheet reopens an already-saved item's amount from. Printed size is
+ * folded in as a parenthetical when there is one and this is a plain pieces
+ * count with more than one of them ("2 (500 g each)") — a weight/volume/pack
+ * quantity already says the actual amount and has no separate size to add.
  */
 export function formatQuantity(c: ScanCandidate): string {
-  const size = c.size ? `${c.size.value} ${c.size.unit}`.trim() : null;
-  if (!size) return String(c.count);
-  return c.count > 1 ? `${c.count} × ${size}` : size;
+  const amount = formatQuantityString(c.quantity, c.unit);
+  if (c.quantity.measure === 'pieces' && c.size && c.quantity.amount > 1) {
+    return `${amount} (${c.size.value} ${c.size.unit} each)`;
+  }
+  return amount;
 }
 
-/** The short line under a name on a card — "Cupboard · 70 g". */
+/** The short line under a name on a card — "Cupboard · 500 g". */
 export function describeQuantity(c: ScanCandidate): string {
-  const size = c.size ? `${c.size.value} ${c.size.unit}`.trim() : null;
-  if (!size) return c.count === 1 ? '1' : `${c.count}`;
-  return c.count > 1 ? `${c.count} × ${size}` : size;
+  return formatAmount(c.quantity, c.unit);
 }
 
 /** The shape handed to `addPantryItems` once the batch is confirmed. */
@@ -324,7 +354,7 @@ export function candidateToItem(
     name: c.name,
     quantity: formatQuantity(c),
     category: c.category,
-    location: c.location ?? 'Other',
+    location: c.location || 'Other',
     expiryDate: c.expiryDate,
     // The picture follows the item onto the shelf. A row that showed the packet
     // during review and a blank tile forever after would read as the app having
@@ -340,5 +370,9 @@ export function candidateToItem(
     dateSource: c.dateSource,
     ripeness: c.ripeness,
     ripenessSource: c.ripenessSource,
+    // Undefined (lookup never ran or hadn't finished) is written as no
+    // claim at all, same as null — a pantry item's nutrition is either a
+    // real match or nothing, never "still checking".
+    nutrition: c.nutrition ?? null,
   };
 }
