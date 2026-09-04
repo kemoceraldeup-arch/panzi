@@ -29,7 +29,18 @@ export class ApiError extends Error {
 // wrong IP in .env, phone on mobile data — would then hang for that whole
 // minute with the app claiming to be reading. This settles which of the two is
 // happening before the slow request starts.
-const REACHABILITY_TIMEOUT_MS = 4000;
+//
+// Was 4000. A busy-but-alive server — Claude still generating a previous
+// recipe response, say — can leave this racing behind that request on a
+// single-process tunnel and time out on its own, misreporting "unreachable"
+// for a server that was simply still working (see routes/recipes.ts's own
+// comment on the same failure mode from the other side, which is what
+// BROWSE_COUNT was trimmed for). 10s tolerates a busy server without
+// meaningfully softening the fail-fast case this check exists for — a
+// genuinely dead server (process down, wrong IP, no signal) still answers
+// nothing at all rather than answering late, and still fails within this
+// window.
+const REACHABILITY_TIMEOUT_MS = 10000;
 
 async function assertReachable(): Promise<void> {
   const controller = new AbortController();

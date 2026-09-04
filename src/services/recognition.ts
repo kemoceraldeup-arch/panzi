@@ -18,6 +18,7 @@ import { RipenessStage, isRipenessStage } from '../utils/ripeness';
 import { dateInDays } from '../utils/freshness';
 import { normaliseLocation } from './pantry';
 import { classifyMeasure } from './quantity';
+import { classifyFood, defaultLocationFor } from './foodClass';
 
 export type { ScanBox };
 
@@ -168,14 +169,31 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
         : null,
     category: item.category,
     // Empty strings are the route's stand-in for "couldn't tell" — the schema
-    // it constrains the model to has no nullable primitive.
-    location: normaliseLocation(item.location || null),
+    // it constrains the model to has no nullable primitive. Falls back to
+    // the food class's own sensible default (Phase 2 §4) rather than staying
+    // empty, so STORE IN is never blank on an item that lands with basis
+    // 'estimated' and needs a location to compute anything from.
+    location: normaliseLocation(item.location || null) ?? defaultLocationFor(classifyFood(item.category)),
 
     expiryDate: printed ?? estimated,
     dateSource: printed ? 'label' : estimated ? 'estimated' : null,
-    // Only meaningful for a hand-typed row's "I don't know" estimate — a
-    // scanned item already has the server's own shelf-life read above.
-    openedState: null,
+    // Preselected only when the scanner genuinely found nothing at all —
+    // path 2 of Part C1. A printed date or the vision model's own estimate
+    // is a real value already filling the field, so there's no "I don't
+    // know" to default to; only a blank read (no printed date, no visible
+    // clue to estimate from) lands with the radio already on.
+    expiryUnknown: !printed && !estimated,
+    packageStatus: undefined,
+    openedAt: null,
+    // printed -> 'printed'. The vision model's own visual guess is a real
+    // stored date from a rule, not Panzi's shelf-life engine and not
+    // typed/printed — same shape as a rough-date chip pick, so 'rough'
+    // rather than 'estimated' (Phase 2 reserves 'estimated' for an item
+    // with no stored date at all, which is the third case here: nothing
+    // found, DateField's own estimate panel takes over from expiryUnknown).
+    basis: printed ? 'printed' : estimated ? 'rough' : 'estimated',
+    estimatedUseBy: null,
+    estimateInputs: null,
 
     nameUnsure: item.nameUnsure === true,
     nameUnsureReason: item.nameUnsureReason || null,

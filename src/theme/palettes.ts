@@ -168,6 +168,28 @@ const light = {
 
   /** Which way the status-bar glyphs go. */
   statusBar: 'dark-content' as 'dark-content' | 'light-content',
+
+  /**
+   * Body/helper copy — "Based on the food type…", "For packaged foods…" —
+   * as distinct from `textSecondary`, which also carries smaller,
+   * denser roles (chip text, captions) that don't want to move independently
+   * of this one. Same value as `textSecondary` in light mode, where the
+   * two already clear contrast comfortably; the dark value is genuinely
+   * lighter than `textSecondary`, not the same value inverted, per the
+   * dark-mode-legibility rule this token exists for.
+   */
+  mutedBody: '#6A7263',
+
+  /**
+   * The stepper's `+` key, dark mode only in spirit — light mode already
+   * uses `primaryLighter` for this and it works there. In dark mode
+   * `primaryLighter` sits almost exactly on top of `surface`/`card` (both
+   * near-black), so the key reads as an empty hole next to `−`. This is a
+   * separate, brighter green fill so the key is legible as its own
+   * tappable shape rather than only by its glyph. Same value as
+   * `primaryLighter` in light mode — nothing changes there.
+   */
+  plusKeySurface: '#E6F4D8',
 };
 
 export type Palette = typeof light;
@@ -182,7 +204,13 @@ const dark: Palette = {
   backgroundLight: '#1E1B17', // panels that were the lighter cream
   backgroundAlt: '#332E27', // hairline borders, secondary panels
   surface: '#252119', // inputs and wells
-  card: '#24211C', // a raised card
+  // Was #24211C — within a point of `surface` on every channel, so a card
+  // sitting on the page (or on a screen using `surface` as its own
+  // background, like the scan review card) had nothing but its border to
+  // prove it was raised at all. Lifted a real step above `surface` (+6%
+  // luminance) so the card reads as elevated on its own; the border can
+  // now drop to a hairline instead of doing all the work.
+  card: '#2E2921', // a raised card
   cardSunken: '#1B1814', // a well inside a card — darker, not lighter
 
   // ── Brand green ─────────────────────────────────────────────────────
@@ -267,12 +295,19 @@ const dark: Palette = {
   amberText: '#F0C752',
   amberCard: '#2A2418',
   orangeCard: '#2A1F18',
-  washGreen: '#1F2A18',
+  // Was #1F2A18 — saturated enough, and close enough to the page's own
+  // near-black, that a screen already carrying a lot of accent green (the
+  // scan review header) read as muddy rather than tinted. Desaturated
+  // toward the neutral background/backgroundLight hue family and dropped
+  // well below the card surface's own luminance, so it reads as a faint
+  // wash behind the header rather than competing with the card for
+  // attention.
+  washGreen: '#1A1D15',
   washPeach: '#2B2018',
 
-  // Each one is its opaque partner above at alpha 0 — #1F2A18 is rgb(31,42,24),
+  // Each one is its opaque partner above at alpha 0 — #1A1D15 is rgb(26,29,21),
   // and so on. Keep them in step by hand if those values ever change.
-  washGreenFade: 'rgba(31,42,24,0)',
+  washGreenFade: 'rgba(26,29,21,0)',
   washPeachFade: 'rgba(43,32,24,0)',
   backgroundLightFade: 'rgba(30,27,23,0)',
   surfaceFade: 'rgba(37,33,25,0)',
@@ -302,6 +337,21 @@ const dark: Palette = {
   overlaySoft: 'rgba(255,255,255,0.07)',
 
   statusBar: 'light-content',
+
+  // Genuinely lighter than `textSecondary` (A39C8C), not that value
+  // inverted — dark-mode body copy sitting on a card needs more lift than
+  // the light-mode pairing does, since small/italic runs read dimmer at
+  // the same measured contrast than a bold label does. 7.4:1 on the new
+  // `card` token, well clear of the 4.5 floor.
+  mutedBody: '#C0B9A9',
+
+  // A real fill, not a near-miss of `surface`/`card` — the stepper `+`
+  // key needs to read as a distinct tappable shape next to `−`, which
+  // `primaryLighter` (2A3A20) cannot do this close to the card's own
+  // brightness. 2.8:1 fill-distinctness against the stepper shell's
+  // `surface` background, with the existing primaryDarker glyph still at
+  // 5:1+ on top of it.
+  plusKeySurface: '#4F6E3A',
 };
 
 export const palettes: Record<Scheme, Palette> = { light, dark };

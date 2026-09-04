@@ -251,11 +251,19 @@ const useStyles = makeStyles((colors) => ({
     // say opposite things about where tonight's dinner is coming from.
     backgroundColor: 'rgba(194,87,31,0.75)',
   },
+  // Was rgba(23,23,15,0.28) — a wash that light or busy photos could
+  // defeat almost entirely, leaving one card's heart with a visible dark
+  // scrim behind it and another's reading as a bare glyph floating on the
+  // photo. Darker fill plus a thin translucent white ring, so the circle
+  // itself is always legible as a shape from its own edge, independent of
+  // whatever the photo underneath happens to be doing.
   heart: {
     width: 38,
     height: 38,
     borderRadius: 999,
-    backgroundColor: 'rgba(23,23,15,0.28)',
+    backgroundColor: 'rgba(23,23,15,0.45)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -296,9 +304,13 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '800',
     fontSize: type.title.fontSize,
   },
+  // Was fontWeight 800 — the same weight as the dish title next to it, so
+  // the two competed for attention on the same baseline despite the muted
+  // colour. 700 reads clearly lighter beside the title's 800 without
+  // becoming hard to read.
   minutes: {
     color: colors.textMuted,
-    fontWeight: '800',
+    fontWeight: '700',
     fontSize: type.label.fontSize,
     letterSpacing: 0.4,
   },

@@ -15,10 +15,12 @@
 //      or because its ripeness couldn't be judged, and the review page says
 //      which in plain English.
 
-import { PantryItem, DateSource, ItemBox, ItemPhoto, Nutrition } from './pantry';
+import { PantryItem, DateSource, DateBasis, EstimateInputs, ItemBox, ItemPhoto, Nutrition } from './pantry';
 import { RipenessStage, DEFAULT_SHELF_LIFE_DAYS, ripenessChipText } from '../utils/ripeness';
 import { dateInDays, getDaysLeft, formatCalendarDate } from '../utils/freshness';
+import { formatEstimateDate } from '../utils/dateLabel';
 import { ItemQuantity, defaultQuantity, formatAmount, formatQuantityString } from './quantity';
+import { classifyFood, defaultLocationFor } from './foodClass';
 
 export type { DateSource };
 
@@ -78,11 +80,33 @@ export type ScanCandidate = {
   expiryDate: string | null;
   /** Always set when expiryDate is; always null when it isn't. */
   dateSource: DateSource | null;
-  /** Whether a hand-typed item has been opened — the input the "I don't
-   *  know" shelf-life estimate needs, since it has no photo to judge
-   *  condition from. Only meaningful before the item is saved; not carried
-   *  onto the pantry item itself. Null until the user picks one. */
-  openedState: 'opened' | 'unopened' | null;
+  /** The EXPIRATION control's own "I don't know" radio — a separate bit
+   *  from expiryDate being null, on purpose. expiryDate can be null before
+   *  the scanner has read anything at all (path 2's default state, radio
+   *  preselected) or after the user explicitly clears a date they'd typed
+   *  (radio not selected, field just empty) — those are different states
+   *  that would otherwise be indistinguishable from "expiryDate is falsy"
+   *  alone. See Part C1/C2's four resolution paths. */
+  expiryUnknown: boolean;
+  /** The package-status tri-state (Part D3) — 'sealed' | 'opened' | undefined,
+   *  never a boolean, because undefined ("the user skipped this") has to be
+   *  distinguishable from an actual "Sealed" answer. Renders for every item
+   *  unconditionally (Part D2); not gated on whether this came from a scan
+   *  or a hand-typed row the way the field it replaces was. */
+  packageStatus: 'sealed' | 'opened' | undefined;
+  /** Set only when packageStatus === 'opened' — when, per the WHEN WAS IT
+   *  OPENED? chips (Part D4). 'YYYY-MM-DD'. Cleared back to null if the
+   *  user flips packageStatus away from 'opened'. */
+  openedAt: string | null;
+  /** Phase 2's finer-grained provenance — printed/manual/rough/estimated.
+   *  Kept alongside dateSource rather than replacing it (dateSource still
+   *  drives provenanceChip and its callers); DateField is the only writer. */
+  basis: DateBasis;
+  /** Set only when basis === 'estimated', mirroring expiryDate/dateSource's
+   *  own pairing — a live-computed use-by date, never both this and
+   *  expiryDate at once. */
+  estimatedUseBy: string | null;
+  estimateInputs: EstimateInputs | null;
 
   /** The name is a guess. Sends the card to "Needs a look". */
   nameUnsure: boolean;
@@ -200,10 +224,30 @@ export type DatedThing = {
   expiryDate: string | null;
   dateSource: DateSource | null;
   ripeness: RipenessStage | null;
+  /** Phase 2 — present once basis:'estimated' has a live-computed date.
+   *  Optional so every pre-Phase-2 caller of this structurally-typed
+   *  function keeps compiling unchanged. */
+  estimatedUseBy?: string | null;
 };
 
 export function provenanceChip(c: DatedThing): ProvenanceChip {
-  if (!c.expiryDate) return { text: 'No date found', tone: 'missing' };
+  if (!c.expiryDate) {
+    // A Panzi estimate is a real answer, not an absence — this chip must
+    // never fall through to "missing" for an item DateField's own estimate
+    // panel is actively showing a date for. See utils/dateLabel.ts for the
+    // fuller PANZI USE-BY ESTIMATE treatment this chip only summarises.
+    if (c.estimatedUseBy) {
+      // formatEstimateDate, not formatCalendarDate — the chip has to agree
+      // with the estimate panel's own date exactly, year included once the
+      // date is far enough out that dropping it would misstate which year
+      // this actually falls in (a January estimate read in September, say).
+      return {
+        text: `${formatEstimateDate(c.estimatedUseBy)} · panzi estimate`.toUpperCase(),
+        tone: 'estimated',
+      };
+    }
+    return { text: 'No date found', tone: 'missing' };
+  }
 
   const days = getDaysLeft(c.expiryDate) ?? 0;
 
@@ -256,6 +300,15 @@ export function withUserRipeness(c: ScanCandidate, stage: RipenessStage): ScanCa
     ripenessNotes: [],
     ripenessBlocked: null,
     expiryDate: dateInDays(DEFAULT_SHELF_LIFE_DAYS[stage]),
+    // Ripeness produces a real stored date from a rule, not Panzi's own
+    // shelf-life engine and not typed/printed — the same shape as a
+    // rough-date chip pick, so it takes basis:'rough' rather than
+    // 'estimated' (which Phase 2 reserves for an item with no stored date
+    // at all). Any live estimate this candidate was carrying no longer
+    // applies once ripeness has its own opinion about the date.
+    basis: 'rough',
+    estimatedUseBy: null,
+    estimateInputs: null,
     // Still an estimate — a better-informed one, from the person holding the
     // fruit — so it keeps the dashed chip rather than being promoted to a fact.
     dateSource: 'estimated',
@@ -287,17 +340,29 @@ export function markConfirmed(c: ScanCandidate): ScanCandidate {
  * and the page told them was fine.
  */
 export function blankCandidate(): ScanCandidate {
+  const category = 'Snacks';
   return {
     id: `manual-${Date.now()}`,
     name: '',
     quantity: defaultQuantity(),
     unit: '',
     size: null,
-    category: 'Snacks',
-    location: null,
+    category,
+    // Phase 2 §4: STORE IN is never empty on an item whose basis is
+    // 'estimated', which every hand-typed row starts as (see expiryUnknown
+    // below) — pre-filled with the sensible default for the category
+    // rather than left null and only defaulted once the estimate needs it.
+    location: defaultLocationFor(classifyFood(category)),
     expiryDate: null,
     dateSource: null,
-    openedState: null,
+    // No printed date to detect on a hand-typed row — path 2 of Part C1,
+    // "I don't know" preselected, estimate panel shown, never a dead end.
+    expiryUnknown: true,
+    packageStatus: undefined,
+    openedAt: null,
+    basis: 'estimated',
+    estimatedUseBy: null,
+    estimateInputs: null,
     nameUnsure: true,
     nameUnsureReason: null,
     nameAlternatives: [],
@@ -374,5 +439,15 @@ export function candidateToItem(
     // claim at all, same as null — a pantry item's nutrition is either a
     // real match or nothing, never "still checking".
     nutrition: c.nutrition ?? null,
+    packageStatus: c.packageStatus,
+    openedAt: c.openedAt,
+    expiryUnknown: c.expiryUnknown,
+    basis: c.basis,
+    // Mutually exclusive with expiryDate (PantryItem's own rule) — a
+    // candidate promoted to a real date via DateField's edit() already
+    // cleared these back to null itself, this is just carrying that state
+    // through rather than re-deriving it.
+    estimatedUseBy: c.estimatedUseBy,
+    estimateInputs: c.estimateInputs,
   };
 }

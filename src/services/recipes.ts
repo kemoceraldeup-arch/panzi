@@ -65,9 +65,13 @@ export type RecipeMood = 'anything' | 'quick' | 'ulam' | 'merienda';
 // (server/src/routes/recipes.ts) and readMood() key off, so those stay
 // exactly as they are even though the on-screen wording changed.
 export const MOODS: { id: RecipeMood; label: string }[] = [
-  { id: 'anything', label: 'All Recipes' },
-  { id: 'quick', label: 'Quick & Easy' },
-  { id: 'ulam', label: 'Main Meals' },
+  { id: 'anything', label: 'All' },
+  // Was "Quick and Easy" — the one label long enough to truncate or force
+  // a shared shrink across all four tabs on a narrow phone. "Quick" alone
+  // keeps the same length ballpark as "Snacks"/"All" so every tab renders
+  // at one fixed size with no per-label measuring needed.
+  { id: 'quick', label: 'Quick' },
+  { id: 'ulam', label: 'Main Dish' },
   { id: 'merienda', label: 'Snacks' },
 ];
 
@@ -190,15 +194,13 @@ export function browseSignature(profile: UserProfile): string {
   return `${day}#${diet}#${allergies}`;
 }
 
-export async function fetchRecipes(
+function suggestionPayload(
   items: PantryItem[],
   profile: UserProfile,
   mood: RecipeMood,
-  /** Titles already shown this session for this mood — a forced re-roll asks
-   *  the model to pick something else, unless nothing else genuinely fits. */
-  avoidTitles: string[] = []
-): Promise<RecipeSet> {
-  const payload = {
+  avoidTitles: string[]
+) {
+  return {
     mood,
     items: orderForSuggestion(items).map((item) => ({
       name: item.name,
@@ -214,24 +216,90 @@ export async function fetchRecipes(
     allergies: profile.allergies,
     avoidTitles,
   };
+}
 
+/** Turns a raw fetch failure into the message a screen actually shows —
+ *  shared by fetchFeaturedRecipe and fetchAlternateRecipes so the two halves
+ *  of a split suggestion call fail the same way. */
+function toRecipeError(err: unknown): RecipeError {
+  const code = err instanceof ApiError ? err.code : null;
+  if (code === 'unauthenticated') {
+    return new RecipeError('Sign in again to get suggestions.');
+  }
+  if (code === 'resource-exhausted') {
+    return new RecipeError("I've been thinking a lot today — try again in a bit.");
+  }
+  if (code === 'unreachable' && err instanceof ApiError) {
+    // Names the address it tried; the usual cause is a stale IP in .env after
+    // changing network, and "check your connection" sends the user looking in
+    // the wrong place for that.
+    return new RecipeError(err.message);
+  }
+  // Every other server-returned code (internal, unavailable, invalid-
+  // argument, ...) carries its own real message from the route — a
+  // malformed model response, a bad request, whatever it actually was.
+  // This used to collapse all of those into "Couldn't reach the kitchen",
+  // which is only true for the 'unreachable' branch above; a genuine
+  // server-side failure showing that exact wording sent people checking
+  // their wifi for a problem that was never a connectivity one.
+  if (err instanceof ApiError && err.message) {
+    return new RecipeError(err.message);
+  }
+  return new RecipeError("Couldn't reach the kitchen — check your connection and try again.");
+}
+
+/**
+ * The one featured dish — deliberately its own call, not the first half of
+ * fetchRecipes. Writing three full recipes (title, description, every
+ * ingredient, every step) in one request is what used to make the recipes
+ * screen sit on a loading skeleton for several seconds before anything
+ * appeared; asking for one recipe instead of three is most of that time
+ * back. The caller renders this the moment it resolves, then calls
+ * fetchAlternateRecipes separately — see RecipesScreen's build().
+ */
+export async function fetchFeaturedRecipe(
+  items: PantryItem[],
+  profile: UserProfile,
+  mood: RecipeMood,
+  avoidTitles: string[] = []
+): Promise<{ featured: Recipe | null; skipped: SkippedRecipe[] }> {
   try {
-    return normaliseSet(await apiFetch<RecipeSet>('/api/recipes', payload));
+    const raw = await apiFetch<{ featured: Recipe | null; skipped: SkippedRecipe[] }>(
+      '/api/recipes/featured',
+      suggestionPayload(items, profile, mood, avoidTitles)
+    );
+    return {
+      featured: raw.featured ? normaliseRecipe(raw.featured) : null,
+      skipped: raw.skipped ?? [],
+    };
   } catch (err) {
-    const code = err instanceof ApiError ? err.code : null;
-    if (code === 'unauthenticated') {
-      throw new RecipeError('Sign in again to get suggestions.');
-    }
-    if (code === 'resource-exhausted') {
-      throw new RecipeError("I've been thinking a lot today — try again in a bit.");
-    }
-    if (code === 'unreachable' && err instanceof ApiError) {
-      // Names the address it tried; the usual cause is a stale IP in .env after
-      // changing network, and "check your connection" sends the user looking in
-      // the wrong place for that.
-      throw new RecipeError(err.message);
-    }
-    throw new RecipeError("Couldn't reach the kitchen — check your connection and try again.");
+    throw toRecipeError(err);
+  }
+}
+
+/**
+ * The two alternates, fetched separately from — and normally after —
+ * fetchFeaturedRecipe above. `avoidTitles` should include the featured
+ * dish's own title (on top of whatever session history the caller already
+ * tracks) so this call doesn't waste itself rediscovering the same dish.
+ */
+export async function fetchAlternateRecipes(
+  items: PantryItem[],
+  profile: UserProfile,
+  mood: RecipeMood,
+  avoidTitles: string[] = []
+): Promise<{ alternates: Recipe[]; skipped: SkippedRecipe[] }> {
+  try {
+    const raw = await apiFetch<{ alternates: Recipe[]; skipped: SkippedRecipe[] }>(
+      '/api/recipes/alternates',
+      suggestionPayload(items, profile, mood, avoidTitles)
+    );
+    return {
+      alternates: (raw.alternates ?? []).map(normaliseRecipe),
+      skipped: raw.skipped ?? [],
+    };
+  } catch (err) {
+    throw toRecipeError(err);
   }
 }
 
@@ -242,7 +310,9 @@ export async function fetchRecipes(
  *  because an item was scanned in or used up. A pull-to-refresh or Shuffle
  *  re-sends whatever the pantry looks like at that moment; between those, the
  *  "have" data on screen is only as fresh as the last regeneration, same as
- *  the dishes themselves. Same error handling as fetchRecipes. */
+ *  the dishes themselves. Same error handling as fetchFeaturedRecipe/
+ *  fetchAlternateRecipes (see toRecipeError), kept as its own copy below
+ *  since this route's payload has no mood field to share a builder with. */
 export async function fetchBrowseRecipes(
   profile: UserProfile,
   items: PantryItem[],
@@ -446,6 +516,29 @@ export function isCookableFromPantry(recipe: Recipe, pantry?: PantryItem[]): boo
   return recipe.ingredients.every((i) => {
     if (!i.have && !i.assumedStaple) return false;
     if (!pantry || !i.have) return true;
+    return hasEnoughQuantity(i.name, i.amount, pantry) !== false;
+  });
+}
+
+/**
+ * The loosest useful Pantry Only rule: does this recipe use anything
+ * actually on the shelf at all — not "zero shopping needed" (that's
+ * isCookableFromPantry above, still the right question for a big, varied
+ * pantry), but "worth a look" for a pantry that's still small. A one-item
+ * pantry will almost never clear the zero-shopping bar — every real dish
+ * needs more than one ingredient — which is exactly the state that made
+ * Pantry Only look broken rather than just strict: three matching recipes
+ * existed, the toggle just never had a reason to say so.
+ *
+ * `assumedStaple` ingredients don't count toward "uses what you have" —
+ * every suggestion already assumes those regardless of the pantry, so a
+ * recipe whose only overlap is "has rice, needs everything else" would
+ * otherwise pass on a fact that isn't really about this pantry at all.
+ */
+export function usesPantryItems(recipe: Recipe, pantry?: PantryItem[]): boolean {
+  if (!pantry || pantry.length === 0) return false;
+  return recipe.ingredients.some((i) => {
+    if (!i.have || i.assumedStaple) return false;
     return hasEnoughQuantity(i.name, i.amount, pantry) !== false;
   });
 }

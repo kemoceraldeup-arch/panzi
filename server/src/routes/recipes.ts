@@ -204,12 +204,6 @@ function readMood(value: unknown): Mood {
   return MOODS.includes(value as Mood) ? (value as Mood) : 'anything';
 }
 
-type Result = {
-  featured: Recipe | null;
-  alternates: Recipe[];
-  skipped: Skipped[];
-};
-
 type BrowseResult = {
   recipes: Recipe[];
   skipped: Skipped[];
@@ -344,17 +338,36 @@ export const RECIPE_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-const RESULT_SCHEMA = {
+// Asks for exactly the featured dish, nothing else — the split that makes the
+// recipes screen feel fast. Writing three full recipes (title, description,
+// every ingredient, every step) in one call is what made the old single
+// request take several seconds before anything could reach the screen; this
+// is the same model call for one recipe instead of three, so the featured
+// card can render while the two alternates are still being written (see
+// ALTERNATES_SCHEMA and POST /featured below).
+const FEATURED_RESULT_SCHEMA = {
   type: 'object',
   properties: {
     featured: RECIPE_SCHEMA,
+  },
+  required: ['featured'],
+  additionalProperties: false,
+} as const;
+
+// The two alternates, fetched in a second call that starts only once the
+// featured dish is already on screen — see POST /alternates below. Takes the
+// featured recipe's own title as an avoid-title so the model doesn't spend
+// this second call rediscovering the same dish.
+const ALTERNATES_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
     alternates: {
       type: 'array',
-      description: 'Two other options, different in style and effort from the featured one.',
+      description: 'Two options, different in style and effort from each other and from the featured dish already chosen.',
       items: RECIPE_SCHEMA,
     },
   },
-  required: ['featured', 'alternates'],
+  required: ['alternates'],
   additionalProperties: false,
 } as const;
 
@@ -601,15 +614,31 @@ function cleanPantryLine(line: PantryLine): Record<string, unknown> | null {
 
 export const recipesRouter = Router();
 
-recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
-  const uid = req.uid;
-  const body = (req.body ?? {}) as {
-    items?: PantryLine[];
-    dietary?: unknown;
-    allergies?: unknown;
-    mood?: unknown;
-    avoidTitles?: unknown;
-  };
+type SuggestionBody = {
+  items?: PantryLine[];
+  dietary?: unknown;
+  allergies?: unknown;
+  mood?: unknown;
+  avoidTitles?: unknown;
+};
+
+/** Everything both /featured and /alternates need out of the request body,
+ *  cleaned and gated the same way the original combined route did — the
+ *  same pantry line cleaning, the same "food the user doesn't eat never
+ *  reaches the model" filter. Returns null (after writing the 400 itself)
+ *  when there's nothing to cook with. */
+function readSuggestionRequest(
+  req: Request,
+  res: Response
+): {
+  items: Record<string, unknown>[];
+  dietary: string[];
+  allergies: string[];
+  mood: Mood;
+  avoidTitles: string[];
+  hiddenByDiet: number;
+} | null {
+  const body = (req.body ?? {}) as SuggestionBody;
 
   const sent = (Array.isArray(body.items) ? body.items : [])
     .map(cleanPantryLine)
@@ -621,25 +650,32 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
       error: 'invalid-argument',
       message: 'There is nothing in the pantry to cook with yet.',
     });
-    return;
+    return null;
   }
 
   const dietary = stringList(body.dietary, 20);
   const allergies = stringList(body.allergies, 20);
   const mood = readMood(body.mood);
-  const moodLine = MOOD_LINES[mood];
   const avoidTitles = stringList(body.avoidTitles, 20);
 
-  // Food the user doesn't eat never reaches the model.
-  //
-  // A housemate's bacon stays in their pantry and on Home's "eat these first" —
-  // Panzi has no business commenting on someone's shopping — it just never
-  // becomes a suggestion. Dropping it here rather than asking the model to
-  // ignore it is the stronger guarantee: it cannot offer what it never saw, and
-  // usesExpiring cannot name it either.
   const items = sent.filter((line) => !forbidsItem(String(line.name ?? ''), dietary));
   const hiddenByDiet = sent.length - items.length;
 
+  return { items, dietary, allergies, mood, avoidTitles, hiddenByDiet };
+}
+
+/** The pantry/diet/allergy/mood/avoid-titles portion of the brief, shared by
+ *  every suggestion call — /featured and /alternates each append their own
+ *  final instruction line asking for a different count of dishes. */
+function buildBriefLines(input: {
+  items: Record<string, unknown>[];
+  dietary: string[];
+  allergies: string[];
+  mood: Mood;
+  avoidTitles: string[];
+}): string[] {
+  const { items, dietary, allergies, mood, avoidTitles } = input;
+  const moodLine = MOOD_LINES[mood];
   // The pantry, the profile, the diet rules and the mood all go in the user
   // turn, never the system prompt. The system prompt is cached, and anything
   // that changes per request has to sit after the cache breakpoint or the cache
@@ -647,7 +683,7 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
   // and would quietly bill every call at full rate.
   const guidance = dietGuidance(dietary);
 
-  const brief = [
+  return [
     items.length > 0
       ? 'Here is everything in the pantry right now:'
       : 'Their pantry has nothing in it they can eat, so build the suggestion from scratch, set needsShopping, and say plainly that this one needs a trip to the shop.',
@@ -667,84 +703,29 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
           `They have already been shown these dishes recently: ${avoidTitles.join(', ')}. Suggest different ones this time. Only repeat one of these if the pantry genuinely does not support any other real option.`,
         ]
       : []),
-    '',
-    `Suggest one featured dish and exactly ${ALTERNATE_COUNT} alternates.`,
-  ].join('\n');
+  ];
+}
 
-  // Wall clock, not token count. The user experiences seconds, and output
-  // tokens are what buys them — so the two are logged side by side and the
-  // ratio tells you whether a slow call was a big answer or a slow network.
-  const startedAt = Date.now();
-
-  let response;
-  try {
-    response = await anthropic().messages.create({
-      model: MODEL,
-      max_tokens: 8000,
-      // Byte-identical on every request, so it is cached and billed at a tenth
-      // of input rate after the first call. See routes/scan.ts for the same
-      // arrangement and the ordering rule it depends on.
-      system: [
-        {
-          type: 'text',
-          text: SYSTEM,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      output_config: {
-        // Choosing a dish from a list is not deep deliberation, and this is a
-        // screen the user is waiting on. Raise it if the suggestions come back
-        // shallow; the token line below is how you would know what that cost.
-        effort: 'low',
-        format: { type: 'json_schema', schema: RESULT_SCHEMA as unknown as Record<string, unknown> },
-      },
-      messages: [{ role: 'user', content: brief }],
-    });
-  } catch (err: any) {
-    console.error('Recipe call failed', { uid, message: err?.message });
-    const status = err?.status === 429 ? 429 : 503;
-    res.status(status).json({
-      error: status === 429 ? 'resource-exhausted' : 'unavailable',
-      message: 'Could not think of anything just now — try again in a moment.',
-    });
-    return;
-  }
-
-  if (response.stop_reason === 'refusal') {
-    console.warn('Model declined the recipe request', { uid });
-    res.json({ featured: null, alternates: [], skipped: [] } satisfies Result);
-    return;
-  }
-
-  const block = response.content.find((entry) => entry.type === 'text');
-  if (!block || block.type !== 'text') {
-    console.error('No text block in recipe response', { uid, stopReason: response.stop_reason });
-    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
-    return;
-  }
-
-  let parsed: { featured?: unknown; alternates?: unknown };
-  try {
-    parsed = JSON.parse(block.text);
-  } catch {
-    console.error('Recipe response was not valid JSON', { uid });
-    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
-    return;
-  }
-
+/** Cleans, matches pantryUsed against the real pantry, and runs the
+ *  allergy/diet gates on a list of raw model-output recipes — the same
+ *  pipeline the old combined route ran once over featured+alternates
+ *  together, factored out so /featured and /alternates each run it over
+ *  just their own recipes. */
+function cleanAndGate(
+  rawRecipes: unknown[],
+  items: Record<string, unknown>[],
+  allergies: string[],
+  dietary: string[]
+): { safe: Recipe[]; skipped: Skipped[]; candidateCount: number } {
   // Held against the pantry that was actually sent. `pantryUsed` is the list the
   // app later offers to delete from someone's kitchen, so a name the model
   // invented or paraphrased must not survive to the client — the client would
   // fail to match it and silently drop it anyway, but it is cheaper to be sure
   // here, where the real list is in hand.
-  const known = new Map(
-    items.map((item) => [String(item.name).toLowerCase(), String(item.name)])
-  );
+  const known = new Map(items.map((item) => [String(item.name).toLowerCase(), String(item.name)]));
 
-  const candidates = [
-    cleanRecipe(parsed.featured),
-    ...(Array.isArray(parsed.alternates) ? parsed.alternates : []).map(cleanRecipe),
-  ]
+  const candidates = rawRecipes
+    .map(cleanRecipe)
     .filter((recipe): recipe is Recipe => recipe !== null)
     .map((recipe) => ({
       ...recipe,
@@ -778,13 +759,84 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     return true;
   });
 
-  console.info('Recipes complete', {
+  return { safe, skipped, candidateCount: candidates.length };
+}
+
+/**
+ * The one featured dish — split off from the old combined /-with-alternates
+ * call so the screen has something to show after writing one recipe instead
+ * of three. See ALTERNATES_RESULT_SCHEMA and POST /alternates for the other
+ * half; the client fires that second call once this one has already landed.
+ */
+recipesRouter.post('/featured', async (req: Request, res: Response): Promise<void> => {
+  const uid = req.uid;
+  const parsed0 = readSuggestionRequest(req, res);
+  if (!parsed0) return;
+  const { items, dietary, allergies, mood, avoidTitles, hiddenByDiet } = parsed0;
+
+  const brief = [
+    ...buildBriefLines({ items, dietary, allergies, mood, avoidTitles }),
+    '',
+    'Suggest one featured dish only — just the single best pick, not alternates.',
+  ].join('\n');
+
+  const startedAt = Date.now();
+
+  let response;
+  try {
+    response = await anthropic().messages.create({
+      model: MODEL,
+      max_tokens: 4000,
+      // Same cached prompt text as /alternates and the old combined route —
+      // byte-identical is what keeps this hitting the cache.
+      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: FEATURED_RESULT_SCHEMA as unknown as Record<string, unknown> },
+      },
+      messages: [{ role: 'user', content: brief }],
+    });
+  } catch (err: any) {
+    console.error('Featured recipe call failed', { uid, message: err?.message });
+    const status = err?.status === 429 ? 429 : 503;
+    res.status(status).json({
+      error: status === 429 ? 'resource-exhausted' : 'unavailable',
+      message: 'Could not think of anything just now — try again in a moment.',
+    });
+    return;
+  }
+
+  if (response.stop_reason === 'refusal') {
+    console.warn('Model declined the featured recipe request', { uid });
+    res.json({ featured: null, skipped: [] });
+    return;
+  }
+
+  const block = response.content.find((entry) => entry.type === 'text');
+  if (!block || block.type !== 'text') {
+    console.error('No text block in featured recipe response', { uid, stopReason: response.stop_reason });
+    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
+    return;
+  }
+
+  let body: { featured?: unknown };
+  try {
+    body = JSON.parse(block.text);
+  } catch {
+    console.error('Featured recipe response was not valid JSON', { uid });
+    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
+    return;
+  }
+
+  const { safe, skipped, candidateCount } = cleanAndGate([body.featured], items, allergies, dietary);
+
+  console.info('Featured recipe complete', {
     uid,
     ms: Date.now() - startedAt,
     mood,
     itemCount: items.length,
     hiddenByDiet,
-    suggested: candidates.length,
+    suggested: candidateCount,
     blockedByAllergy: skipped.filter((s) => s.reason === 'allergy').length,
     blockedByDiet: skipped.filter((s) => s.reason === 'diet').length,
     inputTokens: response.usage.input_tokens,
@@ -793,11 +845,97 @@ recipesRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     outputTokens: response.usage.output_tokens,
   });
 
-  res.json({
-    featured: safe[0] ?? null,
-    alternates: safe.slice(1, 1 + ALTERNATE_COUNT),
-    skipped,
-  } satisfies Result);
+  res.json({ featured: safe[0] ?? null, skipped });
+});
+
+/**
+ * The two alternates, fetched separately from — and, on the client, after —
+ * the featured dish above. Takes the featured recipe's own title so the
+ * model doesn't waste this call rediscovering the same dish; the client
+ * passes it back through `avoidTitles` alongside whatever session history
+ * fetchRecipes already sends.
+ */
+recipesRouter.post('/alternates', async (req: Request, res: Response): Promise<void> => {
+  const uid = req.uid;
+  const parsed0 = readSuggestionRequest(req, res);
+  if (!parsed0) return;
+  const { items, dietary, allergies, mood, avoidTitles, hiddenByDiet } = parsed0;
+
+  const brief = [
+    ...buildBriefLines({ items, dietary, allergies, mood, avoidTitles }),
+    '',
+    `Suggest exactly ${ALTERNATE_COUNT} alternates — different in style and effort from each other and from whatever dish they've already been shown as the featured pick (named in the avoid list above, if any).`,
+  ].join('\n');
+
+  const startedAt = Date.now();
+
+  let response;
+  try {
+    response = await anthropic().messages.create({
+      model: MODEL,
+      max_tokens: 6000,
+      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: ALTERNATES_RESULT_SCHEMA as unknown as Record<string, unknown> },
+      },
+      messages: [{ role: 'user', content: brief }],
+    });
+  } catch (err: any) {
+    console.error('Alternates call failed', { uid, message: err?.message });
+    const status = err?.status === 429 ? 429 : 503;
+    res.status(status).json({
+      error: status === 429 ? 'resource-exhausted' : 'unavailable',
+      message: 'Could not think of anything just now — try again in a moment.',
+    });
+    return;
+  }
+
+  if (response.stop_reason === 'refusal') {
+    console.warn('Model declined the alternates request', { uid });
+    res.json({ alternates: [], skipped: [] });
+    return;
+  }
+
+  const block = response.content.find((entry) => entry.type === 'text');
+  if (!block || block.type !== 'text') {
+    console.error('No text block in alternates response', { uid, stopReason: response.stop_reason });
+    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
+    return;
+  }
+
+  let body: { alternates?: unknown };
+  try {
+    body = JSON.parse(block.text);
+  } catch {
+    console.error('Alternates response was not valid JSON', { uid });
+    res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
+    return;
+  }
+
+  const { safe, skipped, candidateCount } = cleanAndGate(
+    Array.isArray(body.alternates) ? body.alternates : [],
+    items,
+    allergies,
+    dietary
+  );
+
+  console.info('Alternates complete', {
+    uid,
+    ms: Date.now() - startedAt,
+    mood,
+    itemCount: items.length,
+    hiddenByDiet,
+    suggested: candidateCount,
+    blockedByAllergy: skipped.filter((s) => s.reason === 'allergy').length,
+    blockedByDiet: skipped.filter((s) => s.reason === 'diet').length,
+    inputTokens: response.usage.input_tokens,
+    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
+    outputTokens: response.usage.output_tokens,
+  });
+
+  res.json({ alternates: safe.slice(0, ALTERNATE_COUNT), skipped });
 });
 
 /**

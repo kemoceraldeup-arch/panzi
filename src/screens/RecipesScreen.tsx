@@ -4,17 +4,33 @@
 // made the landing screen an answer to a question nobody had asked yet —
 // recipes belong behind a tab you tap when you want them.
 //
-// The suggestions are real now: built by the recipe route from the pantry as it
-// stands, weighted toward whatever is about to go off. The card layout is
-// unchanged — its shape (title, minutes, ingredients on hand, uses-expiring
-// count) was designed for this data, so it only ever needed filling.
+// Two entirely different data sources sit behind the same four category
+// tabs (All / Quick and Easy / Main Dish / Snacks), switched by the Pantry
+// Only toggle:
 //
-// The screen tries hard not to call the model. A suggestion is cached against a
-// fingerprint of the pantry, the profile and the day, with one entry per mood;
-// opening this tab ten times before dinner costs one call, not ten, and
-// flipping between Quick and Ulam and back costs nothing at all. Only a real
-// change — food added or eaten, a diet edited, a new day, a mood not asked for
-// yet, or the user asking for something else — spends another.
+// Pantry Only OFF is a cookbook. The four tabs read straight from the fixed
+// 52-recipe list in data/localRecipes.ts, filtered by category client-side.
+// No network call, no pantry, no diet/allergy check — see localRecipeToRecipe
+// below for exactly which fields that implies leaving at their "nothing to
+// report" defaults, and why that's honest rather than a shortcut.
+//
+// Pantry Only ON is a suggestion engine. Only in this mode does the recipe
+// route get called: real dishes built by Claude from the pantry as it
+// stands, weighted toward whatever is about to go off, with the same
+// category tab now shaping the question sent to the model instead of
+// filtering a local list. The card layout is unchanged either way — its
+// shape (title, minutes, ingredients on hand, uses-expiring count) was
+// designed for the AI-generated data, so the local path only ever needed
+// filling with something that looks the same on screen.
+//
+// This mode still tries hard not to call the model more than it has to. A
+// suggestion is cached against a fingerprint of the pantry, the profile and
+// the day, with one entry per mood; opening this tab ten times before
+// dinner costs one call, not ten, and flipping between Quick and Ulam and
+// back costs nothing at all. Only a real change — food added or eaten, a
+// diet edited, a new day, a mood not asked for yet, or the user asking for
+// something else — spends another. None of this applies with Pantry Only
+// off: LOCAL_RECIPES has nothing to cache, because it never fetches.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -28,6 +44,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import Text from '../components/Text';
 import { auth } from '../config/firebaseClient';
+import { LOCAL_RECIPES, LocalRecipe } from '../data/localRecipes';
 import { PantryItem, subscribeToPantryItems } from '../services/pantry';
 import { UserProfile, subscribeToProfile } from '../services/profile';
 import {
@@ -38,10 +55,12 @@ import {
   RecipeSet,
   SkippedRecipe,
   browseSignature,
+  fetchAlternateRecipes,
   fetchBrowseRecipes,
-  fetchRecipes,
+  fetchFeaturedRecipe,
   ingredientCounts,
   isCookableFromPantry,
+  usesPantryItems,
   loadCachedBrowse,
   loadCachedRecipes,
   pantrySignature,
@@ -56,7 +75,7 @@ import {
   subscribeToSavedRecipes,
   unsaveRecipe,
 } from '../services/savedRecipes';
-import { SCAN_BUTTON_LIFT } from '../navigation/TabBar';
+import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
 import { FeaturedRecipeCard } from '../components/home/RecipeCards';
 import RecipeTabs from '../components/recipes/RecipeTabs';
 import PantryToggle from '../components/recipes/PantryToggle';
@@ -72,6 +91,41 @@ import { space } from '../theme/spacing';
 const HIT_SLOP = { top: 10, bottom: 10, left: 10, right: 10 };
 
 type Phase = 'loading' | 'ready' | 'failed';
+
+/**
+ * A local cookbook entry, shaped like the AI-generated Recipe every other
+ * screen already knows how to render — FeaturedRecipeCard, RecipeDetailScreen
+ * and CookModeScreen all take a Recipe, not a LocalRecipe, so this is the one
+ * place that difference gets papered over rather than three.
+ *
+ * The pantry-specific fields (have, usesExpiring, pantryUsed, needsShopping,
+ * why) have no meaning for a dish that was never matched against anyone's
+ * shelves — they're set to their "nothing to report" values rather than
+ * guessed at. `have: false` on every ingredient is deliberately the honest
+ * answer here, not a bug: this dish was not checked against a pantry, so
+ * nothing on it can truthfully be marked as already on hand.
+ */
+function localRecipeToRecipe(local: LocalRecipe): Recipe {
+  return {
+    title: local.title,
+    look: local.look,
+    dishKey: local.dishKey,
+    minutes: local.minutes,
+    servings: local.servings,
+    description: local.description,
+    why: '',
+    needsShopping: false,
+    usesExpiring: [],
+    pantryUsed: [],
+    ingredients: local.ingredients.map((i) => ({
+      name: i.name,
+      amount: i.amount,
+      have: false,
+      assumedStaple: false,
+    })),
+    steps: local.steps,
+  };
+}
 
 type Props = {
   /** Jumps to the Profile tab. The diet shown here is set there, and a chip
@@ -170,6 +224,13 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
         // blind. Annoying for a user with no allergies; the alternative is
         // serving peanuts to someone who wrote down that they can't eat them.
         setProfileFailed(true);
+        // Pantry Only itself needs the profile it just lost — its own toggle
+        // hides in this state (see the render below) so there'd be no way
+        // back to the local cookbook if this left pantryOnly sitting at
+        // true. Falling back automatically means a broken profile listener
+        // degrades to "the recipes tab still works, just as a cookbook"
+        // rather than a dead end.
+        setPantryOnly(false);
       }
     );
   }, [uid]);
@@ -226,14 +287,45 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
         // avoid yet, and asking the model to dodge an empty list would just
         // be dead weight in every request.
         const avoidTitles = force ? (recentTitles.current[which] ?? []) : [];
-        const fresh = await fetchRecipes(pantry, who, which, avoidTitles);
+
+        // Split in two: the featured dish is one recipe instead of three, so
+        // it comes back in a fraction of the old combined call's time — the
+        // screen renders it the moment it lands rather than waiting on the
+        // two alternates as well. Alternates are then fetched separately and
+        // merged in when they arrive; if that second call is slower or even
+        // fails, the featured card the user is actually looking at is
+        // unaffected — see the catch below, which is deliberately scoped to
+        // just that fetch.
+        const featuredResult = await fetchFeaturedRecipe(pantry, who, which, avoidTitles);
         builtFor.current = token;
-        setSet(fresh);
+        setSet({ featured: featuredResult.featured, alternates: [], skipped: featuredResult.skipped });
         setPhase('ready');
-        if (fresh.featured) rememberTitles(which, [fresh.featured.title, ...fresh.alternates.map((r) => r.title)]);
-        // Only a usable answer is worth keeping — caching an empty one would
-        // hold the screen at "nothing to suggest" for a day.
-        if (fresh.featured) await saveCachedRecipes(uid, signature, which, fresh);
+        if (featuredResult.featured) rememberTitles(which, [featuredResult.featured.title]);
+
+        if (featuredResult.featured) {
+          try {
+            const alternatesAvoid = [...avoidTitles, featuredResult.featured.title];
+            const alternatesResult = await fetchAlternateRecipes(pantry, who, which, alternatesAvoid);
+            const complete: RecipeSet = {
+              featured: featuredResult.featured,
+              alternates: alternatesResult.alternates,
+              skipped: [...featuredResult.skipped, ...alternatesResult.skipped],
+            };
+            setSet(complete);
+            if (alternatesResult.alternates.length > 0) {
+              rememberTitles(which, alternatesResult.alternates.map((r) => r.title));
+            }
+            // Only a usable answer is worth keeping — caching a set with no
+            // alternates would hold Shuffle's "something different" promise
+            // to just one dish for the rest of the day.
+            await saveCachedRecipes(uid, signature, which, complete);
+          } catch {
+            // The featured card is already on screen and correct on its own
+            // — losing the alternates costs a shorter list, not a broken
+            // page, so this fails silently rather than surfacing an error
+            // for a request the user never directly asked for.
+          }
+        }
       } catch (err) {
         setError(
           err instanceof RecipeError ? err.message : 'Something went wrong — try again.'
@@ -289,6 +381,13 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
   );
 
   useEffect(() => {
+    // The AI call this effect exists to trigger is Pantry Only's whole
+    // reason to run at all — see the top-of-file note and the ticket this
+    // gate was added for: every tab used to hit the model regardless of
+    // this toggle, which is exactly backwards from what Pantry Only is
+    // supposed to mean. With it off, the four tabs read straight from
+    // LOCAL_RECIPES below and this effect has nothing to do.
+    if (!pantryOnly) return;
     // Handled by the browse effect below — a different data shape, a
     // different signature, no pantry involved at all.
     if (mood === 'anything') return;
@@ -311,9 +410,14 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     if (builtMood === mood && builtFor.current !== `${mood}#${signature}`) return;
 
     void build(items, profile, mood, false);
-  }, [items, profile, mood, build]);
+  }, [items, profile, mood, pantryOnly, build]);
 
   useEffect(() => {
+    // Same gate as the pantry-anchored effect above — All Recipes' own AI
+    // call (fetchBrowseRecipes) only has a reason to run once Pantry Only
+    // asks for something matched against the pantry. Off, this tab reads
+    // the local list the same as the other three.
+    if (!pantryOnly) return;
     if (mood !== 'anything') return;
     if (profile === null) return;
 
@@ -323,22 +427,30 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     if (browseBuiltFor.current !== null && browseBuiltFor.current !== signature) return;
 
     void buildBrowse(profile, items ?? [], false);
-  }, [profile, mood, items, buildBrowse]);
+  }, [profile, mood, pantryOnly, items, buildBrowse]);
 
   /** Shuffle and Try again. Both need the same two things to have landed. */
   const rebuild = useCallback(() => {
+    // Nothing to re-roll — LOCAL_RECIPES is a fixed list, not a suggestion
+    // the model could come back with a different answer for. Both this and
+    // onPullRefresh below are wired to Shuffle and the pull gesture, neither
+    // of which the local-list render path offers in the first place (see
+    // the pantryOnly branch in the return below), so this guard is a second
+    // line of defence, not the only one.
+    if (!pantryOnly) return;
     if (mood === 'anything') {
       if (profile) void buildBrowse(profile, items ?? [], true);
       return;
     }
     if (items && profile) void build(items, profile, mood, true);
-  }, [items, profile, mood, build, buildBrowse]);
+  }, [items, profile, mood, pantryOnly, build, buildBrowse]);
 
   /** Pull-to-refresh at the top of the list — the same forced re-roll as
    *  Shuffle, just reached by a gesture instead of a button, and quiet about
    *  it: the pull spinner is already telling the user something is
    *  happening, so the cards stay on screen instead of clearing to skeletons. */
   const onPullRefresh = useCallback(async () => {
+    if (!pantryOnly) return;
     if (!profile) return;
     setRefreshing(true);
     try {
@@ -350,7 +462,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     } finally {
       setRefreshing(false);
     }
-  }, [items, profile, mood, build, buildBrowse]);
+  }, [items, profile, mood, pantryOnly, build, buildBrowse]);
 
   const savedKeys = useMemo(
     () => new Set(saved.map((entry) => savedKey(entry.recipe))),
@@ -385,15 +497,21 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
   const blockingTerm = skipped.find((entry) => entry.reason === 'diet' && entry.term)?.term ?? null;
 
   // The featured pick and its alternates, in the order the server returned
-  // them, each carrying its own have/total (the card's on-hand display) and
-  // whether it's actually cookable with nothing bought (Pantry Only's
-  // filter) — two different questions, since a recipe can read "5 of 6 on
-  // hand" and still need zero shopping when the missing one is rice.
+  // them, each carrying its own have/total (the card's on-hand display),
+  // whether it's cookable with nothing bought at all (the "In your pantry"
+  // badge — still the strict, zero-shopping question), and whether it uses
+  // anything from the pantry at all (Pantry Only's own filter — see
+  // usesPantryItems's own doc comment for why this is deliberately looser
+  // than "cookable": a one- or two-item pantry will almost never clear the
+  // zero-shopping bar, which used to make Pantry Only look broken — three
+  // matching recipes existed, the toggle just never had a reason to say so).
   const allCards = useMemo(() => {
     if (!featured) return [];
     return [featured, ...(set?.alternates ?? [])].map((recipe) => {
       const { have, total } = ingredientCounts(recipe);
-      return { recipe, have, total, cookable: isCookableFromPantry(recipe, items ?? []) };
+      const cookable = isCookableFromPantry(recipe, items ?? []);
+      const usesPantry = usesPantryItems(recipe, items ?? []);
+      return { recipe, have, total, cookable, usesPantry };
     });
   }, [featured, set, items]);
 
@@ -401,28 +519,39 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
   // is offering to switch to, so it has to keep counting even while the
   // toggle it describes is off.
   const cookableCount = useMemo(
-    () => allCards.filter((c) => c.cookable).length,
+    () => allCards.filter((c) => c.usesPantry).length,
     [allCards]
   );
 
   const visibleCards = useMemo(
-    () => (pantryOnly ? allCards.filter((c) => c.cookable) : allCards),
+    () => (pantryOnly ? allCards.filter((c) => c.usesPantry) : allCards),
     [allCards, pantryOnly]
   );
 
-  // Same question, asked of the browse list instead — cookable now depends on
+  // Same question, asked of the browse list instead — usesPantry depends on
   // "have" being checked against the pantry that was current at the last
   // browse fetch (see fetchBrowseRecipes), not the live pantry, since the
   // list itself only regenerates on a pull-to-refresh/Shuffle/day change.
   const browseCookableCount = useMemo(
-    () => (browseSet?.recipes ?? []).filter((r) => isCookableFromPantry(r, items ?? [])).length,
+    () => (browseSet?.recipes ?? []).filter((r) => usesPantryItems(r, items ?? [])).length,
     [browseSet, items]
   );
 
   const visibleBrowseRecipes = useMemo(() => {
     const recipes = browseSet?.recipes ?? [];
-    return pantryOnly ? recipes.filter((r) => isCookableFromPantry(r, items ?? [])) : recipes;
+    return pantryOnly ? recipes.filter((r) => usesPantryItems(r, items ?? [])) : recipes;
   }, [browseSet, pantryOnly, items]);
+
+  // Pantry Only OFF: the fixed cookbook, not a suggestion — see the file
+  // header and localRecipes.ts's own header for why this reads a local list
+  // instead of asking the model anything. "All" is every entry; the other
+  // three tabs are LOCAL_RECIPES filtered by the matching category. No
+  // pantry, no diet/allergy gate, no loading state — this is synchronous
+  // data, not a fetch.
+  const localRecipes = useMemo(() => {
+    const filtered = mood === 'anything' ? LOCAL_RECIPES : LOCAL_RECIPES.filter((r) => r.category === mood);
+    return filtered.map(localRecipeToRecipe);
+  }, [mood]);
 
   return (
     <View style={styles.container}>
@@ -438,11 +567,15 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
             // fires off a second request while one is still in flight, or
             // before what it needs has loaded, would race the very call it
             // triggered. Browse mode only needs the profile; every other
-            // mood needs the pantry too.
+            // mood needs the pantry too. With Pantry Only off there is no
+            // call to race in the first place — onPullRefresh already
+            // no-ops there, and disabling the gesture here keeps the
+            // affordance from promising a refresh that does nothing.
             enabled={
-              mood === 'anything'
+              pantryOnly &&
+              (mood === 'anything'
                 ? browsePhase !== 'loading' && profile !== null
-                : !empty && phase !== 'loading' && items !== null && profile !== null
+                : !empty && phase !== 'loading' && items !== null && profile !== null)
             }
             tintColor={colors.primaryDark}
             colors={[colors.primaryDark]}
@@ -453,13 +586,15 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
           <View style={styles.headerText}>
             <Text style={styles.title}>Recipe</Text>
             <Text style={styles.subtitle}>
-              {mood === 'anything'
+              {!pantryOnly
                 ? 'Filipino dishes to try, any night.'
-                : empty
-                  ? 'Once there is food to work with.'
-                  : featured?.needsShopping
-                    ? "Nothing quite fits tonight — here's one worth a trip."
-                    : 'Built around what you already have.'}
+                : mood === 'anything'
+                  ? 'Filipino dishes to try, any night.'
+                  : empty
+                    ? 'Once there is food to work with.'
+                    : featured?.needsShopping
+                      ? "Nothing quite fits tonight — here's one worth a trip."
+                      : 'Built around what you already have.'}
             </Text>
           </View>
           <TouchableOpacity
@@ -479,8 +614,12 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
         {/* The diet, shown on the screen it governs. Without this the rule is
             invisible here and the user has to take it on trust that anything
             was applied at all. Shown in browse mode too — the diet still
-            applies there, an empty pantry just isn't the reason it's hidden. */}
-        {(mood === 'anything' || !empty) && diets.length > 0 && (
+            applies there, an empty pantry just isn't the reason it's hidden.
+            Hidden entirely with Pantry Only off: LOCAL_RECIPES is a plain,
+            unfiltered list, and showing this chip there would claim a
+            guarantee — "this is checked against your diet" — that nothing
+            on the local-list path actually keeps. */}
+        {pantryOnly && (mood === 'anything' || !empty) && diets.length > 0 && (
           <TouchableOpacity
             style={styles.dietRow}
             onPress={onOpenProfile}
@@ -509,29 +648,46 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
           </TouchableOpacity>
         )}
 
-        {/* The tabs stay reachable even on an empty pantry — All Recipes
-            doesn't need one. Pantry Only is the one control that's actually
-            meaningless without a pantry, so it alone stays gated — on both
-            All Recipes and the mood tabs alike, now that browse recipes
-            carry their own have/cookable data too (see fetchBrowseRecipes). */}
-        {!profileFailed && (
-          <View style={styles.filters}>
-            <RecipeTabs
-              value={mood}
-              onChange={setMood}
-              disabled={mood === 'anything' ? browsePhase === 'loading' : phase === 'loading'}
+        {/* The tabs stay reachable even when the profile failed to load —
+            LOCAL_RECIPES doesn't read the profile at all, so a broken diet/
+            allergy listener has no reason to also block browsing the fixed
+            cookbook. Pantry Only itself still needs the profile (the model
+            call it drives sends the diet/allergy list), so it alone stays
+            gated on profileFailed, same as it already was on an empty
+            pantry. */}
+        <View style={styles.filters}>
+          <RecipeTabs
+            value={mood}
+            onChange={setMood}
+            // phase/browsePhase start at 'loading' and, with Pantry Only
+            // off, never move past it — nothing sets them, because the
+            // effects that would are gated on pantryOnly now (see those
+            // effects above). Reading them here unguarded would leave the
+            // tabs permanently disabled the moment someone turns Pantry
+            // Only off, which is the opposite of what this screen is
+            // meant to do in that mode — LOCAL_RECIPES has nothing to
+            // wait on, so nothing here should ever read as "loading".
+            disabled={pantryOnly && (mood === 'anything' ? browsePhase === 'loading' : phase === 'loading')}
+          />
+          {!empty && !profileFailed && (
+            <PantryToggle
+              value={pantryOnly}
+              onChange={setPantryOnly}
+              cookableCount={mood === 'anything' ? browseCookableCount : cookableCount}
+              disabled={pantryOnly && (mood === 'anything' ? browsePhase === 'loading' : phase === 'loading')}
             />
-            {!empty && (
-              <PantryToggle
-                value={pantryOnly}
-                onChange={setPantryOnly}
-                cookableCount={mood === 'anything' ? browseCookableCount : cookableCount}
-                disabled={mood === 'anything' ? browsePhase === 'loading' : phase === 'loading'}
-              />
-            )}
-          </View>
-        )}
+          )}
+        </View>
 
+        {/* Everything from here to the end of the scroll view is Pantry
+            Only's own territory — the AI-generated, pantry-matched path.
+            With the toggle off, none of this fetches, loads or renders;
+            the block right after it (LOCAL_RECIPES, below) takes over
+            instead. See the ticket this split was made for: every tab used
+            to call the model regardless of Pantry Only, which defeated the
+            point of the toggle. */}
+        {pantryOnly && (
+          <>
         {/* Nothing on the shelves. No call is made — asking a model what to
             cook with an empty fridge spends money to be told nothing. Does
             not apply to All Recipes, which never needed a pantry. */}
@@ -741,6 +897,34 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
               ))}
             </>
           )}
+          </>
+        )}
+
+        {/* Pantry Only OFF — the fixed cookbook. Synchronous, local,
+            unfiltered by the pantry or diet/allergy rules the AI path
+            applies: this is a browse list of real dishes, not a claim
+            about what's safe or possible to cook with what's on hand. No
+            loading state, because there is nothing to wait on; no empty
+            state either, because every category tab has at least one
+            local recipe (see localRecipes.ts) so this can never render
+            zero cards. */}
+        {!pantryOnly &&
+          localRecipes.map((recipe, i) => (
+            <FeaturedRecipeCard
+              key={`${recipe.title}-${i}`}
+              recipe={{
+                title: recipe.title,
+                look: recipe.look,
+                dishKey: recipe.dishKey,
+                minutes: recipe.minutes,
+                usesExpiringCount: 0,
+                description: recipe.description,
+              }}
+              saved={savedKeys.has(savedKey(recipe))}
+              onOpen={() => setOpen(recipe)}
+              onToggleSave={() => toggleSave(recipe)}
+            />
+          ))}
       </ScrollView>
 
       <RecipeDetailScreen
@@ -839,7 +1023,12 @@ const useStyles = makeStyles((colors) => ({
     flexGrow: 1,
     paddingHorizontal: space.xl,
     paddingTop: space.md,
-    paddingBottom: SCAN_BUTTON_LIFT + 34 + 24,
+    // Was SCAN_BUTTON_LIFT + 34 + 24 — the 34 undershot the tab bar's own
+    // content height (TAB_BAR_CONTENT_HEIGHT, 72), which left the last
+    // card's own bottom padding as the only thing between it and the
+    // floating Scan button, not actually clear of the bar underneath that
+    // button. Nav height + button overhang + 16px, as intended.
+    paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + space.lg,
     gap: space.xl,
   },
   dietRow: {
@@ -889,6 +1078,10 @@ const useStyles = makeStyles((colors) => ({
     flex: 1,
     minWidth: 0,
   },
+  // Was a soft-fill pill (primaryLighter) — still a filled shape sitting
+  // right beside the page title, competing with it for the first thing the
+  // eye lands on. An outline in the same accent now, so it reads as a
+  // secondary action rather than a second headline.
   savedButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -896,7 +1089,9 @@ const useStyles = makeStyles((colors) => ({
     height: 36,
     paddingHorizontal: space.md2,
     borderRadius: 999,
-    backgroundColor: colors.primaryLighter,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: colors.primaryLine,
   },
   savedButtonText: {
     fontWeight: '800',

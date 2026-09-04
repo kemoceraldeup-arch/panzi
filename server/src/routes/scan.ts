@@ -282,14 +282,10 @@ const MAX_BASE64_LENGTH = 7_000_000;
 
 // No food keeps for a decade, and a four-figure estimate rendered as "2739
 // days" in the review page is a bug the user has to notice on our behalf.
-// Exported: routes/estimateShelfLife.ts enforces the same product rule
-// ("no food keeps forever") for its own, photo-less estimate.
 export const MAX_SHELF_LIFE_DAYS = 730;
 
 // Built once per process rather than per request: the client is a thin wrapper
 // around fetch, and rebuilding it on every scan throws away keep-alive.
-// Exported so routes/estimateShelfLife.ts shares this one instance rather
-// than opening a second connection pool for the same API key.
 let client: Anthropic | null = null;
 
 export function anthropic(): Anthropic {

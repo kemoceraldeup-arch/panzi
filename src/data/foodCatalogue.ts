@@ -148,9 +148,58 @@ export function suggestFoods(query: string, limit = 3): FoodEntry[] {
   return [...starts, ...contains].slice(0, limit);
 }
 
-/** Exact (case-insensitive) catalogue hit, so a typed name still picks up a
- *  category even when the user never tapped a chip. */
+/**
+ * Catalogue hit for a typed name, so it still picks up a category even when
+ * the user never tapped a suggestion chip.
+ *
+ * Exact match first, then a whole-word match in either direction — "Mature
+ * cheddar" finds "Cheddar" (the catalogue name is a whole word inside the
+ * typed one), and "Milk" alone still finds "Milk" (the typed name is a
+ * whole word inside a longer catalogue entry, for the reverse case). Word
+ * boundaries only, never a bare substring: "Cheddar" must not match inside
+ * "Cheddary snack mix" and "Egg" must not match inside "Eggplant" — both
+ * would misclassify a name that only superficially resembles a catalogue
+ * entry. When more than one entry matches, the longest catalogue name wins,
+ * since it's the more specific read ("Greek yoghurt" over "Yoghurt" for a
+ * name containing both).
+ *
+ * This is the fix for a real bug: a hand-typed "Mature cheddar" used to
+ * fall through to no match at all (exact-only), which left the row on
+ * whatever default category a blank candidate starts with — Snacks,
+ * classifying to FoodClass 'condiment' with a year-plus shelf life, for a
+ * block of cheese. The estimate engine's own sanity clamp (shelfLife.ts)
+ * catches the same class of bug from the other side; this fix is the
+ * classification actually landing right in the first place.
+ */
 export function lookupFood(name: string): FoodEntry | null {
   const q = name.trim().toLowerCase();
-  return FOOD_CATALOGUE.find((e) => e.name.toLowerCase() === q) ?? null;
+  if (!q) return null;
+
+  const exact = FOOD_CATALOGUE.find((e) => e.name.toLowerCase() === q);
+  if (exact) return exact;
+
+  let best: FoodEntry | null = null;
+  for (const entry of FOOD_CATALOGUE) {
+    const entryName = entry.name.toLowerCase();
+    const matches = containsWholeWord(q, entryName) || containsWholeWord(entryName, q);
+    if (matches && (!best || entryName.length > best.name.toLowerCase().length)) {
+      best = entry;
+    }
+  }
+  return best;
+}
+
+/** True when `word` (a catalogue name, possibly multi-word — "Greek
+ *  yoghurt") appears inside `text` on whole-word boundaries: not preceded
+ *  or followed by another letter. Comparing whole catalogue names rather
+ *  than splitting into single words is what stops "Milk" matching inside
+ *  a hypothetical "Buttermilk" entry's own text — it only matches a
+ *  complete name-length token, not a fragment of one. */
+function containsWholeWord(text: string, word: string): boolean {
+  const index = text.indexOf(word);
+  if (index === -1) return false;
+  const before = text[index - 1];
+  const after = text[index + word.length];
+  const isLetter = (c: string | undefined) => !!c && /[a-z]/i.test(c);
+  return !isLetter(before) && !isLetter(after);
 }

@@ -4,15 +4,37 @@
 // rules for stepping, formatting and classifying each one.
 //
 // Weight and volume are always stored in their base unit — grams and
-// millilitres — never a formatted string. Display converts to kg/L at 1000
-// and above. This is the one file that knows that conversion; everything
-// else (the stepper, the summary line, the saved pantry string) reads
-// through formatQuantity/parseQuantityString below rather than reimplementing
-// the kg/L cutover.
+// millilitres — never a formatted string. This is the one file that knows
+// that conversion; everything else (the stepper, the summary line, the saved
+// pantry string) reads through formatQuantity/parseQuantityString below
+// rather than reimplementing the g/kg or ml/L split.
+//
+// `displayUnit` is a separate concern from that base-unit storage: it is
+// which of the two units (g/kg, ml/L) the person is currently looking at and
+// typing into. Older code let the stored amount's own magnitude decide that
+// (>=1000 shows kg/L) — which is exactly the bug this field exists to fix:
+// a person who typed "4.5" into a field labelled "L" and then taps that same
+// field back open must see "4.5" again, not the 4500 it's stored as
+// underneath. displayUnit is what the editable field and the unit picker
+// both read and write; the stored `amount` never changes meaning.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type Measure = 'pieces' | 'pack' | 'weight' | 'volume';
+
+/** Weight and volume each display in one of two units at a time — never a
+ *  bare number with the unit implied by its size. g/mL for anything under
+ *  the 1000 cutover, kg/L at and above it, exactly matching where
+ *  formatAmount used to switch automatically — so a row read in from
+ *  existing data (see displayUnitFor below) opens on the unit it already
+ *  looked like it was in, and only changes when the person actually picks a
+ *  different one. */
+export type WeightUnit = 'g' | 'kg';
+export type VolumeUnit = 'mL' | 'L';
+export type DisplayUnit = WeightUnit | VolumeUnit;
+
+export const WEIGHT_UNITS_LIST: WeightUnit[] = ['g', 'kg'];
+export const VOLUME_UNITS_LIST: VolumeUnit[] = ['mL', 'L'];
 
 export type ItemQuantity = {
   measure: Measure;
@@ -21,9 +43,52 @@ export type ItemQuantity = {
    *  fraction of the whole); pieces defaults to false (an egg, a tin). */
   splittable: boolean;
   /** pieces: a count · pack: number of packs (quarter steps) · weight:
-   *  grams · volume: millilitres. */
+   *  grams · volume: millilitres. Always the base unit — g or mL — never
+   *  whatever unit is currently on screen; see displayUnit. */
   amount: number;
+  /** Which unit weight/volume is currently being read and edited in — 'g' or
+   *  'kg', 'mL' or 'L'. Meaningless for pieces/pack, which have no base-unit
+   *  split to begin with. Optional so existing saved rows (and every
+   *  MeasureControl call site written before this field existed) keep
+   *  working — displayUnitFor derives a sensible default from the amount's
+   *  own size when this is absent, the same cutover formatAmount always used. */
+  displayUnit?: DisplayUnit;
 };
+
+/** The unit a row should show when displayUnit hasn't been explicitly set —
+ *  the same >=1000 cutover formatAmount always used, so a freshly-classified
+ *  or freshly-loaded quantity opens on the unit it already reads as. */
+export function displayUnitFor(q: ItemQuantity): DisplayUnit {
+  if (q.displayUnit) return q.displayUnit;
+  if (q.measure === 'weight') return q.amount >= 1000 ? 'kg' : 'g';
+  return q.amount >= 1000 ? 'L' : 'mL';
+}
+
+const UNIT_TO_BASE_FACTOR: Record<DisplayUnit, number> = { g: 1, kg: 1000, mL: 1, L: 1000 };
+
+/** The value to show in the editable field — the stored base-unit amount
+ *  converted into whichever unit is currently on screen. This is the one
+ *  function anything that edits weight/volume must read the number through;
+ *  reading `quantity.amount` directly is what caused "4.5 L" to open as
+ *  "4500" — the base amount, not the displayed one. Rounds to 3 decimals to
+ *  clear ordinary float drift (4500/1000 etc.) without inventing precision
+ *  a kitchen scale never gave. */
+export function displayAmount(q: ItemQuantity): number {
+  if (q.measure !== 'weight' && q.measure !== 'volume') return q.amount;
+  const unit = displayUnitFor(q);
+  const value = q.amount / UNIT_TO_BASE_FACTOR[unit];
+  return Math.round(value * 1000) / 1000;
+}
+
+/** The inverse of displayAmount: a number the person typed or tapped, in
+ *  whatever unit is currently on screen, converted to the base unit this
+ *  quantity is actually stored in. Every write path — typing a value,
+ *  tapping a preset, switching kg<->g — must go through this rather than
+ *  writing the displayed number straight into `amount`, or the stored
+ *  figure silently becomes 1000x too small. */
+export function toBaseAmount(value: number, unit: DisplayUnit): number {
+  return value * UNIT_TO_BASE_FACTOR[unit];
+}
 
 export const MEASURE_LABELS: Record<Measure, string> = {
   pieces: 'Pieces',
@@ -95,6 +160,27 @@ export function minFor(measure: Measure, splittable = false): number {
   }
 }
 
+/** The ceiling the −/+ stepper and direct type-in both clamp to — every path
+ *  that can set `amount`, with nothing above this. Without one, holding + or
+ *  pasting a long string of digits ran the stored amount up without limit;
+ *  one real case did it into scientific notation (9.67e+36 kg), a number no
+ *  kitchen produces and no UI has room to display sanely. The ceilings
+ *  themselves are generous household-pantry maximums, not tight bounds meant
+ *  to be brushed up against — 500 kg/L, 1000 pieces, 100 packs — comfortably
+ *  above anything a real grocery haul would ever need. */
+export function maxFor(measure: Measure): number {
+  switch (measure) {
+    case 'pieces':
+      return 1000;
+    case 'pack':
+      return 100;
+    case 'weight':
+      return 500_000; // 500 kg, in grams — the base unit this is stored in.
+    case 'volume':
+      return 500_000; // 500 L, in millilitres.
+  }
+}
+
 /** Pieces steps by whole numbers unless splittable, in which case halves are
  *  allowed — the increment step() itself uses, distinct from stepFor's
  *  display-only −/+ size for weight/volume. */
@@ -106,7 +192,8 @@ export function step(q: ItemQuantity, direction: 1 | -1): ItemQuantity {
   const delta =
     q.measure === 'pieces' ? pieceIncrement(q.splittable) * direction : stepFor(q.measure, q.amount) * direction;
   const min = minFor(q.measure, q.splittable);
-  const next = Math.max(min, roundToStep(q.amount + delta, q.measure));
+  const max = maxFor(q.measure);
+  const next = Math.min(max, Math.max(min, roundToStep(q.amount + delta, q.measure)));
   return { ...q, amount: next };
 }
 
@@ -164,10 +251,17 @@ function trimDecimals(value: number): string {
 /** The value shown inside the stepper — "6 eggs", "¾ bag", "1.5 kg", or "1
  *  piece" when the item has no unit noun of its own. `unit` is the item's
  *  own unit noun for pieces/pack ("egg", "bag", "loaf"); grams and
- *  millilitres never take one, they format themselves as g/kg/ml/L.
+ *  millilitres never take one, they format through whichever unit
+ *  displayUnitFor says this row is currently showing.
  *  Pieces always names something — "piece" is the fallback noun, never a
  *  bare number on its own, so nothing on this card ever reads as a
- *  quantity with no unit at all. */
+ *  quantity with no unit at all.
+ *
+ *  Deliberately reads displayUnitFor rather than re-deriving the unit from
+ *  q.amount's own size the way this used to: stepping a weight from 950 g to
+ *  1050 g must not silently relabel the field "1.05 kg" out from under
+ *  someone who is actively looking at grams — the unit only changes when
+ *  they pick a different one. */
 export function formatAmount(q: ItemQuantity, unit: string): string {
   switch (q.measure) {
     case 'pieces': {
@@ -180,9 +274,10 @@ export function formatAmount(q: ItemQuantity, unit: string): string {
       return `${n} ${pluralizeUnit(word, q.amount)}`;
     }
     case 'weight':
-      return q.amount >= 1000 ? `${trimDecimals(q.amount / 1000)} kg` : `${trimDecimals(q.amount)} g`;
-    case 'volume':
-      return q.amount >= 1000 ? `${trimDecimals(q.amount / 1000)} L` : `${trimDecimals(q.amount)} ml`;
+    case 'volume': {
+      const displayUnitValue = displayUnitFor(q);
+      return `${trimDecimals(displayAmount(q))} ${displayUnitValue}`;
+    }
   }
 }
 
@@ -210,8 +305,10 @@ export type QuickAmount = { amount: number; label: string };
 /** The 3-column quick-pick row's values, per measure — six entries each, the
  *  exact sets the spec lists, so the grid is always a clean 3×2 with no
  *  orphan row. Pieces/pack labels are formatted through the item's own unit
- *  where one is known; weight/volume are fixed g/kg/ml/L strings regardless
- *  of unit, since they never take one. */
+ *  where one is known; weight/volume are fixed g/kg/mL/L strings regardless
+ *  of the row's current displayUnit — a preset names its own unit, e.g.
+ *  "1.5 kg", the same way it does when tapped (see MeasureControl, which
+ *  also switches displayUnit to match whichever preset was picked). */
 export function quickAmounts(measure: Measure, unit: string): QuickAmount[] {
   switch (measure) {
     case 'pieces':
@@ -232,9 +329,20 @@ export function quickAmounts(measure: Measure, unit: string): QuickAmount[] {
     case 'volume':
       return [250, 500, 1000, 1500, 2000, 3000].map((n) => ({
         amount: n,
-        label: n >= 1000 ? `${trimDecimals(n / 1000)} L` : `${n} ml`,
+        label: n >= 1000 ? `${trimDecimals(n / 1000)} L` : `${n} mL`,
       }));
   }
+}
+
+/** The unit a weight/volume preset's own label is in — "100 g" is g, "1.5
+ *  kg" is kg — so picking a preset can switch displayUnit to match it
+ *  (tapping "1.5 kg" must leave the field reading "1.5"/"kg", never "1500"
+ *  under a stale "g" label). Pieces/pack presets have no base-unit split, so
+ *  this only ever matters for the two measures that do. */
+export function presetUnit(measure: Measure, amount: number): DisplayUnit | null {
+  if (measure === 'weight') return amount >= 1000 ? 'kg' : 'g';
+  if (measure === 'volume') return amount >= 1000 ? 'L' : 'mL';
+  return null;
 }
 
 // ─── Classification ─────────────────────────────────────────────────────

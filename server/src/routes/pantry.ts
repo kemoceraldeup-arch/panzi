@@ -33,6 +33,12 @@ const UPDATABLE = [
   'ripeness',
   'ripenessSource',
   'nutrition',
+  'packageStatus',
+  'openedAt',
+  'expiryUnknown',
+  'basis',
+  'estimatedUseBy',
+  'estimateInputs',
 ] as const;
 
 function pickUpdatable(fields: Record<string, unknown>): Record<string, unknown> {
@@ -65,21 +71,33 @@ function toItem(doc: any) {
     ripeness: doc.ripeness ?? null,
     ripenessSource: doc.ripenessSource ?? null,
     nutrition: doc.nutrition ?? null,
+    packageStatus: doc.packageStatus ?? null,
+    openedAt: doc.openedAt ?? null,
+    expiryUnknown: doc.expiryUnknown ?? false,
+    basis: doc.basis ?? null,
+    estimatedUseBy: doc.estimatedUseBy ?? null,
+    estimateInputs: doc.estimateInputs ?? null,
   };
 }
 
-// Soonest-expiring first, with undated items last. Mongo sorts null before any
-// string ascending, which would put "no date" at the top — exactly backwards —
-// so the ordering is finished off here rather than in the query.
+// Soonest-first on one shared timeline — a real date and a Panzi estimate
+// sort together (Phase 2 §6: "never sort estimated and real dates into
+// separate sections, the user thinks in one timeline"), matching the same
+// effectiveDate the client reads through (services/pantry.ts). Undated items
+// (basis:'estimated' with no cached estimatedUseBy yet, or nothing at all)
+// sort last — Mongo sorts null before any string ascending, which would put
+// "no date" at the top, exactly backwards.
 pantryRouter.get(
   '/',
   withDb(async (req, res) => {
     const items = await PantryItem.find({ userId: req.uid }).lean();
     const rows = items.map(toItem).sort((a, b) => {
-      if (!a.expiryDate && !b.expiryDate) return 0;
-      if (!a.expiryDate) return 1;
-      if (!b.expiryDate) return -1;
-      return a.expiryDate.localeCompare(b.expiryDate);
+      const aDate = a.expiryDate ?? a.estimatedUseBy;
+      const bDate = b.expiryDate ?? b.estimatedUseBy;
+      if (!aDate && !bDate) return 0;
+      if (!aDate) return 1;
+      if (!bDate) return -1;
+      return aDate.localeCompare(bDate);
     });
     res.json({ items: rows });
   })
@@ -122,6 +140,12 @@ pantryRouter.post(
       ripeness: item.ripeness ?? null,
       ripenessSource: item.ripenessSource ?? null,
       nutrition: item.nutrition ?? null,
+      packageStatus: item.packageStatus ?? null,
+      openedAt: item.openedAt ?? null,
+      expiryUnknown: item.expiryUnknown ?? false,
+      basis: item.basis ?? null,
+      estimatedUseBy: item.estimatedUseBy ?? null,
+      estimateInputs: item.estimateInputs ?? null,
     }));
 
     await PantryItem.insertMany(docs, { ordered: true });

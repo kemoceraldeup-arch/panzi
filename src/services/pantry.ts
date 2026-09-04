@@ -26,6 +26,32 @@ export type DateSource = 'label' | 'estimated' | 'user';
 
 const DATE_SOURCES: DateSource[] = ['label', 'estimated', 'user'];
 
+/**
+ * Phase 2's own provenance axis, alongside DateSource rather than replacing
+ * it — DateSource still drives every existing chip (provenanceChip and its
+ * callers), and changing its meaning out from under them would be a silent
+ * breaking change. `basis` is the finer-grained answer Phase 2 actually
+ * needs: 'rough' and 'manual' both used to collapse into DateSource's
+ * 'user', but a rough-date-chip pick ("~Mar 14") and a typed real date read
+ * very differently once an estimate can also render a precise date — only
+ * `basis` tells them apart.
+ *
+ *   printed   — read off the packaging by the scanner. Fact.
+ *   manual    — typed by the user. Fact, by the user's own hand.
+ *   rough     — a rough-date chip pick ("3 days ago" -> a resolved date).
+ *               Still a real stored date, always shown with a tilde so it
+ *               never reads as printed or typed.
+ *   estimated — Panzi's own use-by estimate. No stored date at all — see
+ *               estimatedUseBy below, computed fresh on every read.
+ */
+export type DateBasis = 'printed' | 'manual' | 'rough' | 'estimated';
+
+const DATE_BASES: DateBasis[] = ['printed', 'manual', 'rough', 'estimated'];
+
+function readDateBasis(raw: unknown): DateBasis | null {
+  return DATE_BASES.includes(raw as DateBasis) ? (raw as DateBasis) : null;
+}
+
 // Read back defensively: these fields are absent on every item written before
 // the item scanner shipped, and a stray string from a hand-edited document
 // would otherwise flow straight into a chip that claims the date was printed.
@@ -49,6 +75,19 @@ function readBox(raw: any): ItemBox | null {
   const parts = [raw.x, raw.y, raw.width, raw.height];
   if (parts.some((n) => typeof n !== 'number')) return null;
   return { x: raw.x, y: raw.y, width: raw.width, height: raw.height };
+}
+
+function readEstimateInputs(raw: any): EstimateInputs | null {
+  if (!raw || typeof raw.foodClass !== 'string' || typeof raw.storedIn !== 'string') return null;
+  if (typeof raw.from !== 'string' || typeof raw.days !== 'number') return null;
+  return {
+    foodClass: raw.foodClass,
+    storedIn: raw.storedIn,
+    packageStatus: raw.packageStatus === 'sealed' || raw.packageStatus === 'opened' ? raw.packageStatus : undefined,
+    from: raw.from,
+    days: raw.days,
+    confidence: raw.confidence === 'low' || raw.confidence === 'high' ? raw.confidence : 'medium',
+  };
 }
 
 function readNutrition(raw: any): Nutrition | null {
@@ -143,6 +182,24 @@ export type Nutrition = {
   fatG: number;
 };
 
+/**
+ * What produced an estimated use-by date — needed for the panel's
+ * attribution line and to recompute the date without re-deriving foodClass
+ * from a category that may since have changed. Set only alongside
+ * `estimatedUseBy`; both are cleared together the moment the user promotes
+ * an estimate to a real date (basis becomes 'manual').
+ */
+export type EstimateInputs = {
+  foodClass: string;
+  storedIn: 'cabinet' | 'pantry' | 'fridge' | 'freezer';
+  packageStatus?: 'sealed' | 'opened';
+  /** openedAt ?? addedAt — the date the window was counted from. */
+  from: string;
+  /** The shelf-life window applied, in days. */
+  days: number;
+  confidence: 'low' | 'medium' | 'high';
+};
+
 export type PantryItem = {
   id: string;
   name: string;
@@ -176,7 +233,57 @@ export type PantryItem = {
   // null on anything added before this feature existed, on a hand-typed item
   // nobody looked up, or on a name FatSecret had no match for.
   nutrition: Nutrition | null;
+
+  // The item-review card's PACKAGE STATUS control (sealed/opened/unanswered)
+  // and EXPIRATION block's own "I don't know" radio — both undefined/false
+  // on anything saved before this feature existed, which the estimate reads
+  // the same way it reads a genuinely unanswered item: estimate as sealed,
+  // say so.
+  packageStatus?: 'sealed' | 'opened';
+  openedAt?: string | null;
+  expiryUnknown?: boolean;
+
+  // Phase 2 — the Panzi use-by estimate, for food with no printed date at
+  // all. `basis` and `expiryDate` are never both meaningful for the same
+  // fact: a 'printed'/'manual'/'rough' item has a real expiryDate and no
+  // estimatedUseBy; an 'estimated' item has estimatedUseBy (or nothing yet,
+  // computed live) and expiryDate stays null. Absent entirely on anything
+  // saved before this feature existed — effectiveDate/isEstimate below
+  // treat that the same as basis:'estimated' with stale/no inputs, which is
+  // the same "estimate as sealed, say so" conservative fallback Phase 1
+  // already established for an unanswered packageStatus.
+  basis?: DateBasis;
+  estimatedUseBy?: string | null;
+  estimateInputs?: EstimateInputs | null;
 };
+
+/**
+ * The one accessor every list/sort/notification consumer reads a date
+ * through — Phase 2's own rule that no caller picks `expiryDate` over
+ * `estimatedUseBy` (or vice versa) by hand. `expiryDate` covers 'printed',
+ * 'manual' and 'rough' alike, since all three are real stored dates; only
+ * 'estimated' items have no `expiryDate` at all and fall through to
+ * `estimatedUseBy`. Both are unlikely to be set on the same item (see
+ * PantryItem's own doc comment), but the ?? handles it defensively either
+ * way rather than trusting every writer to have upheld that.
+ */
+export function effectiveDate(item: {
+  expiryDate: string | null;
+  estimatedUseBy?: string | null;
+}): string | null {
+  return item.expiryDate ?? item.estimatedUseBy ?? null;
+}
+
+/**
+ * True for anything that isn't a fact — a Panzi estimate, or a rough-date
+ * chip pick standing in for one. Every consumer must call this before
+ * choosing a label (Part 2/6's own rule): the two must never share a label,
+ * an icon, or a row style, and this is the one place that decides which
+ * side of that line an item falls on.
+ */
+export function isEstimate(item: { basis?: DateBasis }): boolean {
+  return item.basis === 'estimated' || item.basis === 'rough';
+}
 
 /**
  * A pantry `quantity` string ("250 g", "1 pack", "2") split into the leading
@@ -236,6 +343,19 @@ function toItem(raw: any): PantryItem {
         ? raw.ripenessSource
         : null,
     nutrition: readNutrition(raw.nutrition),
+    // These three were missing here entirely until Phase 2 — present on the
+    // type and written by the server since PACKAGE STATUS shipped, but
+    // silently dropped on every fetch because this reader stopped short of
+    // them. Fixed as part of the same pass that adds basis/estimatedUseBy,
+    // since an item's package status has to survive a reload for the
+    // estimate to recompute correctly on the pantry list, not just on the
+    // review card that first set it.
+    packageStatus: raw.packageStatus === 'sealed' || raw.packageStatus === 'opened' ? raw.packageStatus : undefined,
+    openedAt: typeof raw.openedAt === 'string' ? raw.openedAt : null,
+    expiryUnknown: raw.expiryUnknown === true,
+    basis: readDateBasis(raw.basis) ?? undefined,
+    estimatedUseBy: typeof raw.estimatedUseBy === 'string' ? raw.estimatedUseBy : null,
+    estimateInputs: readEstimateInputs(raw.estimateInputs),
   };
 }
 
@@ -288,6 +408,12 @@ export type NewPantryItem = {
   scanPhoto?: ItemPhoto | null;
   box?: ItemBox | null;
   nutrition?: Nutrition | null;
+  packageStatus?: 'sealed' | 'opened';
+  openedAt?: string | null;
+  expiryUnknown?: boolean;
+  basis?: DateBasis;
+  estimatedUseBy?: string | null;
+  estimateInputs?: EstimateInputs | null;
 };
 
 /**
@@ -317,6 +443,12 @@ export async function addPantryItems(
     photoUri: item.photoUri ?? null,
     scanPhoto: item.scanPhoto ?? null,
     box: item.box ?? null,
+    packageStatus: item.packageStatus ?? null,
+    openedAt: item.openedAt ?? null,
+    expiryUnknown: item.expiryUnknown ?? false,
+    basis: item.basis ?? null,
+    estimatedUseBy: item.estimatedUseBy ?? null,
+    estimateInputs: item.estimateInputs ?? null,
   }));
 
   const { ids } = await apiFetch<{ ids: string[] }>('/api/pantry/add', { items: payload });
@@ -351,7 +483,20 @@ export async function updatePantryItem(itemId: string, fields: Partial<NewPantry
   // how ripe it was. `undefined` disappears in JSON, so they are normalised to
   // null when present and left out entirely when absent.
   const patch: Record<string, unknown> = { ...fields };
-  for (const key of ['dateSource', 'ripeness', 'ripenessSource', 'photoUri', 'scanPhoto', 'box'] as const) {
+  for (const key of [
+    'dateSource',
+    'ripeness',
+    'ripenessSource',
+    'photoUri',
+    'scanPhoto',
+    'box',
+    'packageStatus',
+    'openedAt',
+    'expiryUnknown',
+    'basis',
+    'estimatedUseBy',
+    'estimateInputs',
+  ] as const) {
     if (key in fields) patch[key] = fields[key] ?? null;
   }
   await apiFetch('/api/pantry/update', { id: itemId, fields: patch });

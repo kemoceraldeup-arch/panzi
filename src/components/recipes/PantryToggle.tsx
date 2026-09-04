@@ -3,8 +3,15 @@
 // The other half of narrowing the list, alongside RecipeTabs — but a
 // yes/no filter rather than a category, so it gets its own strip instead of
 // sitting in the same row. "Pantry only" hides any of the current
-// suggestions that need even one thing not already on the shelf; the count
-// beside it answers the question the toggle is about to ask, before asking it.
+// suggestions that use nothing already on the shelf; the count beside it
+// answers the question the toggle is about to ask, before asking it.
+//
+// Was "N cookable with zero shopping" — a stricter reading (every single
+// ingredient on hand or an assumed staple) that a small pantry almost never
+// clears. A one-item pantry showing "0 cookable" read as the toggle being
+// broken rather than just strict, even when real recipes used that one
+// item. "N use what you have" is the looser, more useful question this
+// toggle actually answers now (see usesPantryItems in services/recipes.ts).
 
 import React from 'react';
 import { TouchableOpacity, View } from 'react-native';
@@ -17,7 +24,8 @@ import { type } from '../../theme/typography';
 type Props = {
   value: boolean;
   onChange: (value: boolean) => void;
-  /** How many of the current suggestions need nothing from the shop. */
+  /** How many of the current suggestions use at least one thing already on
+   *  the shelf. */
   cookableCount: number;
   disabled?: boolean;
 };
@@ -45,7 +53,7 @@ export default function PantryToggle({ value, onChange, cookableCount, disabled 
         </Text>
       </TouchableOpacity>
       <Text style={styles.helper} numberOfLines={1}>
-        {cookableCount} cookable with zero shopping
+        {cookableCount} use{cookableCount === 1 ? 's' : ''} what you have
       </Text>
     </View>
   );

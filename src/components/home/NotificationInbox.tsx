@@ -245,27 +245,33 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
                 first={i === 0}
                 tone="gone"
                 name={item.name}
-                detail={item.days === 1 ? 'went off yesterday' : `went off ${item.days} days ago`}
+                detail={
+                  item.estimate
+                    ? `may be past its best — added ${item.days === 1 ? 'yesterday' : `${item.days} days ago`}`
+                    : item.days === 1
+                      ? 'went off yesterday'
+                      : `went off ${item.days} days ago`
+                }
               />
             ))}
-            {attention.today.map((name, i) => (
+            {attention.today.map((item, i) => (
               <AttentionRow
-                key={`today-${name}`}
+                key={`today-${item.name}`}
                 first={i === 0 && attention.gone.length === 0}
                 tone="today"
-                name={name}
-                detail="goes off today"
+                name={item.name}
+                detail={item.estimate ? 'Panzi suggests using this today' : 'goes off today'}
               />
             ))}
-            {attention.tomorrow.map((name, i) => (
+            {attention.tomorrow.map((item, i) => (
               <AttentionRow
-                key={`tomorrow-${name}`}
+                key={`tomorrow-${item.name}`}
                 first={
                   i === 0 && attention.gone.length === 0 && attention.today.length === 0
                 }
                 tone="tomorrow"
-                name={name}
-                detail="goes off tomorrow"
+                name={item.name}
+                detail={item.estimate ? 'Panzi suggests using this by tomorrow' : 'goes off tomorrow'}
               />
             ))}
           </View>

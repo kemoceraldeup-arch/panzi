@@ -23,7 +23,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { PantryItem } from './pantry';
+import { PantryItem, effectiveDate, isEstimate } from './pantry';
 import { UserProfile } from './profile';
 import { loadCachedRecipes, pantrySignature } from './recipes';
 
@@ -122,23 +122,31 @@ export function isoDaysFromNow(days: number): string {
  * dismiss the one that mattered. The same reasoning is why the "Eat these
  * first" card on Home disappears rather than reassuring.
  */
+/** What a notification-worthy item needs: a name, whatever date it resolves
+ *  to (real or estimated — see effectiveDate), and basis, so estimate copy
+ *  never borrows the word "expires" for a date Panzi guessed at rather than
+ *  read off a label (Phase 2 §6). */
+type Notifiable = Pick<PantryItem, 'name' | 'expiryDate' | 'basis'> &
+  Partial<Pick<PantryItem, 'estimatedUseBy'>>;
+
 export function composeDigest(
-  items: { name: string; expiryDate: string | null }[],
+  items: Notifiable[],
   onDate: string,
   recipeTitle?: string | null
 ): Digest | null {
-  const today: string[] = [];
-  const tomorrow: string[] = [];
-  const gone: { name: string; days: number }[] = [];
+  const today: Notifiable[] = [];
+  const tomorrow: Notifiable[] = [];
+  const gone: { item: Notifiable; days: number }[] = [];
 
   for (const item of items) {
-    if (!item.expiryDate) continue;
+    const date = effectiveDate(item);
+    if (!date) continue;
     // Positive means the date is still ahead of the day this is read on.
-    const offset = daysBetween(onDate, item.expiryDate);
-    if (offset === 0) today.push(item.name);
-    else if (offset === 1) tomorrow.push(item.name);
+    const offset = daysBetween(onDate, date);
+    if (offset === 0) today.push(item);
+    else if (offset === 1) tomorrow.push(item);
     else if (offset < 0 && -offset <= EXPIRED_GRACE_DAYS) {
-      gone.push({ name: item.name, days: -offset });
+      gone.push({ item, days: -offset });
     }
   }
 
@@ -149,35 +157,52 @@ export function composeDigest(
   // feature its keep, so it gets a specific sentence rather than a count.
   if (total === 1) {
     if (today.length === 1) {
+      const only = today[0];
       return {
-        title: `Your ${today[0]} goes off today`,
+        title: isEstimate(only)
+          ? `Panzi suggests using your ${only.name} today`
+          : `Your ${only.name} goes off today`,
         body: recipeTitle ? `Try ${recipeTitle}` : 'Tap to see what to cook',
       };
     }
     if (tomorrow.length === 1) {
+      const only = tomorrow[0];
       return {
-        title: `Your ${tomorrow[0]} goes off tomorrow`,
+        title: isEstimate(only)
+          ? `Panzi suggests using your ${only.name} by tomorrow`
+          : `Your ${only.name} goes off tomorrow`,
         body: recipeTitle ? `Try ${recipeTitle}` : 'Tap to see what to cook',
       };
     }
     const only = gone[0];
+    // A real date "went off"; an estimate never claims that certainty about
+    // something Panzi guessed at, even after its own window has passed.
+    const verb = isEstimate(only.item) ? 'may be past its best' : 'went off';
     return {
-      title: `${only.name} went off ${only.days === 1 ? 'yesterday' : `${only.days} days ago`}`,
+      title: `${only.item.name} ${verb} ${only.days === 1 ? 'yesterday' : `${only.days} days ago`}`,
       body: 'Still in your pantry — worth a look',
     };
   }
 
   // Read in the order they need acting on: gone first because it is the one
-  // that needs clearing, then today, then tomorrow.
+  // that needs clearing, then today, then tomorrow. Estimates and real dates
+  // are named in the same clause rather than split into their own — Phase 2
+  // §6's "one timeline" rule applies here too, just the verb changes.
   const parts: string[] = [];
-  const clause = (names: string[], suffix: string) =>
-    names.length > MAX_NAMED
-      ? `${names.length} ${suffix}`
-      : `${listNames(names)} ${suffix}`;
+  const clause = (bucket: Notifiable[], factSuffix: string, estimateSuffix: string) => {
+    if (bucket.length === 0) return null;
+    const names = bucket.map((i) => i.name);
+    const allEstimated = bucket.every(isEstimate);
+    const suffix = allEstimated ? estimateSuffix : factSuffix;
+    return names.length > MAX_NAMED ? `${names.length} ${suffix}` : `${listNames(names)} ${suffix}`;
+  };
 
-  if (gone.length) parts.push(clause(gone.map((g) => g.name), 'already went off'));
-  if (today.length) parts.push(clause(today, 'go off today'));
-  if (tomorrow.length) parts.push(clause(tomorrow, 'go off tomorrow'));
+  const goneClause = clause(gone.map((g) => g.item), 'already went off', 'may already be past their best');
+  const todayClause = clause(today, 'go off today', 'may need using today');
+  const tomorrowClause = clause(tomorrow, 'go off tomorrow', 'may need using tomorrow');
+  if (goneClause) parts.push(goneClause);
+  if (todayClause) parts.push(todayClause);
+  if (tomorrowClause) parts.push(tomorrowClause);
 
   const body = parts.join('. ');
   return {
@@ -194,25 +219,27 @@ export function composeDigest(
  * recomputed on every open so it can never be stale the way a stored message
  * would be.
  */
+export type AttentionItem = { name: string; estimate: boolean };
+
 export type Attention = {
-  gone: { name: string; days: number }[];
-  today: string[];
-  tomorrow: string[];
+  gone: (AttentionItem & { days: number })[];
+  today: AttentionItem[];
+  tomorrow: AttentionItem[];
 };
 
-export function currentAttention(
-  items: { name: string; expiryDate: string | null }[]
-): Attention {
+export function currentAttention(items: Notifiable[]): Attention {
   const onDate = isoDaysFromNow(0);
   const result: Attention = { gone: [], today: [], tomorrow: [] };
 
   for (const item of items) {
-    if (!item.expiryDate) continue;
-    const offset = daysBetween(onDate, item.expiryDate);
-    if (offset === 0) result.today.push(item.name);
-    else if (offset === 1) result.tomorrow.push(item.name);
+    const date = effectiveDate(item);
+    if (!date) continue;
+    const offset = daysBetween(onDate, date);
+    const entry = { name: item.name, estimate: isEstimate(item) };
+    if (offset === 0) result.today.push(entry);
+    else if (offset === 1) result.tomorrow.push(entry);
     else if (offset < 0 && -offset <= EXPIRED_GRACE_DAYS) {
-      result.gone.push({ name: item.name, days: -offset });
+      result.gone.push({ ...entry, days: -offset });
     }
   }
 

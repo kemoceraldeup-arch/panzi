@@ -61,6 +61,22 @@ const nutritionSchema = new Schema(
   { _id: false }
 );
 
+/** What produced a Panzi use-by estimate — Phase 2's own record, kept
+ *  alongside `estimatedUseBy` so the attribution line and any recomputation
+ *  don't have to re-derive foodClass from a category that may since have
+ *  changed. */
+const estimateInputsSchema = new Schema(
+  {
+    foodClass: { type: String, required: true },
+    storedIn: { type: String, required: true },
+    packageStatus: { type: String, enum: ['sealed', 'opened', null], default: null },
+    from: { type: String, required: true },
+    days: { type: Number, required: true },
+    confidence: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
+  },
+  { _id: false }
+);
+
 // ---------------------------------------------------------------------------
 // users
 // ---------------------------------------------------------------------------
@@ -110,6 +126,15 @@ const pantryItemSchema = new Schema(
     ripeness: { type: String, default: null },
     ripenessSource: { type: String, enum: ['estimated', 'user', null], default: null },
     nutrition: { type: nutritionSchema, default: null },
+    packageStatus: { type: String, enum: ['sealed', 'opened', null], default: null },
+    openedAt: { type: String, default: null }, // 'YYYY-MM-DD'
+    expiryUnknown: { type: Boolean, default: false },
+    // Phase 2 — the Panzi use-by estimate. `basis` distinguishes a rough-date
+    // chip pick from a typed/printed date without overloading dateSource,
+    // which older code (provenanceChip and friends) still reads as-is.
+    basis: { type: String, enum: ['printed', 'manual', 'rough', 'estimated', null], default: null },
+    estimatedUseBy: { type: String, default: null }, // 'YYYY-MM-DD'
+    estimateInputs: { type: estimateInputsSchema, default: null },
   },
   { timestamps: true, collection: 'pantry_items' }
 );

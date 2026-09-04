@@ -86,6 +86,23 @@ export function formatCalendarDate(expiryDate: string | null): string {
   return `${MONTHS_SHORT[m - 1]} ${d}`;
 }
 
+const MONTHS_FULL = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+// "October 1, 2026" — the full, unambiguous date for the scan review card's
+// own "Expires" readout, where the field is the only thing on the row and
+// has the width to spell the month out. Same hand-parsed split as
+// formatCalendarDate above, for the same reason: `new Date('2026-10-01')` is
+// UTC midnight and reads as September 30th west of Greenwich.
+export function formatFullDate(expiryDate: string | null): string {
+  if (!expiryDate) return '';
+  const [y, m, d] = expiryDate.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return `${MONTHS_FULL[m - 1]} ${d}, ${y}`;
+}
+
 export function getFreshnessBadge(
   expiryDate: string | null,
   colors: Palette

@@ -10,7 +10,6 @@ import cors from 'cors';
 import express from 'express';
 import { requireAuth } from './middleware/auth';
 import { chatRouter } from './routes/chat';
-import { estimateShelfLifeRouter } from './routes/estimateShelfLife';
 import { feedbackRouter } from './routes/feedback';
 import { nutritionRouter } from './routes/nutrition';
 import { pantryRouter } from './routes/pantry';
@@ -53,7 +52,6 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/scan', requireAuth, scanRouter);
-app.use('/api/estimate-shelf-life', requireAuth, estimateShelfLifeRouter);
 app.use('/api/recipes', requireAuth, recipesRouter);
 app.use('/api/profile', requireAuth, profileRouter);
 app.use('/api/nutrition', requireAuth, nutritionRouter);

@@ -45,7 +45,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateField from './scan/DateField';
 import { DateChip, Eyebrow, MeasureControl, HIT_SLOP } from './scan/atoms';
 import { provenanceChip } from '../services/scan';
-import { formatQuantityString, parseQuantityString } from '../services/quantity';
+import { classifyFood } from '../services/foodClass';
+import { DisplayUnit, formatQuantityString, parseQuantityString } from '../services/quantity';
 import { isFractionalUnit, lookupFood } from '../data/foodCatalogue';
 import {
   FOOD_CATEGORIES,
@@ -69,6 +70,14 @@ type Draft = {
   dateSource: PantryItem['dateSource'];
   photoUri: string | null;
   nutrition: Nutrition | null;
+  // Phase 2 — unlike packageStatus/openedAt (this sheet has no control for
+  // either), basis/estimatedUseBy/estimateInputs round-trip here: an item
+  // reopened from the list that was left as an estimate has to stay one
+  // (or be promoted to a real date) rather than silently losing the
+  // distinction the moment someone opens the sheet to fix its name.
+  basis: PantryItem['basis'];
+  estimatedUseBy: PantryItem['estimatedUseBy'];
+  estimateInputs: PantryItem['estimateInputs'];
 };
 
 const FALLBACK_LOCATION = 'Cabinet';
@@ -88,6 +97,14 @@ function toDraft(item: PantryItem): Draft {
     dateSource: item.dateSource,
     photoUri: item.photoUri,
     nutrition: item.nutrition,
+    // An item saved before Phase 2 has no basis of its own — read as
+    // 'estimated' only when it's actually missing a date entirely (the
+    // same "no printed date -> estimate" default every other unclassified
+    // item gets), otherwise treated as a real date nobody labelled, closest
+    // to 'manual' since it came from a person typing it in the old sheet.
+    basis: item.basis ?? (item.expiryDate ? 'manual' : 'estimated'),
+    estimatedUseBy: item.estimatedUseBy ?? null,
+    estimateInputs: item.estimateInputs ?? null,
   };
 }
 
@@ -141,9 +158,41 @@ function EditSheetBody({
   const styles = useStyles();
   const colors = useColors();
   const [draft, setDraft] = useState<Draft>(() => toDraft(item));
+  const scrollRef = useRef<ScrollView>(null);
+  const quantityFieldRef = useRef<View>(null);
+  // Not persisted directly — expiryUnknown is DateField's own radio state,
+  // re-derived here from whether the item is actually carrying an estimate
+  // (basis) rather than a boolean of its own on PantryItem. Initialized
+  // from the item so reopening an estimated item lands on the estimate
+  // panel already showing, not silently reset to "knows a date" on every
+  // open. This sheet has no packageStatus/openedAt control of its own
+  // (that pair is scan-candidate-only, resolved before an item is saved,
+  // per the scan review card's own USE BY control) — "I don't know" here
+  // estimates from category + location alone, same as an item with no
+  // known package status ever would.
+  const [expiryUnknown, setExpiryUnknown] = useState(() => draft.basis === 'estimated');
 
   function patch(next: Partial<Draft>) {
     setDraft((current) => ({ ...current, ...next }));
+  }
+
+  // Same fix as ScanReviewScreen's EditCard: bring the Quantity control
+  // above the keyboard the moment its amount field is tapped, rather than
+  // leaving it to whatever the surrounding layout does on its own.
+  function handleAmountFocus() {
+    const field = quantityFieldRef.current;
+    const scroller = scrollRef.current;
+    if (!field || !scroller) return;
+    field.measureLayout(
+      // @ts-expect-error — measureLayout wants a host component instance,
+      // which ScrollView is at runtime despite its type only exposing
+      // scrollTo/scrollToEnd.
+      scroller,
+      (_x: number, y: number) => {
+        scroller.scrollTo({ y: Math.max(0, y - space.xl), animated: true });
+      },
+      () => {}
+    );
   }
 
   // Live drag-to-dismiss: the sheet's own vertical offset, tracking the
@@ -205,6 +254,7 @@ function EditSheetBody({
     expiryDate: draft.expiryDate,
     dateSource: draft.dateSource,
     ripeness: item.ripeness,
+    estimatedUseBy: draft.estimatedUseBy,
   });
 
   // Only what changed. Sending the whole draft would rewrite fields the user
@@ -222,6 +272,14 @@ function EditSheetBody({
     if (draft.expiryDate !== item.expiryDate) {
       out.expiryDate = draft.expiryDate;
       out.dateSource = draft.dateSource;
+    }
+    if (
+      draft.basis !== (item.basis ?? (item.expiryDate ? 'manual' : 'estimated')) ||
+      draft.estimatedUseBy !== (item.estimatedUseBy ?? null)
+    ) {
+      out.basis = draft.basis;
+      out.estimatedUseBy = draft.estimatedUseBy;
+      out.estimateInputs = draft.estimateInputs;
     }
     // A picture the user attaches here belongs to the item, and takes
     // precedence over any crop of the scan it came from — so the crop is left
@@ -249,7 +307,19 @@ function EditSheetBody({
   // sheet writes back through). An item saved before this feature existed,
   // or whose quantity doesn't parse, falls back to {pieces, amount:1,
   // splittable:false} here and self-heals the next time it's edited.
-  const quantity = useMemo(() => parseQuantityString(draft.quantity), [draft.quantity]);
+  //
+  // displayUnit is layered on separately (displayUnitOverride below) rather
+  // than trusted to survive this round trip: formatQuantityString picks g/kg
+  // (or mL/L) purely from the amount's own magnitude and has no field for
+  // "which unit the person was actually looking at", so a plain parse ->
+  // format -> parse cycle would silently snap kg back to g on every
+  // keystroke elsewhere in the sheet — exactly the bug this whole control
+  // exists to fix, just reappearing one layer up.
+  const [displayUnitOverride, setDisplayUnitOverride] = useState<DisplayUnit | null>(null);
+  const quantity = useMemo(() => {
+    const parsed = parseQuantityString(draft.quantity);
+    return displayUnitOverride ? { ...parsed, displayUnit: displayUnitOverride } : parsed;
+  }, [draft.quantity, displayUnitOverride]);
   const catalogueMatch = useMemo(() => lookupFood(draft.name), [draft.name]);
   // The catalogue's own unit noun for a pieces/pack item ("loaf", "jar")
   // when the name matches one — nothing to offer for a name it doesn't
@@ -300,6 +370,7 @@ function EditSheetBody({
           </GestureDetector>
 
           <ScrollView
+            ref={scrollRef}
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
             keyboardShouldPersistTaps="handled"
@@ -317,8 +388,12 @@ function EditSheetBody({
             {nameEmpty && <Text style={styles.error}>An item needs a name.</Text>}
 
             <View style={styles.fieldLabelRow}>
-              <Eyebrow>Expiry date</Eyebrow>
-              <DateChip chip={chip} />
+              <Eyebrow>Use by / Best before</Eyebrow>
+              {/* Same reasoning as the scan review card: while "I don't
+                  know" is selected with no real date, the estimate panel
+                  below already shows this exact date once — the chip would
+                  only be repeating it right above itself. */}
+              {!(expiryUnknown && !draft.expiryDate) && <DateChip chip={chip} />}
             </View>
             <DateField
               value={draft.expiryDate}
@@ -329,13 +404,43 @@ function EditSheetBody({
                 // can never outlive the date it described.
                 patch({ expiryDate: iso, dateSource: iso ? 'user' : null })
               }
+              unknown={expiryUnknown}
+              onChangeUnknown={setExpiryUnknown}
+              basis={draft.basis ?? 'estimated'}
+              onChangeBasis={(basis) =>
+                patch(
+                  basis === 'estimated'
+                    ? { basis }
+                    : { basis, estimatedUseBy: null, estimateInputs: null }
+                )
+              }
+              foodClass={classifyFood(draft.category)}
+              packageStatus={undefined}
+              openedAt={null}
+              addedAt={item.addedAt ? new Date(item.addedAt).toISOString().slice(0, 10) : null}
+              storageLocation={draft.location}
+              onEstimate={(result) =>
+                patch({
+                  estimatedUseBy: result?.date ?? null,
+                  estimateInputs: result?.inputs ?? null,
+                })
+              }
             />
 
-            <View style={styles.fieldLabel}>
+            <View ref={quantityFieldRef} style={styles.fieldLabel}>
               <MeasureControl
                 quantity={quantity}
                 unit={unit}
-                onChange={(next) => patch({ quantity: formatQuantityString(next, unit) })}
+                onChange={(next) => {
+                  // The persisted string has no room for "which unit was
+                  // this displayed in" (see quantity's own useMemo above) —
+                  // captured here, on every change, so a plain kg<->g toggle
+                  // sticks across the next render instead of reverting to
+                  // whichever unit the raw amount's magnitude implies.
+                  setDisplayUnitOverride(next.displayUnit ?? null);
+                  patch({ quantity: formatQuantityString(next, unit) });
+                }}
+                onFocusInput={handleAmountFocus}
               />
             </View>
 

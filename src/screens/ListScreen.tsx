@@ -50,10 +50,12 @@ import {
   FOOD_CATEGORIES,
   STORAGE_LOCATIONS,
   parseQuantity,
+  effectiveDate,
 } from '../services/pantry';
 import EditItemSheet from './EditItemSheet';
 import { backfillItemPhotos } from '../services/scans';
 import { formatExpiry, getDaysLeft, isUseSoon } from '../utils/freshness';
+import { datePrefix } from '../utils/dateLabel';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
 import { SCAN_BUTTON_LIFT } from '../navigation/TabBar';
 import { makeStyles } from '../theme/makeStyles';
@@ -227,7 +229,7 @@ export default function ListScreen({
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
       if (activeCategory !== 'All' && item.category !== activeCategory) return false;
-      if (showFilter === 'useSoon' && !isUseSoon(item.expiryDate)) return false;
+      if (showFilter === 'useSoon' && !isUseSoon(effectiveDate(item))) return false;
       if (q && !item.name.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -243,8 +245,10 @@ export default function ListScreen({
       switch (sortMode) {
         case 'expiry': {
           // No date sorts last — an undated tin isn't urgent, it's just unknown.
-          const ad = getDaysLeft(a.expiryDate);
-          const bd = getDaysLeft(b.expiryDate);
+          // Real dates and Panzi estimates sort on the same timeline (Phase 2
+          // §6) rather than in separate sections.
+          const ad = getDaysLeft(effectiveDate(a));
+          const bd = getDaysLeft(effectiveDate(b));
           if (ad === null && bd === null) return a.name.localeCompare(b.name);
           if (ad === null) return 1;
           if (bd === null) return -1;
@@ -267,7 +271,7 @@ export default function ListScreen({
   const useSoonItems = useMemo(
     () =>
       visible
-        .filter((i) => isUseSoon(i.expiryDate))
+        .filter((i) => isUseSoon(effectiveDate(i)))
         .sort(compareRows),
     [visible, compareRows]
   );
@@ -383,7 +387,7 @@ export default function ListScreen({
   // is deleted underneath it, which closes the sheet on its own.
   const editingItem = editingId ? (items.find((i) => i.id === editingId) ?? null) : null;
 
-  const totalUseSoon = items.filter((i) => isUseSoon(i.expiryDate)).length;
+  const totalUseSoon = items.filter((i) => isUseSoon(effectiveDate(i))).length;
   const filtersOn = showFilter !== 'all' || sortMode !== 'category';
 
   if (!uid) {
@@ -731,18 +735,33 @@ function MenuRow({
  */
 function JustAddedRow({ item, onEdit }: { item: PantryItem; onEdit: () => void }) {
   const styles = useStyles();
-  const days = getDaysLeft(item.expiryDate);
+  const date = effectiveDate(item);
+  const days = getDaysLeft(date);
   const urgent = item.ripeness ? isUrgentStage(item.ripeness) : days !== null && days <= 3;
 
-  const source = item.ripeness
-    ? RIPENESS_LABELS[item.ripeness].toLowerCase()
-    : item.dateSource === 'label'
-      ? 'from label'
-      : item.dateSource === 'estimated'
-        ? 'estimated'
-        : item.dateSource === 'user'
-          ? 'you set this'
-          : null;
+  // Kept in step with basis, Phase 2's own finer-grained provenance, rather
+  // than re-deriving from dateSource by hand here — this used to be a
+  // second, slightly divergent copy of what provenanceChip already decides
+  // for the review card; reading basis first closes that gap for the one
+  // case (a Panzi estimate) provenanceChip's own dateSource check can't see.
+  const source =
+    item.basis === 'estimated'
+      ? 'estimated by Panzi'
+      : item.ripeness
+        ? RIPENESS_LABELS[item.ripeness].toLowerCase()
+        : item.basis === 'printed'
+          ? 'from label'
+          : item.basis === 'rough'
+            ? 'a rough date'
+            : item.basis === 'manual'
+              ? 'you set this'
+              : item.dateSource === 'label'
+                ? 'from label'
+                : item.dateSource === 'estimated'
+                  ? 'estimated'
+                  : item.dateSource === 'user'
+                    ? 'you set this'
+                    : null;
 
   return (
     <TouchableOpacity style={styles.justAddedRow} onPress={onEdit} activeOpacity={0.7}>
@@ -756,7 +775,7 @@ function JustAddedRow({ item, onEdit }: { item: PantryItem; onEdit: () => void }
       </View>
       <View style={[styles.justAddedChip, urgent && styles.justAddedChipUrgent]}>
         <Text style={[styles.justAddedChipText, urgent && styles.justAddedChipTextUrgent]}>
-          {formatExpiry(item.expiryDate)}
+          {formatExpiry(date)}
         </Text>
       </View>
     </TouchableOpacity>
@@ -805,10 +824,13 @@ function ItemRow({
 }) {
   const styles = useStyles();
   const colors = useColors();
-  const expiring = isUseSoon(item.expiryDate);
-  const meta = item.location
-    ? `${item.location} · ${formatExpiry(item.expiryDate)}`
-    : formatExpiry(item.expiryDate);
+  const date = effectiveDate(item);
+  const expiring = isUseSoon(date);
+  // "Estimated ·" for a Panzi guess, "Expires ·"/"Best before ·" for a real
+  // date — Phase 2 §6's own rule, so a wet-market chicken's guessed date
+  // never reads as quietly as certain as a carton's printed one.
+  const dateClause = `${datePrefix(item)} · ${formatExpiry(date)}`;
+  const meta = item.location ? `${item.location} · ${dateClause}` : dateClause;
 
   const [rowWidth, setRowWidth] = useState(0);
   const shrink = useRef(new Animated.Value(0)).current;

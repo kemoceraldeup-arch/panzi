@@ -55,6 +55,9 @@ import { ItemQuantity, classifyMeasure, loadMeasurePref, saveMeasurePref } from 
 import { suggestFoods, lookupFood, FALLBACK_LOCATION } from '../../data/foodCatalogue';
 import { Capture, AttentionChip, DateChip, Eyebrow, MeasureControl, HIT_SLOP, ItemThumb } from './atoms';
 import DateField from './DateField';
+import PackageStatusField from './PackageStatusField';
+import PickDateModal from './PickDateModal';
+import { classifyFood } from '../../services/foodClass';
 import { makeStyles } from '../../theme/makeStyles';
 import { useColors } from '../../theme/ThemeProvider';
 import { space } from '../../theme/spacing';
@@ -95,12 +98,6 @@ type Props = {
   onAddByHand: () => void;
   /** Reads a photo attached to a hand-added row, replacing that row. */
   onScanAttached: (id: string, photo: Capture) => void;
-  /** Asks the server to guess a hand-typed row's shelf life from its name,
-   *  category and opened/unopened state — owned by ScanModal, same pattern
-   *  as onOpenFreshness. */
-  onEstimateShelfLife: (candidate: ScanCandidate) => void;
-  /** Which row, if any, currently has an estimate call in flight. */
-  estimatingId: string | null;
   onSubmit: () => void;
 };
 
@@ -122,8 +119,6 @@ export default function ScanReviewScreen({
   onOpenFreshness,
   onAddByHand,
   onScanAttached,
-  onEstimateShelfLife,
-  estimatingId,
   onSubmit,
 }: Props) {
   const styles = useStyles();
@@ -131,6 +126,7 @@ export default function ScanReviewScreen({
   const insets = useSafeAreaInsets();
   const [showAll, setShowAll] = useState(false);
   const [photoPreviewOpen, setPhotoPreviewOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   const { needsLook, looksRight } = useMemo(() => splitByAttention(candidates), [candidates]);
   const editing = editingId !== null;
@@ -162,72 +158,84 @@ export default function ScanReviewScreen({
         pointerEvents="none"
       />
 
-      {/* Not dimmed while a card is open, unlike the rows below it. Half
-          strength put the two ways off this page and the count of what is on it
-          somewhere between readable and switched off — and the open card is
-          already picked out by its ring and by every other card fading, so the
-          header was paying that cost for an emphasis that was already made. */}
-      <View style={styles.header}>
-        {photo?.uri ? (
-          // A tap here is someone checking the shot, not leaving the page — the
-          // way out moved to its own X button so the two intents can't collide.
-          <TouchableOpacity
-            onPress={() => setPhotoPreviewOpen(true)}
-            hitSlop={HIT_SLOP}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="View full photo"
-          >
-            <Image source={{ uri: photo.uri }} style={styles.headerThumb} />
-          </TouchableOpacity>
-        ) : (
-          // Nothing was photographed, so there is no thumbnail to show and the
-          // slot carries the way out instead — as a link rather than a button.
-          // A bordered 54pt tile in the thumbnail's place was the heaviest
-          // thing on a page whose whole job is a list, and it read as a solid
-          // dark block. This is the same treatment as Retake on the other side
-          // of the header, which makes the two ways off this page look like the
-          // pair they are.
-          <TouchableOpacity
-            onPress={onBack}
-            hitSlop={HIT_SLOP}
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="Go back"
-            style={styles.headerBack}
-          >
-            <Ionicons name="chevron-back" size={17} color={colors.primaryDark} />
-            <Text style={styles.headerBackText}>Back</Text>
-          </TouchableOpacity>
-        )}
-        <View style={styles.headerText}>
-          <Text style={styles.title}>
-            Check {candidates.length} {candidates.length === 1 ? 'item' : 'items'}
-          </Text>
-          {/* "From one photo" is a lie on a row that was typed in — there is no
-              photo behind it, which is exactly why the header shows a Back link
-              where the thumbnail would be. */}
-          <Text style={styles.subtitle}>
-            {subtitle ?? (photo?.uri ? 'From one photo' : 'Typed in')}
-          </Text>
+      {/* Three fixed zones — left, centred title, right actions — at a
+          single 44px row height. Was one flexDirection:row with the
+          thumbnail/Back link, the title+subtitle block, Retake and × all
+          competing for the same line: at some title lengths ("Check 12
+          items") that pushed Retake and × into each other, and the
+          subtitle sat wedged under the title on Back's own line rather
+          than reading as its own line under the title. The subtitle now
+          sits in its own centred row below the whole header, never
+          sharing a line with Back. Not dimmed while a card is open, unlike
+          the rows below it — the open card is already picked out by its
+          ring and by every other card fading, so the header was paying
+          that cost for an emphasis already made elsewhere. */}
+      <View style={styles.headerRow}>
+        <View style={styles.headerSide}>
+          {photo?.uri ? (
+            // A tap here is someone checking the shot, not leaving the page —
+            // the way out moved to its own X button so the two intents can't
+            // collide.
+            <TouchableOpacity
+              onPress={() => setPhotoPreviewOpen(true)}
+              hitSlop={HIT_SLOP}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="View full photo"
+            >
+              <Image source={{ uri: photo.uri }} style={styles.headerThumb} />
+            </TouchableOpacity>
+          ) : (
+            // Nothing was photographed, so there is no thumbnail to show and
+            // the slot carries the way out instead — as a link rather than a
+            // button.
+            <TouchableOpacity
+              onPress={onBack}
+              hitSlop={HIT_SLOP}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+              style={styles.headerBack}
+            >
+              <Ionicons name="chevron-back" size={17} color={colors.primaryDark} />
+              <Text style={styles.headerBackText}>Back</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        <TouchableOpacity onPress={onRetake} hitSlop={HIT_SLOP} activeOpacity={0.7}>
-          <Text style={styles.retake}>Retake</Text>
-        </TouchableOpacity>
-        {/* The only control on this page that can discard the scan — everything
-            else either edits a row or leaves by a path that keeps the batch
-            (Retake keeps it in preRetake; the thumbnail now just previews). */}
-        <TouchableOpacity
-          onPress={onClose}
-          hitSlop={HIT_SLOP}
-          activeOpacity={0.7}
-          accessibilityRole="button"
-          accessibilityLabel="Close scan"
-          style={styles.headerClose}
-        >
-          <Ionicons name="close" size={20} color={colors.primaryDark} />
-        </TouchableOpacity>
+
+        <Text style={styles.title} numberOfLines={1}>
+          Check {candidates.length} {candidates.length === 1 ? 'item' : 'items'}
+        </Text>
+
+        {/* Retake and × used to be two separate actions crowding the right
+            edge; one right-side group now, Retake as text, × as its own
+            44px target 12px clear of it. */}
+        <View style={[styles.headerSide, styles.headerActions]}>
+          <TouchableOpacity onPress={onRetake} hitSlop={HIT_SLOP} activeOpacity={0.7}>
+            <Text style={styles.retake}>Retake</Text>
+          </TouchableOpacity>
+          {/* The only control on this page that can discard the scan —
+              everything else either edits a row or leaves by a path that
+              keeps the batch (Retake keeps it in preRetake; the thumbnail
+              now just previews). */}
+          <TouchableOpacity
+            onPress={onClose}
+            hitSlop={HIT_SLOP}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Close scan"
+            style={styles.headerClose}
+          >
+            <Ionicons name="close" size={20} color={colors.primaryDark} />
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {/* "From one photo" is a lie on a row that was typed in — there is no
+          photo behind it, which is exactly why the header shows a Back link
+          where the thumbnail would be. Its own centred line under the
+          header row, never sharing a line with Back. */}
+      <Text style={styles.subtitle}>{subtitle ?? (photo?.uri ? 'From one photo' : 'Typed in')}</Text>
 
       {photo?.uri && (
         <Modal
@@ -255,6 +263,7 @@ export default function ScanReviewScreen({
       )}
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
@@ -274,14 +283,13 @@ export default function ScanReviewScreen({
                     key={candidate.id}
                     candidate={candidate}
                     photo={photo}
+                    scrollRef={scrollRef}
                     onPatch={(patch) => onPatch(candidate.id, patch)}
                     onScanAttached={(shot) => onScanAttached(candidate.id, shot)}
                     onCollapse={onCollapse}
                     onConfirm={() => onConfirmItem(candidate.id)}
                     onRemove={() => onRemove(candidate.id)}
                     onOpenFreshness={() => onOpenFreshness(candidate)}
-                    onEstimateShelfLife={() => onEstimateShelfLife(candidate)}
-                    estimating={estimatingId === candidate.id}
                   />
                 ) : (
                   <AttentionCard
@@ -316,14 +324,13 @@ export default function ScanReviewScreen({
                     key={candidate.id}
                     candidate={candidate}
                     photo={photo}
+                    scrollRef={scrollRef}
                     onPatch={(patch) => onPatch(candidate.id, patch)}
                     onScanAttached={(shot) => onScanAttached(candidate.id, shot)}
                     onCollapse={onCollapse}
                     onConfirm={() => onConfirmItem(candidate.id)}
                     onRemove={() => onRemove(candidate.id)}
                     onOpenFreshness={() => onOpenFreshness(candidate)}
-                    onEstimateShelfLife={() => onEstimateShelfLife(candidate)}
-                    estimating={estimatingId === candidate.id}
                   />
                 ) : (
                   <CleanCard
@@ -527,31 +534,86 @@ function CleanCard({
 function EditCard({
   candidate,
   photo,
+  scrollRef,
   onPatch,
   onScanAttached,
   onCollapse,
   onConfirm,
   onRemove,
   onOpenFreshness,
-  onEstimateShelfLife,
-  estimating,
 }: {
   candidate: ScanCandidate;
   photo?: Capture | null;
+  /** The page's own ScrollView, so the Quantity section can bring itself
+   *  above the keyboard the moment its amount field gains focus — see
+   *  quantitySectionRef and handleAmountFocus below. */
+  scrollRef: React.RefObject<ScrollView | null>;
   onPatch: (patch: Partial<ScanCandidate>) => void;
   onScanAttached: (photo: Capture) => void;
   onCollapse: () => void;
   onConfirm: () => void;
   onRemove: () => void;
   onOpenFreshness: () => void;
-  onEstimateShelfLife: () => void;
-  estimating: boolean;
 }) {
   const styles = useStyles();
   const colors = useColors();
   const { uid } = useAuth();
   const [locationsOpen, setLocationsOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [pickDateOpen, setPickDateOpen] = useState(false);
+  // Real focus tracking for the Name field — it used to always render with
+  // fieldFocused's 2px accent border regardless of whether it was actually
+  // focused, which drew an empty field showing the "Mature cheddar"
+  // placeholder as though it were filled and being typed into. Accent
+  // border now only appears while the field genuinely has focus.
+  const [nameFocused, setNameFocused] = useState(false);
+  const [locationFocused, setLocationFocused] = useState(false);
+  // onPickDate hands PackageStatusField a promise; the modal resolves it
+  // through this ref rather than threading a resolver through props, since
+  // the field only needs the final ISO date, not the modal's own open state.
+  const pickDateResolveRef = useRef<((iso: string | null) => void) | null>(null);
+  const quantitySectionRef = useRef<View>(null);
+
+  function pickOpenedDate(): Promise<string | null> {
+    setPickDateOpen(true);
+    return new Promise((resolve) => {
+      pickDateResolveRef.current = resolve;
+    });
+  }
+
+  /**
+   * Brings the Quantity section above the keyboard the moment its amount
+   * field is tapped, rather than leaving the field to whatever the
+   * KeyboardAvoidingView wrapping the whole page happens to do on its own —
+   * that resizes the page, but does nothing to guarantee the specific field
+   * someone just focused ends up north of the keyboard rather than behind
+   * it. measureLayout reads this section's position relative to the
+   * scrollview's own content, not the screen, so the offset is correct
+   * regardless of how far down the list this card happens to be.
+   */
+  function handleAmountFocus() {
+    const section = quantitySectionRef.current;
+    const scroller = scrollRef.current;
+    if (!section || !scroller) return;
+    section.measureLayout(
+      // @ts-expect-error — measureLayout's second argument wants a host
+      // component instance, which ScrollView is at runtime even though its
+      // own type only exposes the imperative scrollTo/scrollToEnd methods.
+      scroller,
+      (_x: number, y: number) => {
+        // A little headroom above the section, not flush against the top of
+        // the visible area — flush would put the "Quantity" label itself
+        // right under the status bar with nothing readable above it.
+        scroller.scrollTo({ y: Math.max(0, y - space.xl), animated: true });
+      },
+      () => {
+        // measureLayout can fail transiently mid-layout-pass (a card that
+        // just expanded). Not scrolling is a worse first tap, never a
+        // crash — the field is still usable, just not auto-scrolled this
+        // once.
+      }
+    );
+  }
 
   // The model's own alternatives first — it was looking at the packet. The food
   // catalogue fills in behind when it offered none.
@@ -660,7 +722,7 @@ function EditCard({
       </View>
 
       <Eyebrow style={styles.fieldLabel}>Name</Eyebrow>
-      <View style={styles.fieldFocused}>
+      <View style={[styles.field, nameFocused && styles.fieldFocused]}>
         <TextInput
           style={styles.fieldInput}
           value={candidate.name}
@@ -672,6 +734,8 @@ function EditCard({
           // keyboard already up covers the card the user was about to read
           // before they have seen any of it.
           autoFocus={candidate.nameUnsure && candidate.name.trim().length > 0}
+          onFocus={() => setNameFocused(true)}
+          onBlur={() => setNameFocused(false)}
           selectionColor={colors.primaryDark}
           returnKeyType="done"
         />
@@ -697,8 +761,14 @@ function EditCard({
       )}
 
       <View style={styles.fieldLabelRow}>
-        <Eyebrow>Expiry date</Eyebrow>
-        <DateChip chip={chip} />
+        <Eyebrow>Use by / Best before</Eyebrow>
+        {/* While "I don't know" is selected with no real date set, the
+            PANZI USE-BY ESTIMATE panel below already says everything this
+            chip would — showing both was the same estimate, same date,
+            twice, right on top of each other. The chip earns its place
+            back the moment there's a printed/typed/rough date to
+            summarise. */}
+        {!(candidate.expiryUnknown && !candidate.expiryDate) && <DateChip chip={chip} />}
       </View>
       <DateField
         value={candidate.expiryDate}
@@ -713,52 +783,57 @@ function EditCard({
             editedByUser: true,
           })
         }
+        unknown={candidate.expiryUnknown}
+        onChangeUnknown={(unknown) => onPatch({ expiryUnknown: unknown })}
+        basis={candidate.basis}
+        onChangeBasis={(basis) =>
+          onPatch(
+            // Promoting to a real date (manual/rough) drops whatever
+            // estimate was showing — Phase 2 §7's "editing and trust" rule:
+            // an override is a promotion, not a fallback pairing.
+            basis === 'estimated'
+              ? { basis }
+              : { basis, estimatedUseBy: null, estimateInputs: null }
+          )
+        }
+        foodClass={classifyFood(candidate.category)}
+        packageStatus={candidate.packageStatus}
+        openedAt={candidate.openedAt}
+        addedAt={null}
+        storageLocation={candidate.location}
+        onEstimate={(result) =>
+          onPatch({
+            estimatedUseBy: result?.date ?? null,
+            estimateInputs: result?.inputs ?? null,
+          })
+        }
       />
 
-      {/* Only a hand-typed row gets asked this — a scanned item already has
-          either a printed date or the vision model's own estimate, so
-          "opened or unopened" has nothing left to inform. A row that started
-          blank and later has a photo attached is no longer blank (box or
-          photoUri is set), so this correctly stops applying the moment that
-          happens. */}
-      {!candidate.box && !candidate.photoUri && (
-        <>
-          <Eyebrow style={styles.openedLabel}>Opened?</Eyebrow>
-          <View style={styles.suggestionRow}>
-            {(['unopened', 'opened'] as const).map((state) => (
-              <TouchableOpacity
-                key={state}
-                style={[styles.suggestion, candidate.openedState === state && styles.suggestionOn]}
-                onPress={() => onPatch({ openedState: state })}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[
-                    styles.suggestionText,
-                    candidate.openedState === state && styles.suggestionTextOn,
-                  ]}
-                >
-                  {state === 'unopened' ? 'Unopened' : 'Opened'}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {!candidate.expiryDate && candidate.openedState && (
-            <TouchableOpacity
-              style={styles.estimateLink}
-              onPress={onEstimateShelfLife}
-              activeOpacity={0.7}
-              disabled={estimating}
-            >
-              <Ionicons name="sparkles-outline" size={15} color={colors.primaryDark} />
-              <Text style={styles.estimateLinkText}>
-                {estimating ? 'Estimating…' : "I don't know — estimate it"}
-              </Text>
-            </TouchableOpacity>
-          )}
-        </>
-      )}
+      <PackageStatusField
+        status={candidate.packageStatus}
+        openedAt={candidate.openedAt}
+        onChangeStatus={(status) =>
+          onPatch({
+            packageStatus: status,
+            ...(status !== 'opened' ? { openedAt: null } : {}),
+          })
+        }
+        onChangeOpenedAt={(iso) => onPatch({ openedAt: iso })}
+        onPickDate={pickOpenedDate}
+      />
+      <PickDateModal
+        visible={pickDateOpen}
+        onClose={() => {
+          setPickDateOpen(false);
+          pickDateResolveRef.current?.(null);
+          pickDateResolveRef.current = null;
+        }}
+        onPick={(iso) => {
+          setPickDateOpen(false);
+          pickDateResolveRef.current?.(iso);
+          pickDateResolveRef.current = null;
+        }}
+      />
 
       {/* Loose produce keeps its own screen for the ripeness read — the scale,
           the reasoning and the override are too much to inline here. */}
@@ -770,13 +845,18 @@ function EditCard({
         </TouchableOpacity>
       )}
 
-      {/* How many is always a full-width block, whatever the measure — a
+      {/* Quantity is always a full-width block, whatever the type — a
           two-column layout next to Store in used to fit the plain pieces
-          stepper, but the measure pill needs the row's whole width to sit
-          clear of the label without crowding it, and the quick-amount grid
-          needs it for all four measures alike. Store in always follows on
-          its own row below. */}
-      <View style={styles.howManyFull}>
+          stepper, but the amount-with-unit row needs the card's whole width
+          to sit clear of the label without crowding it, and the
+          quick-amount grid needs it for all three types alike.
+          quantitySectionRef is what handleAmountFocus (above) measures
+          against to scroll this section above the keyboard the moment its
+          field is tapped. No section label of its own here any more — this
+          was "QUANTITY" stacked directly above MeasureControl's own "How
+          many" label, two headers for one control. HOW MANY (drawn inside
+          MeasureControl) is the one that stays. */}
+      <View ref={quantitySectionRef} style={styles.howManyFull}>
         {/* The pack size, stated but not editable here. It is read off the
             packaging and almost never wrong; putting it in a stepper is what
             produced a quantity of 70 for a 70 g bag of crisps. */}
@@ -790,8 +870,10 @@ function EditCard({
           unit={candidate.unit}
           onChange={(quantity) => onPatch({ quantity })}
           onPickMeasure={handleMeasurePicked}
+          onFocusInput={handleAmountFocus}
         />
       </View>
+
       <View style={styles.storeInRow}>
         <StoreInField
           location={candidate.location}
@@ -831,13 +913,15 @@ function EditCard({
         </View>
       )}
       {locationsOpen && candidate.location !== null && !FIXED_LOCATIONS.has(candidate.location) && (
-        <View style={styles.fieldFocused}>
+        <View style={[styles.field, locationFocused && styles.fieldFocused]}>
           <TextInput
             style={styles.fieldInput}
             value={candidate.location}
             onChangeText={(location) => onPatch({ location, editedByUser: true })}
             placeholder="Where do you keep it?"
             placeholderTextColor={colors.mutedLight}
+            onFocus={() => setLocationFocused(true)}
+            onBlur={() => setLocationFocused(false)}
             selectionColor={colors.primaryDark}
             autoCapitalize="sentences"
             returnKeyType="done"
@@ -894,7 +978,7 @@ function EditCard({
             end={{ x: 0.8, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
-          <Text style={styles.confirmButtonText}>Looks right</Text>
+          <Text style={styles.confirmButtonText}>Confirm item</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onRemove} hitSlop={HIT_SLOP} activeOpacity={0.7}>
           <Text style={styles.removeText}>Remove</Text>
@@ -939,22 +1023,45 @@ const useStyles = makeStyles((colors) => ({
   dimmedCard: {
     opacity: 0.45,
   },
-  header: {
+  // Three zones at one fixed row height — left (thumbnail/Back), the
+  // title, right (Retake + ×) — rather than one flex row where the
+  // title's own flex:1 block only ever pushed the right-side actions
+  // along without keeping them clear of it at longer title lengths
+  // ("Check 12 items"). The title's own flex:1 + numberOfLines={1} is
+  // what actually guarantees Back/Retake/× never collide with it or each
+  // other, independent of how close to pixel-centred it lands — the two
+  // side widths differ slightly by content (a photo thumbnail vs. a Back
+  // link; Retake text plus a 44px × button), and this doesn't try to force
+  // them equal.
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md2,
+    height: 44,
     paddingHorizontal: space.xxl,
     paddingTop: space.half,
-    paddingBottom: space.lg,
+  },
+  headerSide: {
+    minWidth: 64,
+    justifyContent: 'center',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: space.md2,
   },
   headerThumb: {
-    width: 54,
-    height: 54,
-    borderRadius: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 14,
     backgroundColor: colors.backgroundAlt,
   },
   headerClose: {
-    marginLeft: space.sm,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -space.sm,
   },
   previewBackdrop: {
     flex: 1,
@@ -990,23 +1097,28 @@ const useStyles = makeStyles((colors) => ({
     // 4.67:1 on the surface behind it, and the same colour as Retake.
     color: colors.primaryDark,
   },
-  headerText: {
+  title: {
     flex: 1,
     minWidth: 0,
-  },
-  title: {
+    textAlign: 'center',
     fontFamily: fonts.display,
     fontWeight: '800',
     fontSize: type.headline.fontSize,
     lineHeight: 28,
     color: colors.primaryDarker,
-    marginBottom: space.xs,
   },
+  // Its own line below the header row, centred under the title — never
+  // sharing a line with Back, which is what put it wedged under the title
+  // on Back's side of the old single-row layout.
   subtitle: {
+    textAlign: 'center',
     fontWeight: '600',
     fontSize: type.label.fontSize,
     lineHeight: 16,
-    color: colors.textSecondary,
+    color: colors.mutedBody,
+    paddingHorizontal: space.xxl,
+    paddingTop: space.xs,
+    paddingBottom: space.lg,
   },
   retake: {
     fontWeight: '700',
@@ -1107,10 +1219,17 @@ const useStyles = makeStyles((colors) => ({
   },
 
   // ─── Edit card ──────────────────────────────────────────────────────────
+  // Was a 2px accent border (primaryBright) — one of nine accent-weight
+  // elements competing on this one card (see the review this replaced: "at
+  // most two accent-weight elements visible per screenful"). A raised
+  // surface now does the work a bright border used to: `card` sits a real
+  // step above the page (see palettes.ts's own note on that token), so a
+  // hairline neutral border is enough to finish the edge, not carry the
+  // whole effect on its own.
   editCard: {
     backgroundColor: colors.card,
-    borderWidth: 2,
-    borderColor: colors.primaryBright,
+    borderWidth: 1,
+    borderColor: colors.backgroundAlt,
     borderRadius: 22,
     padding: space.lg,
     shadowColor: colors.shadow,
@@ -1138,26 +1257,22 @@ const useStyles = makeStyles((colors) => ({
     lineHeight: 16,
     color: colors.textSecondary,
   },
+  // 10px (space.sm2) between a label and its control, everywhere on this
+  // card — was space.sm (8), close enough that it read as "roughly the
+  // same" rather than a deliberately consistent rhythm next to the 24px
+  // section gaps.
   fieldLabel: {
-    marginBottom: space.sm,
-  },
-  // "Opened?" follows DateField directly, which — unlike the fields
-  // fieldLabel's other call sites open — is a bordered box with no trailing
-  // margin of its own, so fieldLabel's bare marginBottom left this label
-  // sitting flush against the "Or estimate" chips above it. Every other
-  // section label on this card gets space.lg above it (categoryLabel,
-  // fieldLabelRow, howManyFull, storeInRow) — this matches that.
-  openedLabel: {
-    marginTop: space.lg,
-    marginBottom: space.sm,
+    marginBottom: space.sm2,
   },
   // Category sits right after the How many / Store in row, with nothing of
   // its own separating them — fieldLabel's plain marginBottom (no top
   // margin, since it usually opens a row that already has its own top
-  // spacing) left it flush against Store in's box above it.
+  // spacing) left it flush against Store in's box above it. 24px top /
+  // 10px bottom, matching every other section label and label-to-control
+  // gap on this card.
   categoryLabel: {
-    marginTop: space.lg,
-    marginBottom: space.sm,
+    marginTop: space.xxl,
+    marginBottom: space.sm2,
   },
   fieldLabelRow: {
     flexDirection: 'row',
@@ -1169,8 +1284,8 @@ const useStyles = makeStyles((colors) => ({
     // with no top margin the chip's border sat a couple of points under the
     // input's and the two read as one stuck-together block. The plain `Name`
     // label above has no such problem, which is why only this row needs it.
-    marginTop: space.lg,
-    marginBottom: space.sm,
+    marginTop: space.xxl,
+    marginBottom: space.sm2,
   },
   field: {
     flexDirection: 'row',
@@ -1185,15 +1300,16 @@ const useStyles = makeStyles((colors) => ({
     paddingVertical: space.md,
     paddingHorizontal: space.md2,
   },
+  // An override composed on top of `field`, not a field of its own — was a
+  // standalone style applied unconditionally, which meant an empty Name
+  // field showed this exact accent border at rest, reading as though it
+  // were already focused and filled. Now only added on top of `field`
+  // while the input genuinely has focus. primaryMid rather than
+  // primaryBright: the dark-appropriate accent variant (see palettes.ts),
+  // since a bright saturated green at this size halates on the dark card.
   fieldFocused: {
-    minHeight: 48,
-    justifyContent: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 2,
-    borderColor: colors.primaryBright,
-    borderRadius: 14,
-    paddingVertical: space.md,
-    paddingHorizontal: space.md2,
+    borderWidth: 1.5,
+    borderColor: colors.primaryMid,
   },
   fieldInput: {
     fontFamily: 'Nunito_700Bold',
@@ -1246,36 +1362,27 @@ const useStyles = makeStyles((colors) => ({
     fontSize: type.label.fontSize,
     color: colors.primaryDark,
   },
-  estimateLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    minHeight: 44,
-    marginTop: space.xs,
-  },
-  estimateLinkText: {
-    flex: 1,
-    fontWeight: '800',
-    fontSize: type.label.fontSize,
-    color: colors.primaryDark,
-  },
   // How many — always a full-width block regardless of measure, so the
   // pill never has to share horizontal room with anything (see the defect
   // this replaced: a two-column layout crowded the pill against Store in's
-  // label at some label lengths). Same top spacing every section label on
-  // this card uses — see sectionSpacing below.
+  // label at some label lengths). One spacing token between every section
+  // block on this card (24px, space.xxl) — was space.lg (16), which read as
+  // uneven next to PACKAGE STATUS's own gap once QUANTITY's extra stacked
+  // label was removed and every section had to stand on its own top margin
+  // alone rather than borrowing a label's.
   howManyFull: {
-    marginTop: space.lg,
+    marginTop: space.xxl,
   },
-  // Store in's own row, always below How many now.
+  // Store in's own row, always below How many now. Same 24px as every
+  // other section gap on this card.
   storeInRow: {
-    marginTop: space.lg,
+    marginTop: space.xxl,
   },
   sizeNote: {
     fontWeight: '700',
     fontSize: type.micro.fontSize,
-    color: colors.textSecondary,
-    marginBottom: space.sm,
+    color: colors.mutedBody,
+    marginBottom: space.sm2,
   },
   editActions: {
     flexDirection: 'row',

@@ -1,10 +1,21 @@
 // src/components/recipes/RecipeTabs.tsx
 //
 // How the user steers, replacing the old pill row (see git history for
-// MoodChips.tsx). Same job — each tab changes the question sent to the
-// model, nothing is filtered client-side by category — but drawn as
-// underline tabs spanning the row rather than a scrollable chip strip, since
-// four short labels always fit one row on a phone width.
+// MoodChips.tsx). Same job — each tab picks a category — but what that
+// actually does downstream depends on Pantry Only (see RecipesScreen's own
+// header comment): off, a tab filters the fixed local recipe list
+// client-side; on, it changes the question sent to the model instead. This
+// component doesn't know or care which — it only ever reports which tab was
+// tapped. Drawn as underline tabs spanning the row rather than a scrollable
+// chip strip. One fixed type size and weight for all four tabs, active or
+// not — only colour and the underline change on selection.
+//
+// "Quick and Easy" used to be the one label long enough to truncate or
+// force a shared shrink-to-fit across all four tabs on a narrow phone —
+// fixed at the source (services/recipes.ts's own MOODS list is now
+// "Quick"), not with measuring code here. Every label in that list is
+// short enough to sit on one line at a fixed size with normal padding, so
+// this file stays a plain fixed-size row.
 
 import React, { useEffect, useRef } from 'react';
 import { Animated, StyleSheet, TouchableOpacity, View } from 'react-native';
@@ -89,7 +100,7 @@ function Tab({
       accessibilityRole="tab"
       accessibilityState={{ selected: active, disabled: !!disabled }}
     >
-      <Animated.Text style={[styles.label, { color: textColor }]} maxFontSizeMultiplier={1.3}>
+      <Animated.Text style={[styles.label, { color: textColor }]} maxFontSizeMultiplier={1.3} numberOfLines={1}>
         {label}
       </Animated.Text>
       <Animated.View style={[styles.underline, { borderBottomColor: underlineColor }]} />
@@ -103,14 +114,16 @@ const useStyles = makeStyles(() => ({
   },
   tab: {
     flex: 1,
+    minWidth: 0,
     alignItems: 'center',
+    paddingHorizontal: space.xs2,
   },
   tabDisabled: {
     opacity: 0.5,
   },
   label: {
     fontFamily: 'Baloo2_700Bold',
-    fontSize: type.body.fontSize,
+    fontSize: type.caption.fontSize,
     paddingBottom: space.md,
   },
   underline: {
