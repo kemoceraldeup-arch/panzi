@@ -13,7 +13,7 @@ import {
 import Text from '../components/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/AuthProvider';
-import { fetchProfile } from '../services/profile';
+import { EMPTY_PROFILE, fetchProfile } from '../services/profile';
 import { subscribeToPantryItems, deletePantryItem, PantryItem } from '../services/pantry';
 import { getFreshnessBadge } from '../utils/freshness';
 import Mascot from '../components/Mascot';
@@ -162,6 +162,9 @@ export default function DashboardScreen() {
         startMode="manual"
         onClose={() => setModalVisible(false)}
         onAdded={() => setModalVisible(false)}
+        // Unrouted screen (see the note above) — never actually reached, so
+        // there is no live profile to check conflicts against here.
+        profile={EMPTY_PROFILE}
       />
     </SafeAreaView>
   );

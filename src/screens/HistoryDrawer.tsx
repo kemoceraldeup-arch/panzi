@@ -1,39 +1,39 @@
 // src/screens/HistoryDrawer.tsx
 //
 // The panel behind the hamburger icon on a chat screen — "New chat" and every
-// past conversation, the same shape as Claude's own sidebar, condensed onto a
-// phone as a drawer that slides in from the left rather than a permanent side
-// panel. Sits over the active conversation rather than replacing it: closing
-// the drawer (tap outside, a row, or dragging it shut) returns to exactly
-// where the chat was.
+// past conversation, the same shape as Claude's own sidebar. Reveal style,
+// like the ChatGPT/Claude mobile apps: this panel is static, sitting where it
+// always sits underneath the chat. Opening the drawer does not move it or
+// slide it in — it is ChatFlow's own wrapper around ChatScreen that slides
+// right, scales down and grows a shadow to reveal this panel sitting behind
+// it. See ChatFlow.tsx for that half of the animation and for `openAmount`,
+// the single Reanimated value shared by both.
 //
 // Driven entirely by react-native-gesture-handler + Reanimated, on the UI
 // thread — an earlier version used a hand-rolled PanResponder for the
 // edge-swipe-to-open gesture on ChatScreen and Animated.timing for the
 // drawer's own open/close, and both read as laggy: PanResponder callbacks run
 // on the JS thread, so under any load the drawer visibly fell behind the
-// finger and took several attempts to register. This owns the whole gesture
-// — the edge-swipe that opens it AND the drag that closes it — as one
-// GestureDetector, so ChatScreen no longer needs a gesture of its own at all.
+// finger and took several attempts to register.
+//
+// Purely static and presentational — no gesture of its own. Both the
+// edge-swipe-to-open and the drag-to-close gestures live on ChatFlow's
+// chat-panel wrapper instead, as one Gesture.Pan(): that panel is always the
+// topmost thing on screen (it fully covers this drawer while closed), so a
+// gesture attached here would never actually receive a touch that starts
+// anywhere on screen — the panel above it would catch it first.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
+  SectionList,
   StyleSheet,
   TouchableOpacity,
   View,
   useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../components/Text';
 import PulsingMascot from '../components/PulsingMascot';
@@ -52,17 +52,16 @@ import {
 
 // Claude's own sidebar reads as roughly four-fifths of a phone width, wide
 // enough for a title to breathe, narrow enough that a sliver of the
-// conversation stays visible as a reminder of what's behind it.
-const WIDTH_FRACTION = 0.82;
-const ANIM_MS = 220;
-// How close to the screen's left edge a swipe has to start to count as
-// opening the drawer, rather than an ordinary gesture on the chat behind it.
-const EDGE_WIDTH = 24;
-// Past this fraction of the drawer's own width, releasing snaps it open
-// rather than back closed.
-const SNAP_FRACTION = 0.5;
+// conversation stays visible as a reminder of what's behind it. Capped so a
+// tablet-width screen doesn't stretch it into something absurdly wide.
+export const WIDTH_FRACTION = 0.8;
+export const MAX_WIDTH = 320;
 
 type Props = {
+  /** Only ever read here to know when to (re)load the conversation list —
+   *  the open/close animation itself is entirely ChatFlow's (openAmount,
+   *  the chat panel's transform, the dim overlay); this component has no
+   *  Reanimated code of its own. */
   visible: boolean;
   /** The conversation currently open behind the drawer, highlighted in the
    *  list — null right after "New chat" is tapped from Home, before a
@@ -75,16 +74,37 @@ type Props = {
   currentIsEmpty: boolean;
   onOpenConversation: (conversation: Conversation) => void;
   onNewChat: (conversation: Conversation) => void;
-  /** Fired when the edge-swipe gesture opens the drawer on its own, so the
-   *  parent's `visible` (normally flipped by the hamburger button) stays in
-   *  sync with what the gesture already did on the UI thread. Without this,
-   *  a swipe-opened drawer looks open but `visible` is still false as far as
-   *  React knows — which is what left the history list stuck loading
-   *  forever, since the effect that fetches it only fires on `visible`
-   *  becoming true. */
-  onOpen: () => void;
   onClose: () => void;
 };
+
+/** Buckets conversations the same way ChatGPT's own history does — most
+ *  recent activity first within each bucket, since `conversations` already
+ *  arrives sorted by `updatedAt` descending from the server. */
+function groupByRecency(conversations: Conversation[]): { title: string; data: Conversation[] }[] {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+  const startOfWeek = startOfToday - 7 * 24 * 60 * 60 * 1000;
+
+  const today: Conversation[] = [];
+  const yesterday: Conversation[] = [];
+  const previous7Days: Conversation[] = [];
+  const older: Conversation[] = [];
+
+  for (const conversation of conversations) {
+    if (conversation.updatedAt >= startOfToday) today.push(conversation);
+    else if (conversation.updatedAt >= startOfYesterday) yesterday.push(conversation);
+    else if (conversation.updatedAt >= startOfWeek) previous7Days.push(conversation);
+    else older.push(conversation);
+  }
+
+  return [
+    { title: 'Today', data: today },
+    { title: 'Yesterday', data: yesterday },
+    { title: 'Previous 7 Days', data: previous7Days },
+    { title: 'Older', data: older },
+  ].filter((section) => section.data.length > 0);
+}
 
 export default function HistoryDrawer({
   visible,
@@ -92,35 +112,19 @@ export default function HistoryDrawer({
   currentIsEmpty,
   onOpenConversation,
   onNewChat,
-  onOpen,
   onClose,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const drawerWidth = Math.round(width * WIDTH_FRACTION);
+  const drawerWidth = Math.round(Math.min(width * WIDTH_FRACTION, MAX_WIDTH));
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Always mounted, never unmounted while a conversation is open — the
-  // open-from-the-edge gesture below has to be attached to *something* the
-  // whole time, including while the drawer is fully closed and invisible.
-  // Being closed is openAmount reaching 0 and translating the panel fully
-  // off-screen, not the component disappearing.
-  //
-  // 0 closed, 1 open. Reanimated's own value, not React state — every frame
-  // of the drag reads and writes this directly on the UI thread, which is
-  // the difference between tracking a finger exactly and visibly lagging
-  // behind it.
-  const openAmount = useSharedValue(visible ? 1 : 0);
-
-  useEffect(() => {
-    openAmount.value = withTiming(visible ? 1 : 0, { duration: ANIM_MS });
-  }, [visible, openAmount]);
+  const sections = useMemo(() => groupByRecency(conversations), [conversations]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -171,161 +175,79 @@ export default function HistoryDrawer({
     ]);
   }
 
-  // Snaps openAmount to fully open or fully closed and tells React which —
-  // called from worklet code via runOnJS, since setState (and the onOpen /
-  // onClose callbacks that eventually reach it) can't be touched directly
-  // from the UI thread. Skipped when the gesture merely confirms the state
-  // React already has (releasing a swipe-to-open drag while `visible` is
-  // already true) — calling onOpen again there would be harmless but is
-  // needless churn on the parent.
-  function settle(open: boolean) {
-    openAmount.value = withTiming(open ? 1 : 0, { duration: ANIM_MS });
-    if (open && !visible) onOpen();
-    else if (!open && visible) onClose();
-  }
-
-  // Shared drag math for both gestures below — how far a change in screen
-  // pixels moves the drawer as a fraction of its own width, clamped so it can
-  // never overshoot past fully open or fully closed.
-  function applyDrag(changeX: number) {
-    'worklet';
-    openAmount.value = Math.min(1, Math.max(0, openAmount.value + changeX / drawerWidth));
-  }
-  function releaseDrag(velocityX: number) {
-    'worklet';
-    const projected = openAmount.value + velocityX / drawerWidth / 4;
-    runOnJS(settle)(projected > SNAP_FRACTION);
-  }
-
-  // Opens the drawer — attached only to the thin edge strip below, which
-  // stays mounted and touchable even while the drawer itself is translated
-  // fully off-screen. This is the gesture an edge-swipe from the chat
-  // actually hits.
-  const openGesture = Gesture.Pan()
-    .activeOffsetX([-10, 10])
-    .failOffsetY([-14, 14])
-    .onChange((e) => applyDrag(e.changeX))
-    .onEnd((e) => releaseDrag(e.velocityX));
-
-  // Closes the drawer — attached to the drawer panel itself, so it is only
-  // ever reachable while at least part of the drawer is on screen to drag.
-  const closeGesture = Gesture.Pan()
-    .activeOffsetX([-10, 10])
-    .failOffsetY([-14, 14])
-    .onChange((e) => applyDrag(e.changeX))
-    .onEnd((e) => releaseDrag(e.velocityX));
-
-  const drawerStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: (openAmount.value - 1) * drawerWidth }],
-  }));
-
-  const backdropStyle = useAnimatedStyle(() => ({
-    opacity: openAmount.value,
-  }));
-
   return (
     <View style={styles.overlay} pointerEvents="box-none">
-      {/* The edge strip: present at all times, whether the drawer is open or
-          closed, so a swipe starting near the screen edge always has
-          something to land on. Sized to EDGE_WIDTH rather than the whole
-          screen so it never intercepts ordinary taps and scrolls elsewhere
-          in the chat. */}
-      <GestureDetector gesture={openGesture}>
-        <View style={styles.edgeStrip} pointerEvents={visible ? 'none' : 'auto'} />
-      </GestureDetector>
-
-      <TouchableOpacity
-        style={[StyleSheet.absoluteFillObject, { pointerEvents: visible ? 'auto' : 'none' }]}
-        activeOpacity={1}
-        onPress={onClose}
-      />
-      <Animated.View style={[styles.backdrop, backdropStyle]} pointerEvents="none" />
-
-      <GestureDetector gesture={closeGesture}>
-        <Animated.View
-          style={[
-            styles.drawer,
-            { width: drawerWidth, paddingTop: insets.top + space.sm },
-            drawerStyle,
-          ]}
-        >
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
-              <PulsingMascot size={30} maxScale={1.3} />
-              <Text style={styles.headerTitle}>Ask Panzi</Text>
-            </View>
+      {/* Static — no transform of its own. This panel always sits exactly
+          here; it is ChatFlow's chat-panel wrapper sliding right that
+          reveals it, not this view moving to meet the chat. */}
+      <View style={[styles.drawer, { width: drawerWidth, paddingTop: insets.top + space.sm }]}>
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <PulsingMascot size={30} maxScale={1.3} />
+            <Text style={styles.headerTitle}>Ask Panzi</Text>
           </View>
+        </View>
 
-          <TouchableOpacity
-            style={[styles.newChatRow, currentIsEmpty && styles.newChatRowDisabled]}
-            onPress={startNew}
-            disabled={creating || currentIsEmpty}
-          >
-            <View style={[styles.newChatIcon, currentIsEmpty && styles.newChatIconDisabled]}>
-              {creating ? (
-                <ActivityIndicator size="small" color={colors.onAccent} />
-              ) : (
-                <Ionicons name="add" size={18} color={colors.onAccent} />
-              )}
-            </View>
-            <Text style={[styles.newChatText, currentIsEmpty && styles.newChatTextDisabled]}>
-              New chat
-            </Text>
-          </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.newChatRow, currentIsEmpty && styles.newChatRowDisabled]}
+          onPress={startNew}
+          disabled={creating || currentIsEmpty}
+        >
+          <View style={[styles.newChatIcon, currentIsEmpty && styles.newChatIconDisabled]}>
+            {creating ? (
+              <ActivityIndicator size="small" color={colors.onAccent} />
+            ) : (
+              <Ionicons name="add" size={18} color={colors.onAccent} />
+            )}
+          </View>
+          <Text style={[styles.newChatText, currentIsEmpty && styles.newChatTextDisabled]}>
+            New chat
+          </Text>
+        </TouchableOpacity>
 
-          <Text style={styles.eyebrow}>HISTORY</Text>
-
-          {loading ? (
-            <View style={styles.loading}>
-              <ActivityIndicator color={colors.primary} />
-            </View>
-          ) : error ? (
-            <View style={styles.empty}>
-              <Text style={styles.emptyText}>{error}</Text>
-              <TouchableOpacity onPress={load} style={styles.retryButton}>
-                <Text style={styles.retryText}>Try again</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <FlatList
-              data={conversations}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.list}
-              ListEmptyComponent={
-                <View style={styles.empty}>
-                  <Text style={styles.emptyText}>No past chats yet.</Text>
-                </View>
-              }
-              renderItem={({ item }) => (
-                <ConversationRow
-                  conversation={item}
-                  active={item.id === activeConversationId}
-                  onPress={() => onOpenConversation(item)}
-                  onDelete={() => confirmDelete(item)}
-                />
-              )}
-            />
-          )}
-        </Animated.View>
-      </GestureDetector>
+        {loading ? (
+          <View style={styles.loading}>
+            <ActivityIndicator color={colors.primary} />
+          </View>
+        ) : error ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyText}>{error}</Text>
+            <TouchableOpacity onPress={load} style={styles.retryButton}>
+              <Text style={styles.retryText}>Try again</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <SectionList
+            sections={sections}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.list}
+            stickySectionHeadersEnabled={false}
+            ListEmptyComponent={
+              <View style={styles.empty}>
+                <Text style={styles.emptyText}>No past chats yet.</Text>
+              </View>
+            }
+            renderSectionHeader={({ section }) => (
+              <Text style={styles.sectionHeader}>{section.title.toUpperCase()}</Text>
+            )}
+            renderItem={({ item }) => (
+              <ConversationRow
+                conversation={item}
+                active={item.id === activeConversationId}
+                onPress={() => onOpenConversation(item)}
+                onDelete={() => confirmDelete(item)}
+              />
+            )}
+          />
+        )}
+      </View>
     </View>
   );
 }
 
 const useStyles = makeStyles((colors) => ({
   overlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(23,23,15,0.4)',
-  },
-  edgeStrip: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: EDGE_WIDTH,
+    ...StyleSheet.absoluteFill,
   },
   drawer: {
     height: '100%',
@@ -385,14 +307,15 @@ const useStyles = makeStyles((colors) => ({
   newChatTextDisabled: {
     color: colors.textMuted,
   },
-  eyebrow: {
+  sectionHeader: {
     fontWeight: '800',
     fontSize: type.micro.fontSize,
     letterSpacing: 1.2,
-    textTransform: 'uppercase',
     color: colors.tabInactive,
     marginHorizontal: space.lg,
+    marginTop: space.md,
     marginBottom: space.sm,
+    backgroundColor: colors.backgroundLight,
   },
   loading: {
     flex: 1,

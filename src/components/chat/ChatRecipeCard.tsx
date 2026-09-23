@@ -37,13 +37,16 @@ export default function ChatRecipeCard({ recipe, onOpen, onStartCooking }: Props
   const styles = useStyles();
   const colors = useColors();
 
-  const missing = recipe.ingredients.filter((i) => !i.have);
+  // "Missing" means genuinely needed and not on hand — an optional extra
+  // that happens to be absent isn't a gap in the recipe, so it's excluded
+  // from both the collapsed count and the missing/have binary below.
+  const missing = recipe.ingredients.filter((i) => !i.have && !i.optional);
   const shown = recipe.ingredients.slice(0, MAX_INGREDIENT_ROWS);
 
   return (
     <View style={styles.card}>
       <TouchableOpacity activeOpacity={0.9} onPress={onOpen} style={styles.header}>
-        <DishTile look={recipe.look} dishKey={recipe.dishKey} size="mini" style={styles.thumb} />
+        <DishTile look={recipe.look} dishKey={recipe.dishKey} title={recipe.title} size="mini" style={styles.thumb} />
         <View style={styles.headerText}>
           <Text style={styles.eyebrow}>
             {recipe.needsShopping ? 'WORTH A QUICK TRIP' : 'BEST MATCH'}
@@ -59,31 +62,45 @@ export default function ChatRecipeCard({ recipe, onOpen, onStartCooking }: Props
 
       {shown.length > 0 && (
         <View style={styles.ingredientList}>
-          {shown.map((ingredient, i) => (
-            <View
-              key={`${ingredient.name}-${i}`}
-              style={[styles.ingredientRow, i > 0 && styles.ingredientDivider]}
-            >
+          {shown.map((ingredient, i) => {
+            // Three states: have (checked), optional-but-absent (muted, not
+            // an alarm), and genuinely missing (flagged) — see the note on
+            // `missing` above for why optional is carved out of the binary.
+            const isOptionalGap = !ingredient.have && ingredient.optional === true;
+            return (
               <View
-                style={[
-                  styles.checkbox,
-                  ingredient.have ? styles.checkboxHave : styles.checkboxMissing,
-                ]}
+                key={`${ingredient.name}-${i}`}
+                style={[styles.ingredientRow, i > 0 && styles.ingredientDivider]}
               >
-                {ingredient.have ? (
-                  <Ionicons name="checkmark" size={12} color={colors.onAccent} />
-                ) : (
-                  <Ionicons name="add" size={12} color={colors.textMuted} />
-                )}
+                <View
+                  style={[
+                    styles.checkbox,
+                    ingredient.have ? styles.checkboxHave : styles.checkboxMissing,
+                  ]}
+                >
+                  {ingredient.have ? (
+                    <Ionicons name="checkmark" size={12} color={colors.onAccent} />
+                  ) : (
+                    <Ionicons name="add" size={12} color={colors.textMuted} />
+                  )}
+                </View>
+                <Text style={styles.ingredientName} numberOfLines={1}>
+                  {ingredient.name}
+                </Text>
+                <Text
+                  style={
+                    ingredient.have
+                      ? styles.ingredientAmount
+                      : isOptionalGap
+                        ? styles.ingredientOptional
+                        : styles.ingredientMissing
+                  }
+                >
+                  {ingredient.have ? ingredient.amount : isOptionalGap ? 'optional' : 'missing'}
+                </Text>
               </View>
-              <Text style={styles.ingredientName} numberOfLines={1}>
-                {ingredient.name}
-              </Text>
-              <Text style={ingredient.have ? styles.ingredientAmount : styles.ingredientMissing}>
-                {ingredient.have ? ingredient.amount : 'missing'}
-              </Text>
-            </View>
-          ))}
+            );
+          })}
         </View>
       )}
 
@@ -189,6 +206,12 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '700',
     fontSize: type.caption.fontSize,
     color: colors.rustMuted,
+  },
+  ingredientOptional: {
+    fontWeight: '600',
+    fontSize: type.caption.fontSize,
+    color: colors.textMuted,
+    fontStyle: 'italic',
   },
   actions: {
     flexDirection: 'row',

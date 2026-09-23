@@ -71,6 +71,11 @@ const COLLAPSED_LOOKS_RIGHT = 3;
 // is what tells the card to show the free-text field and read Other as picked.
 const FIXED_LOCATIONS = new Set<string>(STORAGE_LOCATIONS.filter((l) => l !== 'Other'));
 
+// Matches the server's own cap on a pantry item name (routes/scan.ts and
+// routes/recipes.ts both truncate to 60) — see the Name field below for why
+// the client enforces the same number rather than leaving it to the server.
+const NAME_MAX_LENGTH = 60;
+
 type Props = {
   candidates: ScanCandidate[];
   photo?: Capture | null;
@@ -729,6 +734,15 @@ function EditCard({
           onChangeText={setName}
           placeholder="Mature cheddar"
           placeholderTextColor={colors.mutedLight}
+          // The same 60 the server truncates pantry item names to (see
+          // cleanPantryLine in routes/recipes.ts and the scan route's own
+          // text(..., 60)). Capping it here rather than only there means a
+          // long paste is refused while it is still visibly the user's to
+          // fix, instead of being silently cut somewhere between Save and
+          // the shelf. Well clear of the "four words at most" a real item
+          // name runs to — this is a guard against a paste, not a limit a
+          // shopper typing "Mature cheddar" will ever meet.
+          maxLength={NAME_MAX_LENGTH}
           // Only a name the reader was unsure of — never a blank row. A row
           // typed in by hand is unsure by definition, and opening it with the
           // keyboard already up covers the card the user was about to read
@@ -797,6 +811,7 @@ function EditCard({
           )
         }
         foodClass={classifyFood(candidate.category)}
+        itemName={candidate.name}
         packageStatus={candidate.packageStatus}
         openedAt={candidate.openedAt}
         addedAt={null}
@@ -1013,7 +1028,7 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: colors.surface,
   },
   wash: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     bottom: undefined,
     height: 320,
   },

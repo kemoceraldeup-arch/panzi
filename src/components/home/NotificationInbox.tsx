@@ -361,7 +361,7 @@ const useStyles = makeStyles((colors) => ({
   // Barely there. A dropdown is a menu, not a screen: dimming the page behind
   // it the way a sheet does would make a glance feel like a departure.
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(23,23,15,0.12)',
   },
   panel: {

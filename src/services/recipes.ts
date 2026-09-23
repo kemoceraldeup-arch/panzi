@@ -26,6 +26,11 @@ export type RecipeIngredient = {
   /** have is false only because this is a basic staple (rice, salt, oil…)
    *  every suggestion already assumes is in the house — not a real gap. */
   assumedStaple: boolean;
+  /** True when this is a nice-to-have that improves the dish but isn't
+   *  required to make it — only ever set by chat's PANTRY ONLY mode
+   *  (server/src/routes/chat.ts); absent/false everywhere else, including
+   *  every suggestion from this file's own fetchFeaturedRecipe/browse calls. */
+  optional?: boolean;
 };
 
 export type Recipe = {
@@ -348,6 +353,25 @@ export async function fetchBrowseRecipes(
       throw new RecipeError(err.message);
     }
     throw new RecipeError("Couldn't reach the kitchen — check your connection and try again.");
+  }
+}
+
+/**
+ * A generated photo for a dish outside the hand-curated dishKey list — the
+ * server checks its own storage first and only pays to generate one the first
+ * time a given title is ever asked for (see server/src/routes/dishPhoto.ts).
+ *
+ * Returns null on any failure rather than throwing. A missing photo is not an
+ * error to this caller — DishTile already has a finished fallback (the
+ * gradient tile), so a network hiccup here should look exactly like "no photo
+ * yet," not surface an error state over a recipe that otherwise loaded fine.
+ */
+export async function fetchDishPhoto(title: string): Promise<string | null> {
+  try {
+    const { url } = await apiFetch<{ url: string }>('/api/dish-photo', { title });
+    return url || null;
+  } catch {
+    return null;
   }
 }
 

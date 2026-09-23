@@ -41,6 +41,14 @@ export type RecipeNutritionEstimate = {
    *  and worth showing alongside the numbers rather than hiding. */
   matchedCount: number;
   totalCount: number;
+  /** Fraction (0-1) of the recipe's parseable mass the total actually
+   *  accounts for, weighted by each ingredient's real amount rather than by
+   *  a flat per-ingredient count. A recipe can match 8 of 9 ingredients by
+   *  count and still have this be low, if the one that didn't match is the
+   *  main ingredient by weight — matchedCount/totalCount alone would call
+   *  that a good match. Use this, not the counts, to judge how much to
+   *  trust the numbers. */
+  coverage: number;
 };
 
 /**

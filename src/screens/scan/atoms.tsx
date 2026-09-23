@@ -306,6 +306,30 @@ function sanitizeDecimalInput(text: string): string {
 }
 
 /**
+ * sanitizeDecimalInput plus the measure's own ceiling, for the keystroke
+ * path. The length cap above only bounds how many digits the field holds,
+ * which is a far weaker rule than maxFor's actual limits — 9999999 is seven
+ * digits and so passed that check cleanly, even though 1000 is the most
+ * pieces this app stores. commitTyped already clamps the committed *value*,
+ * so nothing invalid was ever saved; what it could not do is stop the field
+ * from sitting there showing "9999999" right up until blur, then silently
+ * snapping to 1000 with no explanation. Refusing the keystroke that would
+ * exceed the ceiling means the number on screen is the number that will be
+ * kept, which is the only version a user can actually reason about.
+ *
+ * Trailing-dot and empty input pass through untouched — "1." and "" are
+ * both mid-typing states, not values, and Number() would read them as 1 and
+ * 0 respectively and clamp a half-typed amount out from under the user.
+ */
+function clampToCeiling(text: string, ceiling: number): string {
+  const cleaned = sanitizeDecimalInput(text);
+  if (cleaned === '' || cleaned.endsWith('.')) return cleaned;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n) || n <= ceiling) return cleaned;
+  return String(ceiling);
+}
+
+/**
  * The "How many" control — the measure pill and its panel, amount-with-unit
  * input, and the secondary quick-amount grid and summary line beneath it.
  *
@@ -396,6 +420,16 @@ export function MeasureControl({
    * code wrote whatever was typed straight into the base-unit `amount` with
    * no conversion in either direction.
    */
+  // maxFor is always in base units (grams, millilitres), but a split measure
+  // types in whatever unit is on screen — someone entering "2" with kg
+  // showing means 2000g. Comparing their keystrokes against the raw 500,000
+  // would let them type 500000 kg before anything objected, so the ceiling is
+  // converted into the same unit the field is being typed in. Pieces and
+  // packs aren't split, so their ceiling is already in the right unit.
+  const typedCeiling = isSplit
+    ? maxFor(quantity.measure) / toBaseAmount(1, currentUnit!)
+    : maxFor(quantity.measure);
+
   function commitTyped(text: string) {
     const n = Number(sanitizeDecimalInput(text));
     setTyping(false);
@@ -507,7 +541,7 @@ export function MeasureControl({
           <TextInput
             style={styles.stepValue}
             value={draft}
-            onChangeText={(text) => setDraft(sanitizeDecimalInput(text))}
+            onChangeText={(text) => setDraft(clampToCeiling(text, typedCeiling))}
             onFocus={onFocusInput}
             onBlur={() => commitTyped(draft)}
             keyboardType="decimal-pad"

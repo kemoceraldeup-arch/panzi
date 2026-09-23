@@ -23,32 +23,24 @@ import {
 import Text from '../components/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth } from '../config/firebaseClient';
-import { saveSurvey } from '../services/profile';
+import { COMMON_ALLERGENS, COMMON_DIETS, saveSurvey } from '../services/profile';
+import MultiSelectDropdown from '../components/profile/MultiSelectDropdown';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
 import { type } from '../theme/typography';
 
-const DIETARY_OPTIONS = ['Vegetarian', 'Vegan', 'Pescatarian', 'Gluten-free', 'Dairy-free'];
-
 const NAME_MAX_LENGTH = 40;
-const ALLERGIES_MAX_LENGTH = 200;
-// Letters (incl. accented), spaces, and a few common name punctuation marks.
-const NAME_PATTERN = /^[\p{L}\s'.-]+$/u;
+// Letters, numbers, and a few common username punctuation marks — no spaces,
+// so this can't be quietly filled in with someone's full legal name.
+const NAME_PATTERN = /^[\p{L}\p{N}_.-]+$/u;
 
 function getNameError(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return 'Enter your name.';
-  if (trimmed.length < 2) return 'Name is too short.';
-  if (trimmed.length > NAME_MAX_LENGTH) return `Keep it under ${NAME_MAX_LENGTH} characters.`;
-  if (!NAME_PATTERN.test(trimmed)) return 'Only letters, spaces, and - . \' are allowed.';
-  return null;
-}
-
-function getAllergiesError(value: string): string | null {
-  if (value.trim().length > ALLERGIES_MAX_LENGTH) {
-    return `Keep it under ${ALLERGIES_MAX_LENGTH} characters.`;
-  }
+  if (!value) return 'Enter a username.';
+  if (/\s/.test(value)) return 'Usernames can\'t contain spaces.';
+  if (value.length < 2) return 'Username is too short.';
+  if (value.length > NAME_MAX_LENGTH) return `Keep it under ${NAME_MAX_LENGTH} characters.`;
+  if (!NAME_PATTERN.test(value)) return 'Only letters, numbers, and _ . - are allowed.';
   return null;
 }
 
@@ -63,7 +55,12 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
   const [nameTouched, setNameTouched] = useState(false);
   const [dietary, setDietary] = useState<string[]>([]);
   const [mealPlanOptIn, setMealPlanOptIn] = useState(true);
-  const [allergies, setAllergies] = useState('');
+  // A picked list rather than one free-text field — see
+  // MultiSelectDropdown below. Still stored/sent as the same comma-joined
+  // string the backend has always expected (services/profile.ts's
+  // saveSurvey), so this is a client-side input change only, nothing
+  // server-side had to move.
+  const [allergies, setAllergies] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   // Set by a Continue press that could not go through. Until then a field the
   // user has not reached yet is not "wrong" — it is unanswered, and colouring
@@ -71,12 +68,11 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
   const [submitted, setSubmitted] = useState(false);
 
   const nameError = getNameError(name);
-  const allergiesError = getAllergiesError(allergies);
 
-  // Dietary preferences are optional — an empty selection just means "no
-  // preference stated," which is a real, valid answer, not an unanswered
-  // question the user needs to be stopped and told about.
-  const canContinue = !nameError && !allergiesError;
+  // Dietary preferences and allergies are both optional — an empty selection
+  // just means "no preference/allergy stated," a real, valid answer, not an
+  // unanswered question the user needs to be stopped and told about.
+  const canContinue = !nameError;
 
   // Each field turns red once it has been left, or once Continue has been
   // pressed and it is the reason nothing happened.
@@ -86,6 +82,14 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
     setDietary((prev) =>
       prev.includes(option) ? prev.filter((o) => o !== option) : [...prev, option]
     );
+  }
+
+  function addAllergy(value: string) {
+    setAllergies((prev) => (prev.includes(value) ? prev : [...prev, value].slice(0, 20)));
+  }
+
+  function removeAllergy(value: string) {
+    setAllergies((prev) => prev.filter((a) => a !== value));
   }
 
   async function handleContinue() {
@@ -106,7 +110,10 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
       const savePromise = saveSurvey(uid, {
         name: name.trim(),
         dietary,
-        allergies: allergies.trim(),
+        // Comma-joined for the same reason ProfileScreen's saveAllergies
+        // already is (see services/profile.ts) — the server, and
+        // parseAllergies on the way back out, both expect one string.
+        allergies: allergies.join(', '),
         mealPlanOptIn,
       });
       // Kept from the Firestore version, for a different reason: apiFetch
@@ -148,58 +155,42 @@ export default function ProfileSurveyScreen({ onContinue }: Props) {
               </View>
 
               <View style={styles.body}>
-                <Text style={styles.label}>What should Panzi call you?</Text>
+                <Text style={styles.label}>Username</Text>
                 <TextInput
                   style={[styles.input, showNameError && styles.inputError]}
-                  placeholder="Your name"
+                  placeholder="Pick a username"
                   placeholderTextColor={colors.textSecondary}
                   value={name}
-                  onChangeText={(text) =>
-                    // autoCapitalize="words" is only a keyboard hint — the
-                    // stored value stays whatever was actually typed, so a
-                    // lowercase first letter (autocorrect off, pasted text,
-                    // an IME that ignores the hint) went through unchanged.
-                    // Forcing it here means the name really is always
-                    // capitalized, not just usually.
-                    setName(text.length > 0 ? text[0].toUpperCase() + text.slice(1) : text)
-                  }
+                  onChangeText={(text) => setName(text)}
                   onBlur={() => setNameTouched(true)}
                   maxLength={NAME_MAX_LENGTH}
-                  autoCapitalize="words"
+                  autoCapitalize="none"
                   autoCorrect={false}
                   returnKeyType="done"
                 />
                 {showNameError && <Text style={styles.errorText}>{nameError}</Text>}
 
                 <Text style={styles.label}>Any dietary preferences? (optional)</Text>
-                <View style={styles.chipRow}>
-                  {DIETARY_OPTIONS.map((option) => {
-                    const selected = dietary.includes(option);
-                    return (
-                      <TouchableOpacity
-                        key={option}
-                        onPress={() => toggleDietary(option)}
-                        style={[styles.chip, selected && styles.chipSelected]}
-                      >
-                        <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                          {option}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                <Text style={styles.label}>Allergies or foods to avoid (optional)</Text>
-                <TextInput
-                  style={[styles.input, allergiesError && styles.inputError]}
-                  placeholder="e.g. peanuts, shellfish"
-                  placeholderTextColor={colors.textSecondary}
-                  value={allergies}
-                  onChangeText={setAllergies}
-                  maxLength={ALLERGIES_MAX_LENGTH}
-                  returnKeyType="done"
+                <MultiSelectDropdown
+                  placeholder="Select dietary preferences"
+                  options={COMMON_DIETS}
+                  selected={dietary}
+                  onToggle={toggleDietary}
                 />
-                {allergiesError && <Text style={styles.errorText}>{allergiesError}</Text>}
+
+                {/* A dropdown rather than free text — picking from a known
+                    list cuts out the typo/inconsistent-spelling error a
+                    plain field invited ("nut" vs "nuts" vs "peanut") at the
+                    source, instead of trying to clean it up later. */}
+                <Text style={styles.label}>Allergies or foods to avoid (optional)</Text>
+                <MultiSelectDropdown
+                  placeholder="Select allergies"
+                  options={COMMON_ALLERGENS}
+                  selected={allergies}
+                  onToggle={(option) =>
+                    allergies.includes(option) ? removeAllergy(option) : addAllergy(option)
+                  }
+                />
 
                 <View style={styles.toggleRow}>
                   <Text style={styles.toggleLabel}>Send me weekly meal plan ideas</Text>
@@ -294,31 +285,6 @@ const useStyles = makeStyles((colors) => ({
     fontSize: type.caption.fontSize,
     color: colors.error,
     marginTop: space.xs2,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: space.sm,
-  },
-  chip: {
-    paddingVertical: space.sm2,
-    paddingHorizontal: space.md2,
-    borderRadius: 999,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.backgroundAlt,
-  },
-  chipSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  chipText: {
-    fontWeight: '600',
-    fontSize: type.label.fontSize,
-    color: colors.textSecondary,
-  },
-  chipTextSelected: {
-    color: colors.onAccent,
   },
   toggleRow: {
     marginTop: space.xl2,

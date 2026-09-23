@@ -2,7 +2,7 @@
 //
 // The client half of the scanner's recognition step: take the captured photo,
 // shrink it to something worth sending, and post it to the API. The model call
-// itself lives in server/src/routes/scan.ts because the Anthropic key can't
+// itself lives in server/src/routes/scan.ts because the OpenAI key can't
 // ship inside the app bundle.
 //
 // This file is also where the model's two date answers become one date on a
@@ -177,21 +177,22 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
 
     expiryDate: printed ?? estimated,
     dateSource: printed ? 'label' : estimated ? 'estimated' : null,
-    // Preselected only when the scanner genuinely found nothing at all —
-    // path 2 of Part C1. A printed date or the vision model's own estimate
-    // is a real value already filling the field, so there's no "I don't
-    // know" to default to; only a blank read (no printed date, no visible
-    // clue to estimate from) lands with the radio already on.
-    expiryUnknown: !printed && !estimated,
+    // Left untouched (undefined) even when the scanner found nothing at
+    // all — a printed date or the vision model's own estimate is a real
+    // value already filling the field either way, and on a genuine blank
+    // read the user must be the one to type a date or tap "I don't know"
+    // themselves; this app no longer picks that radio on their behalf.
+    expiryUnknown: undefined,
     packageStatus: undefined,
     openedAt: null,
     // printed -> 'printed'. The vision model's own visual guess is a real
     // stored date from a rule, not Panzi's shelf-life engine and not
     // typed/printed — same shape as a rough-date chip pick, so 'rough'
-    // rather than 'estimated' (Phase 2 reserves 'estimated' for an item
-    // with no stored date at all, which is the third case here: nothing
-    // found, DateField's own estimate panel takes over from expiryUnknown).
-    basis: printed ? 'printed' : estimated ? 'rough' : 'estimated',
+    // rather than 'estimated'. Nothing found leaves this undefined rather
+    // than claiming 'estimated' pre-emptively — 'estimated' is earned only
+    // once the user actually opts into "I don't know" (see DateField's
+    // selectUnknown), same reasoning as expiryUnknown just above.
+    basis: printed ? 'printed' : estimated ? 'rough' : undefined,
     estimatedUseBy: null,
     estimateInputs: null,
 

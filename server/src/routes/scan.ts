@@ -1,10 +1,10 @@
 // server/src/routes/scan.ts
 //
 // The scanner's recognition call. The client captures a photo, resizes it and
-// sends the bytes here; this route asks Claude what is in the picture and
+// sends the bytes here; this route asks OpenAI what is in the picture and
 // returns candidates in the exact shape the review page renders.
 //
-// It lives server-side for one reason: the Anthropic key must never reach the
+// It lives server-side for one reason: the OpenAI key must never reach the
 // device. Everything in an Expo bundle ships to the phone — app.json `extra`,
 // `EXPO_PUBLIC_*` variables, the JS bundle itself — so a client-side call would
 // publish the key to anyone who unzips the app.
@@ -25,12 +25,14 @@
 // user looking like a printed date, and the only robust way to guarantee that
 // is for the two to travel in different fields all the way down.
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { Request, Response, Router } from 'express';
 
-// Chosen for vision: 2576px on the long edge, against 1568px on older models.
-// That headroom is what makes faded expiry stamps and skin freckling legible.
-const MODEL = 'claude-opus-5';
+// The cheapest tier, same as the other routes. Reading a faded expiry stamp or
+// judging ripeness from skin freckling is genuinely hard perception, so this
+// is a deliberate cost/accuracy tradeoff — expect more misreads than the
+// flagship model would produce.
+const MODEL = 'gpt-5.6-luna';
 
 // Kept in sync by hand with FOOD_CATEGORIES in src/services/pantry.ts. The
 // server is its own package and can't import from the app, and the enum below
@@ -286,13 +288,13 @@ export const MAX_SHELF_LIFE_DAYS = 730;
 
 // Built once per process rather than per request: the client is a thin wrapper
 // around fetch, and rebuilding it on every scan throws away keep-alive.
-let client: Anthropic | null = null;
+let client: OpenAI | null = null;
 
-export function anthropic(): Anthropic {
+export function openai(): OpenAI {
   if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set — copy .env.example to .env');
-    client = new Anthropic({ apiKey });
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('OPENAI_API_KEY is not set — copy .env.example to .env');
+    client = new OpenAI({ apiKey });
   }
   return client;
 }
@@ -438,52 +440,36 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
 
   let response;
   try {
-    response = await anthropic().messages.create({
+    response = await openai().chat.completions.create({
       model: MODEL,
-      max_tokens: 8000,
-      // Cached, because it is byte-identical on every scan a user ever takes —
-      // the prompt is long and re-reading it at full price on each photo is the
-      // easiest money this route wastes. Cache reads bill at a tenth of input
-      // rate, and the minimum cacheable prefix on this model is 512 tokens,
-      // which this comfortably clears.
-      //
-      // Caching is a prefix match, so the order matters: the system prompt
-      // renders before `messages`, and the image — the one part that differs
-      // every time — sits in `messages`. Nothing volatile may ever move above
-      // this block, or the cache stops hitting and nobody notices except the
-      // bill.
-      system: [
-        {
-          type: 'text',
-          text: SYSTEM,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      output_config: {
-        // Low, not medium. Reading a label and looking at a banana are both
-        // perception rather than deliberation, and thinking is on by default on
-        // this model — so the effort setting is buying latency the user watches
-        // a progress bar for, and output tokens at $25/M. Raise it if the
-        // ripeness reads turn out to need the deliberation; the token counts
-        // logged below are how you'd know.
-        effort: 'low',
-        format: { type: 'json_schema', schema: RESULT_SCHEMA as unknown as Record<string, unknown> },
-      },
+      // This model is a reasoning model — the completion budget has to cover
+      // its internal reasoning tokens as well as the visible JSON output, not
+      // just the JSON alone the way a non-reasoning model would need.
+      max_completion_tokens: 16000,
       messages: [
+        { role: 'system', content: SYSTEM },
         {
           role: 'user',
           content: [
             {
-              type: 'image',
-              source: { type: 'base64', media_type: mediaType as MediaType, data: imageBase64 },
+              type: 'image_url',
+              image_url: { url: `data:${mediaType};base64,${imageBase64}`, detail: 'high' },
             },
             { type: 'text', text: brief },
           ],
         },
       ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'scan_result',
+          strict: true,
+          schema: RESULT_SCHEMA as unknown as Record<string, unknown>,
+        },
+      },
     });
   } catch (err: any) {
-    console.error('Anthropic call failed', { uid, message: err?.message });
+    console.error('OpenAI call failed', { uid, message: err?.message });
     // Rate limiting is worth telling apart, because "wait a moment" is true
     // advice for it and misleading for anything else.
     const status = err?.status === 429 ? 429 : 503;
@@ -494,22 +480,24 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  if (response.stop_reason === 'refusal') {
-    console.warn('Model declined the image', { uid, category: response.stop_details?.category ?? null });
+  const choice = response.choices[0];
+
+  if (choice?.finish_reason === 'content_filter') {
+    console.warn('Model declined the image', { uid });
     res.json({ readable: false, failureCause: 'unrecognised', sceneLabel: '', items: [] } satisfies Result);
     return;
   }
 
-  const text = response.content.find((block) => block.type === 'text');
-  if (!text || text.type !== 'text') {
-    console.error('No text block in response', { uid, stopReason: response.stop_reason });
+  const rawContent = choice?.message?.content;
+  if (!rawContent) {
+    console.error('No content in response', { uid, finishReason: choice?.finish_reason });
     res.status(502).json({ error: 'internal', message: 'Could not read that photo — try again.' });
     return;
   }
 
   let parsed: Result;
   try {
-    parsed = JSON.parse(text.text) as Result;
+    parsed = JSON.parse(rawContent) as Result;
   } catch {
     console.error('Response was not valid JSON', { uid });
     res.status(502).json({ error: 'internal', message: 'Could not read that photo — try again.' });
@@ -565,21 +553,17 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
       };
     });
 
-  // The per-scan cost line. `inputTokens` is the *uncached remainder* only —
-  // the true prompt size is the three input figures added together, so reading
-  // it alone will make caching look like it shrank the prompt rather than
-  // repriced it. A `cacheReadTokens` of 0 on every scan means the cache is
-  // silently missing and the system prompt is being billed at full rate.
+  // The per-scan cost line, so a spike in either figure shows up in the logs
+  // rather than only on the bill at the end of the month.
   console.info('Scan complete', {
     uid,
     readable: parsed.readable,
     itemCount: items.length,
     produceCount: items.filter((i) => i.looseProduce).length,
     unsureCount: items.filter((i) => i.nameUnsure).length,
-    inputTokens: response.usage.input_tokens,
-    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
-    outputTokens: response.usage.output_tokens,
+    inputTokens: response.usage?.prompt_tokens ?? 0,
+    cachedTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    outputTokens: response.usage?.completion_tokens ?? 0,
   });
 
   // A read that finds nothing is a failed read, whatever the model called it —

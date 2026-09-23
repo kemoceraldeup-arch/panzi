@@ -139,7 +139,7 @@ const useStyles = makeStyles((colors) => ({
     padding: space.xl,
   },
   backdropTap: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   sheet: {
     width: '100%',

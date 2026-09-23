@@ -33,9 +33,13 @@ import { auth } from '../config/firebaseClient';
 import { useAuth } from '../auth/AuthProvider';
 import Toast from '../components/Toast';
 import ChipPickerSheet from '../components/profile/ChipPickerSheet';
+import DataSheet from '../components/profile/DataSheet';
 import HelpSheet from '../components/profile/HelpSheet';
+import PersonalDetailsSheet from '../components/profile/PersonalDetailsSheet';
 import PrivacySheet from '../components/profile/PrivacySheet';
-import { SCAN_BUTTON_LIFT } from '../navigation/TabBar';
+import SecuritySheet from '../components/profile/SecuritySheet';
+import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
+import { useCollapseOnScroll } from '../navigation/scrollCollapse';
 import {
   COMMON_ALLERGENS,
   COMMON_DIETS,
@@ -88,10 +92,6 @@ function initialOf(name: string | null, email: string | null): string {
   return source ? source.charAt(0).toUpperCase() : '?';
 }
 
-function comingSoon(label: string) {
-  Alert.alert(label, "This screen isn't built yet.");
-}
-
 type Props = {
   /**
    * Owned by MainTabs, which keeps the listener running for as long as the tabs
@@ -125,12 +125,16 @@ export default function ProfileScreen({
   const insets = useSafeAreaInsets();
   const { user, uid } = useAuth();
   const email = user?.email ?? null;
+  const collapseOnScroll = useCollapseOnScroll();
 
   const [picker, setPicker] = useState<PickerTarget>(null);
   // Owned here rather than by MainTabs: unlike saved recipes, nothing else in
   // the app opens either of these.
   const [help, setHelp] = useState(false);
   const [privacy, setPrivacy] = useState(false);
+  const [personalDetails, setPersonalDetails] = useState(false);
+  const [security, setSecurity] = useState(false);
+  const [dataSheet, setDataSheet] = useState(false);
   const [removal, setRemoval] = useState<Removal | null>(null);
   // The just-picked file, shown while its upload is still in the air. The
   // document only ever holds the Storage URL, so without this the avatar would
@@ -244,6 +248,22 @@ export default function ProfileScreen({
     ]);
   }
 
+  // Delete already disabled the account server-side — signOut here is just
+  // clearing this device's own session, the same as confirmSignOut's own
+  // call, so the disabled account isn't left looking signed-in on a phone
+  // that never restarted the app.
+  async function handleAccountDeleted() {
+    try {
+      await signOut(auth);
+    } catch {
+      // The account is already disabled either way; a failed local sign-out
+      // only means this device still thinks it's signed in until it next
+      // tries to use that fact, which requireAuth on the server will reject.
+    }
+    setDataSheet(false);
+    onSignOut();
+  }
+
   function confirmSignOut() {
     Alert.alert('Sign out?', "You'll need to sign in again to reach your pantry.", [
       { text: 'Cancel', style: 'cancel' },
@@ -291,9 +311,20 @@ export default function ProfileScreen({
         style={{ flex: 1 }}
         // The status-bar inset is spent here rather than by the safe area
         // above, so the washes behind this list run all the way to the top of
-        // the screen. See FULL_BLEED in navigation/MainTabs.
-        contentContainerStyle={[styles.content, { paddingTop: insets.top + space.sm }]}
+        // the screen. See FULL_BLEED in navigation/MainTabs. paddingBottom
+        // adds the floating tab bar's own Math.max(insets.bottom, 10) gap
+        // (see TabBar.tsx's `wrap`) back in — TAB_BAR_CONTENT_HEIGHT alone
+        // excludes it, so without this the last row ends short of where the
+        // bar actually floats, leaving bare background between the two.
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: insets.top + space.sm,
+            paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + Math.max(insets.bottom, 10) + space.lg,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
+        {...collapseOnScroll}
       >
         {/* ---------------- Hero ----------------
 
@@ -480,20 +511,20 @@ export default function ProfileScreen({
           <View style={styles.rowCard}>
             <SettingsRow
               title="Personal details"
-              subtitle="Name, email, phone"
-              onPress={() => comingSoon('Personal details')}
+              subtitle="Name and email"
+              onPress={() => setPersonalDetails(true)}
             />
             <RowDivider />
             <SettingsRow
               title="Sign-in & security"
               subtitle={email ? `Email · ${email}` : 'Guest account'}
-              onPress={() => comingSoon('Sign-in & security')}
+              onPress={() => setSecurity(true)}
             />
             <RowDivider />
             <SettingsRow
               title="Your data"
               subtitle="Export, clear pantry, delete account"
-              onPress={() => comingSoon('Your data')}
+              onPress={() => setDataSheet(true)}
             />
           </View>
         </View>
@@ -539,6 +570,22 @@ export default function ProfileScreen({
       />
 
       <PrivacySheet visible={privacy} onClose={() => setPrivacy(false)} />
+
+      <PersonalDetailsSheet
+        visible={personalDetails}
+        uid={uid}
+        name={profile.name}
+        email={email}
+        onClose={() => setPersonalDetails(false)}
+      />
+
+      <SecuritySheet visible={security} email={email} onClose={() => setSecurity(false)} />
+
+      <DataSheet
+        visible={dataSheet}
+        onClose={() => setDataSheet(false)}
+        onAccountDeleted={handleAccountDeleted}
+      />
 
       <ChipPickerSheet
         visible={picker !== null}
@@ -737,9 +784,11 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: colors.backgroundLight,
   },
   content: {
-    // paddingTop is applied inline — it has to include the status-bar inset.
-    // Clears the tab bar and the scan button raised out of it.
-    paddingBottom: SCAN_BUTTON_LIFT + 34 + 24,
+    // paddingTop and the real paddingBottom are both applied inline (see the
+    // ScrollView JSX) — they need insets.top/insets.bottom, which aren't
+    // available in a static StyleSheet. This paddingBottom is only the
+    // fallback any static read of this style object sees.
+    paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + 10 + space.lg,
   },
 
   // Hero — the one block that sits wider than the 24 content padding.
@@ -777,13 +826,13 @@ const useStyles = makeStyles((colors) => ({
     elevation: 4,
   },
   avatarImage: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 999,
   },
   // Sits over whatever the circle is currently showing, dimmed enough for a
   // white spinner to read against a light photo.
   avatarBusy: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',

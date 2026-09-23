@@ -6,12 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.panzi.app",
@@ -35,7 +29,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2f6b41"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
@@ -66,24 +59,17 @@
       ],
       "expo-notifications",
       "expo-web-browser",
+      "expo-image",
+      "expo-status-bar",
       [
-        "react-native-fbsdk-next",
+        "expo-splash-screen",
         {
-          "appID": "2471213273390235",
-          "clientToken": "a921a43b223549e5224d1f3cd426bb98",
-          "displayName": "Panzi",
-          "scheme": "fb2471213273390235",
-          "advertiserIDCollectionEnabled": false,
-          "autoLogAppEventsEnabled": false,
-          "isAutoInitEnabled": true
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
         }
-      ]
-    ],
-    "owner": "nnekethpogi",
-    "extra": {
-      "eas": {
-        "projectId": "dc726d0b-037c-4ef2-a10d-63d3464523eb"
-      }
-    }
+      ],
+      "expo-sharing"
+    ]
   }
 }

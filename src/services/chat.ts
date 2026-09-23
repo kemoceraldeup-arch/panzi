@@ -46,6 +46,12 @@ function normaliseMessage(raw: any): ChatMessage {
           needsShopping: raw.recipe.needsShopping === true,
           usesExpiring: raw.recipe.usesExpiring ?? [],
           pantryUsed: raw.recipe.pantryUsed ?? [],
+          ingredients: Array.isArray(raw.recipe.ingredients)
+            ? raw.recipe.ingredients.map((ingredient: any) => ({
+                ...ingredient,
+                optional: ingredient.optional === true,
+              }))
+            : [],
         }
       : null,
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
@@ -109,12 +115,13 @@ export async function fetchChatHistory(conversationId: string): Promise<ChatMess
 
 export async function sendChatMessage(
   conversationId: string,
-  message: string
+  message: string,
+  pantryOnly?: boolean
 ): Promise<{ user: ChatMessage; assistant: ChatMessage }> {
   return guarded(async () => {
     const { user, assistant } = await apiFetch<{ user: any; assistant: any }>(
       `/api/chat/conversations/${conversationId}/messages`,
-      { message }
+      { message, ...(pantryOnly ? { pantryOnly: true } : {}) }
     );
     return { user: normaliseMessage(user), assistant: normaliseMessage(assistant) };
   });

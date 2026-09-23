@@ -88,6 +88,17 @@ const estimateInputsSchema = new Schema(
 // because that is what the survey's free-text field writes and what
 // services/profile.ts already splits on read. Changing it here would mean
 // changing it in two clients for no gain.
+//
+// `allergies` and `dietaryPreferences` are health-adjacent (an allergy list
+// exists to prevent a physical reaction) and are handled accordingly: no
+// route ever logs a request body wholesale (see routes/helpers.ts's withDb,
+// which logs only `err.message`), so a thrown error can't leak them into the
+// server's own logs the way a naive catch-all would. There is deliberately no
+// field-level encryption — every route that reads or writes these fields
+// already requires the owning uid's verified token (see middleware/auth.ts),
+// which is the access control that actually matters for a single-tenant
+// document keyed by its owner. What "delete account" does with this data
+// specifically is the '/delete' route below: not disabled-and-kept, removed.
 const userSchema = new Schema(
   {
     _id: { type: String, required: true },
@@ -98,6 +109,25 @@ const userSchema = new Schema(
     photoURL: { type: String, default: null },
   },
   { timestamps: true, collection: 'users' }
+);
+
+// ---------------------------------------------------------------------------
+// deletion_audit_log
+// ---------------------------------------------------------------------------
+
+// The one record a "right to erasure" is not allowed to erase along with
+// everything else — otherwise a disputed deletion ("I never asked for this")
+// would have nothing to check it against. Deliberately its own collection
+// rather than a field on `users`: the whole point is that this row outlives
+// the User document profileRouter's '/delete' removes it alongside. Holds
+// nothing about the person beyond the uid and when/how they asked.
+const deletionAuditLogSchema = new Schema(
+  {
+    uid: { type: String, required: true, index: true },
+    requestedAt: { type: Date, required: true },
+    requestedVia: { type: String, required: true },
+  },
+  { timestamps: true, collection: 'deletion_audit_log' }
 );
 
 // ---------------------------------------------------------------------------
@@ -204,6 +234,41 @@ const scanSchema = new Schema(
 scanSchema.index({ userId: 1, createdAt: -1 });
 
 // ---------------------------------------------------------------------------
+// email_verifications
+// ---------------------------------------------------------------------------
+
+// One row per account waiting to prove its inbox, `_id` the Firebase uid — a
+// second code request overwrites the first rather than accumulating rows,
+// since only the most recently sent code should ever be valid. `attempts`
+// caps guessing — five wrong tries locks the account out for a stretch (see
+// `lockedUntil`) rather than letting an unlimited number of six-digit-space
+// guesses run against one email address forever.
+//
+// `lockedUntil` is its own field rather than folded into `expiresAt`,
+// because the two mean different things: `expiresAt` is when the CODE stops
+// being redeemable, `lockedUntil` is when the ACCOUNT is allowed to ask for
+// a new one again. `reapAt` is the TTL index's own field — always set to
+// whichever of the two is later — so a locked-out row survives at least
+// until its lockout has actually elapsed even on the rare request pattern
+// where the lockout would otherwise outlive the code's own expiry, while an
+// abandoned row (nobody ever comes back) still eventually cleans itself up
+// rather than needing a background sweep.
+const emailVerificationSchema = new Schema(
+  {
+    _id: { type: String, required: true }, // Firebase uid
+    email: { type: String, required: true },
+    code: { type: String, required: true },
+    attempts: { type: Number, default: 0 },
+    expiresAt: { type: Date, required: true },
+    lockedUntil: { type: Date, default: null },
+    reapAt: { type: Date, required: true },
+  },
+  { timestamps: true, collection: 'email_verifications' }
+);
+
+emailVerificationSchema.index({ reapAt: 1 }, { expireAfterSeconds: 0 });
+
+// ---------------------------------------------------------------------------
 // feedback
 // ---------------------------------------------------------------------------
 
@@ -219,6 +284,27 @@ const feedbackSchema = new Schema(
     platform: { type: String, default: '' },
   },
   { timestamps: true, collection: 'feedback' }
+);
+
+// ---------------------------------------------------------------------------
+// recipe_ratings
+// ---------------------------------------------------------------------------
+
+// One row per (user, dish) — rating the same dish again overwrites rather
+// than accumulating, the same "no stable recipe id, so the title is the
+// identity" reasoning saved_recipes already uses. `_id` is built client-side
+// from the uid and a slug of the title (see recipeRatingKey in
+// src/services/recipeRatings.ts) for the same reason: the app needs the id
+// before the write lands, and a second rating of a dish already rated should
+// replace it, not duplicate it.
+const recipeRatingSchema = new Schema(
+  {
+    _id: { type: String, required: true },
+    userId: { type: String, required: true, index: true },
+    title: { type: String, required: true },
+    stars: { type: Number, required: true, min: 1, max: 5 },
+  },
+  { timestamps: true, collection: 'recipe_ratings' }
 );
 
 // ---------------------------------------------------------------------------
@@ -284,3 +370,9 @@ export const ChatConversation =
   mongoose.models.ChatConversation ?? mongoose.model('ChatConversation', chatConversationSchema);
 export const ChatMessage =
   mongoose.models.ChatMessage ?? mongoose.model('ChatMessage', chatMessageSchema);
+export const EmailVerification =
+  mongoose.models.EmailVerification ?? mongoose.model('EmailVerification', emailVerificationSchema);
+export const DeletionAuditLog =
+  mongoose.models.DeletionAuditLog ?? mongoose.model('DeletionAuditLog', deletionAuditLogSchema);
+export const RecipeRating =
+  mongoose.models.RecipeRating ?? mongoose.model('RecipeRating', recipeRatingSchema);

@@ -312,7 +312,7 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: colors.surface,
   },
   wash: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     bottom: undefined,
     height: 320,
   },

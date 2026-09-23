@@ -419,7 +419,7 @@ const useStyles = makeStyles((colors) => ({
     height: 20 + 56 + 14 + 44 + 16,
   },
   footerLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     paddingHorizontal: space.xxl,
     paddingTop: space.xl,
     paddingBottom: space.lg,

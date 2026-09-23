@@ -16,11 +16,18 @@ import {
   Nunito_700Bold,
   Nunito_800ExtraBold,
 } from '@expo-google-fonts/nunito';
+import {
+  Quicksand_400Regular,
+  Quicksand_500Medium,
+  Quicksand_600SemiBold,
+  Quicksand_700Bold,
+} from '@expo-google-fonts/quicksand';
 import { signInAnonymously, signOut } from 'firebase/auth';
 import { auth } from './src/config/firebaseClient';
 import { ThemeProvider, useColors, useTheme } from './src/theme/ThemeProvider';
 import OnboardingScreen from './src/screens/OnboardingScreen';
 import AuthSwipeStack from './src/components/auth/AuthSwipeStack';
+import VerifyEmailScreen from './src/screens/VerifyEmailScreen';
 import ProfileSurveyScreen from './src/screens/ProfileSurveyScreen';
 import AllSetScreen from './src/screens/AllSetScreen';
 import MainTabs from './src/navigation/MainTabs';
@@ -33,7 +40,14 @@ import {
   setProfileDoneCached,
 } from './src/services/session';
 
-type Flow = 'onboarding' | 'account' | 'createAccount' | 'survey' | 'allSet' | 'dashboard';
+type Flow =
+  | 'onboarding'
+  | 'account'
+  | 'createAccount'
+  | 'verifyEmail'
+  | 'survey'
+  | 'allSet'
+  | 'dashboard';
 
 /** Held on the app's own background — see the note in App below. */
 function Hold() {
@@ -122,40 +136,87 @@ function Root() {
       return;
     }
 
-    // Signed in. One more question — has this account answered the survey? —
-    // and `flow` is deliberately left alone while it is asked: on a cold start
-    // it is already null (so the app holds on its background), and when this
-    // follows a sign-in tap the account screen stays up instead of blinking
-    // through an empty frame on its way out.
+    // Signed in. A guest has no email to verify at all; a real account does,
+    // and this is checked for every email/password account on every sign-in,
+    // not only right after a fresh sign-up — an account created before this
+    // feature shipped is still unverified and still has to clear it once.
+    // auth.currentUser.emailVerified is trusted as-is when true (a verified
+    // account stays verified; nothing un-verifies it), but reloaded when
+    // false in case it verified moments ago in this same session and the
+    // cached user object hasn't caught up yet — see finishVerification below,
+    // which is the other caller of this same continuation and cannot rely on
+    // this effect re-running (authKey never changes across verifying).
     let cancelled = false;
     const isAnonymous = auth.currentUser?.isAnonymous === true;
-    hasCompletedProfile(authKey).then((done) => {
+
+    async function continueAfterAuth() {
+      if (!isAnonymous && auth.currentUser && !auth.currentUser.emailVerified) {
+        try {
+          await auth.currentUser.reload();
+        } catch {
+          // Offline or a transient error — fall through and trust the
+          // (possibly stale) cached value rather than stranding the app.
+        }
+      }
       if (cancelled) return;
-      if (done) {
-        setFlow('dashboard');
+      if (!isAnonymous && auth.currentUser?.emailVerified === false) {
+        setFlow('verifyEmail');
         return;
       }
-      if (isAnonymous && isColdStart) {
-        // A guest who backed out of the survey (or force-closed mid-way)
-        // left behind a signed-in anonymous session — Firebase persists that
-        // across restarts exactly like a real account. Reopening the app
-        // must not silently resume the survey as if nothing happened; it
-        // should read as a fresh start, same as someone who never tapped
-        // "Continue as guest" at all. Signing out drops authKey back to
-        // 'signed-out' next render, which — since seenOnboarding was never
-        // marked for this never-finished guest — routes to onboarding.
-        void signOut(auth);
-        return;
-      }
-      // Either a real account resuming an incomplete survey, or a guest who
-      // just tapped "Continue as guest" moments ago in this same session —
-      // both proceed to the survey normally.
-      setFlow('survey');
-    });
+      proceedPastVerification();
+    }
+
+    // One question — has this account answered the survey? — and `flow` is
+    // deliberately left alone while it is asked: on a cold start it is
+    // already null (so the app holds on its background), and when this
+    // follows a sign-in tap the account screen stays up instead of blinking
+    // through an empty frame on its way out.
+    function proceedPastVerification() {
+      hasCompletedProfile(authKey as string).then((done) => {
+        if (cancelled) return;
+        if (done) {
+          setFlow('dashboard');
+          return;
+        }
+        if (isAnonymous && isColdStart) {
+          // A guest who backed out of the survey (or force-closed mid-way)
+          // left behind a signed-in anonymous session — Firebase persists
+          // that across restarts exactly like a real account. Reopening the
+          // app must not silently resume the survey as if nothing happened;
+          // it should read as a fresh start, same as someone who never
+          // tapped "Continue as guest" at all. Signing out drops authKey
+          // back to 'signed-out' next render, which — since seenOnboarding
+          // was never marked for this never-finished guest — routes to
+          // onboarding.
+          void signOut(auth);
+          return;
+        }
+        // Either a real account resuming an incomplete survey, or a guest
+        // who just tapped "Continue as guest" moments ago in this same
+        // session — both proceed to the survey normally.
+        setFlow('survey');
+      });
+    }
+
+    void continueAfterAuth();
     return () => {
       cancelled = true;
     };
   }, [authKey, seenOnboarding]);
+
+  // The other way past 'verifyEmail', alongside the effect above — called
+  // directly by VerifyEmailScreen once confirmVerificationCode succeeds,
+  // since authKey itself never changes across verifying (still the same
+  // uid), so the effect above would never re-run and re-decide on its own.
+  // Re-derives the same isAnonymous/isColdStart-independent continuation by
+  // hand rather than sharing a closure with the effect, which is torn down
+  // and rebuilt on every authKey change and so cannot be reached from here.
+  function finishVerification() {
+    if (!authKey || authKey === 'signed-out') return;
+    hasCompletedProfile(authKey).then((done) => {
+      setFlow(done ? 'dashboard' : 'survey');
+    });
+  }
 
   function finishOnboarding() {
     // Deliberately does NOT persist seenOnboarding here — merely reaching
@@ -208,6 +269,13 @@ function Root() {
   // screen out and back in on top of the stack's own slide.
   const transitionKey = flow === 'account' || flow === 'createAccount' ? 'auth' : flow;
 
+  // Read straight off the live Firebase user rather than threaded through
+  // CreateAccountScreen/AuthSwipeStack as a prop — by the time flow reaches
+  // 'verifyEmail' the account already exists and auth.currentUser already
+  // has it, on every path that can land here (a fresh sign-up, and a
+  // returning email/password sign-in that never verified).
+  const verifyEmailAddress = auth.currentUser?.email ?? '';
+
   return (
     <AppTransition
       transitionKey={transitionKey}
@@ -222,6 +290,21 @@ function Root() {
           onSignIn={() => setFlow('account')}
           onGuest={continueAsGuest}
           enteredTick={enteredAuthTick}
+        />
+      )}
+      {flow === 'verifyEmail' && (
+        <VerifyEmailScreen
+          email={verifyEmailAddress}
+          onVerified={finishVerification}
+          onBack={() => {
+            // There is no unverified account to "go back" to filling out —
+            // it already exists. Signing out is what actually gets the user
+            // somewhere useful: back to Sign In, where they can try the
+            // right email, or Create Account again with a typo fixed. The
+            // auth listener effect routes there on its own once authKey
+            // drops to 'signed-out'.
+            void signOut(auth);
+          }}
         />
       )}
       {flow === 'survey' && <ProfileSurveyScreen onContinue={finishSurvey} />}
@@ -254,6 +337,10 @@ export default function App() {
     Nunito_600SemiBold,
     Nunito_700Bold,
     Nunito_800ExtraBold,
+    Quicksand_400Regular,
+    Quicksand_500Medium,
+    Quicksand_600SemiBold,
+    Quicksand_700Bold,
   });
 
   // Hold on the app's own background rather than rendering the tree — text

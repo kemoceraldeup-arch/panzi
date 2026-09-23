@@ -106,6 +106,10 @@ export default function ChatScreen({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether Panzi should build recipe replies primarily from what's already
+  // in the pantry — a per-message flag sent alongside the draft, not stored
+  // on the conversation, so flipping it mid-chat only changes the next reply.
+  const [pantryOnly, setPantryOnly] = useState(false);
   // Whether the input bar needs to clear the home indicator (closed) or sit
   // flush against the keyboard (open). insets.bottom is the height of that
   // indicator's safe area — real when nothing covers it, but the keyboard
@@ -203,7 +207,7 @@ export default function ChatScreen({
         selfAssignedId.current = id;
         onConversationStarted(conversation);
       }
-      const { user, assistant } = await sendChatMessage(id, text);
+      const { user, assistant } = await sendChatMessage(id, text, pantryOnly);
       setMessages((prev) => [...prev.filter((m) => m.id !== optimistic.id), user, assistant]);
     } catch (err) {
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
@@ -246,6 +250,8 @@ export default function ChatScreen({
           data={messages}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
           ListEmptyComponent={
             <View style={styles.empty}>
@@ -303,6 +309,23 @@ export default function ChatScreen({
       )}
 
       {error && <Text style={styles.errorText}>{error}</Text>}
+
+      <View style={styles.optionsRow}>
+        <TouchableOpacity
+          style={[styles.pantryOnlyPill, pantryOnly && styles.pantryOnlyPillActive]}
+          onPress={() => setPantryOnly((prev) => !prev)}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="basket"
+            size={13}
+            color={pantryOnly ? colors.onAccent : colors.textSecondary}
+          />
+          <Text style={[styles.pantryOnlyText, pantryOnly && styles.pantryOnlyTextActive]}>
+            Pantry only
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       <View
         style={[
@@ -459,6 +482,34 @@ const useStyles = makeStyles((colors) => ({
     color: colors.rustMuted,
     paddingHorizontal: space.xxl,
     paddingBottom: space.sm,
+  },
+  optionsRow: {
+    flexDirection: 'row',
+    paddingHorizontal: space.xxl,
+    paddingBottom: space.sm,
+  },
+  pantryOnlyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: space.sm2,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: colors.backgroundAlt,
+    backgroundColor: colors.surface,
+  },
+  pantryOnlyPillActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  pantryOnlyText: {
+    fontWeight: '700',
+    fontSize: type.caption.fontSize,
+    color: colors.textSecondary,
+  },
+  pantryOnlyTextActive: {
+    color: colors.onAccent,
   },
   inputBar: {
     flexDirection: 'row',

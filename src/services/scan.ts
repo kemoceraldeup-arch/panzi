@@ -82,12 +82,19 @@ export type ScanCandidate = {
   dateSource: DateSource | null;
   /** The EXPIRATION control's own "I don't know" radio — a separate bit
    *  from expiryDate being null, on purpose. expiryDate can be null before
-   *  the scanner has read anything at all (path 2's default state, radio
-   *  preselected) or after the user explicitly clears a date they'd typed
-   *  (radio not selected, field just empty) — those are different states
-   *  that would otherwise be indistinguishable from "expiryDate is falsy"
-   *  alone. See Part C1/C2's four resolution paths. */
-  expiryUnknown: boolean;
+   *  the user has touched this control at all (undefined — radio NOT
+   *  preselected, no estimate panel showing, DateField renders a plain
+   *  empty field), after they explicitly chose "I don't know" (true, the
+   *  estimate panel is now showing), or after they cleared a date they'd
+   *  typed (false, radio not selected, field just empty) — three states
+   *  that would otherwise collapse into "expiryDate is falsy" alone.
+   *
+   *  The undefined state exists specifically so a scanned-blank or
+   *  hand-typed item never has this app pick "I don't know" on the user's
+   *  behalf — see toCandidate/blankCandidate. Treated as "not unknown" (no
+   *  estimate, radio off) everywhere it's read; only an explicit tap on the
+   *  radio or the "I don't know" option ever turns it into a real boolean. */
+  expiryUnknown: boolean | undefined;
   /** The package-status tri-state (Part D3) — 'sealed' | 'opened' | undefined,
    *  never a boolean, because undefined ("the user skipped this") has to be
    *  distinguishable from an actual "Sealed" answer. Renders for every item
@@ -98,10 +105,12 @@ export type ScanCandidate = {
    *  OPENED? chips (Part D4). 'YYYY-MM-DD'. Cleared back to null if the
    *  user flips packageStatus away from 'opened'. */
   openedAt: string | null;
-  /** Phase 2's finer-grained provenance — printed/manual/rough/estimated.
+  /** Phase 2's finer-grained provenance — printed/manual/rough/estimated, or
+   *  undefined when the user hasn't made a date decision at all yet
+   *  (alongside expiryUnknown === undefined — see that field's own comment).
    *  Kept alongside dateSource rather than replacing it (dateSource still
    *  drives provenanceChip and its callers); DateField is the only writer. */
-  basis: DateBasis;
+  basis: DateBasis | undefined;
   /** Set only when basis === 'estimated', mirroring expiryDate/dateSource's
    *  own pairing — a live-computed use-by date, never both this and
    *  expiryDate at once. */
@@ -348,19 +357,19 @@ export function blankCandidate(): ScanCandidate {
     unit: '',
     size: null,
     category,
-    // Phase 2 §4: STORE IN is never empty on an item whose basis is
-    // 'estimated', which every hand-typed row starts as (see expiryUnknown
-    // below) — pre-filled with the sensible default for the category
-    // rather than left null and only defaulted once the estimate needs it.
+    // STORE IN is pre-filled with the sensible default for the category
+    // rather than left null, so it's already sensible the moment the user
+    // does opt into an estimate — not because one is shown by default here.
     location: defaultLocationFor(classifyFood(category)),
     expiryDate: null,
     dateSource: null,
-    // No printed date to detect on a hand-typed row — path 2 of Part C1,
-    // "I don't know" preselected, estimate panel shown, never a dead end.
-    expiryUnknown: true,
+    // Untouched — a hand-typed row gets no date read for it at all, so there
+    // is even less basis to preselect "I don't know" here than on a scanned
+    // item. The user must type a date or tap "I don't know" themselves.
+    expiryUnknown: undefined,
     packageStatus: undefined,
     openedAt: null,
-    basis: 'estimated',
+    basis: undefined,
     estimatedUseBy: null,
     estimateInputs: null,
     nameUnsure: true,

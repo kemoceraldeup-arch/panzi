@@ -104,6 +104,7 @@ function Body({ saved, diets, onOpen, onClose }: Omit<Props, 'visible'>) {
                 <DishTile
                   look={entry.recipe.look}
                   dishKey={entry.recipe.dishKey}
+                  title={entry.recipe.title}
                   size="mini"
                   radius={16}
                   style={styles.rowTile}

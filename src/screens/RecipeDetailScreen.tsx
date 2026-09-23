@@ -34,12 +34,30 @@ const HIT_SLOP = { top: 12, bottom: 12, left: 12, right: 12 };
 const MIN_SERVINGS = 1;
 const MAX_SERVINGS = 12;
 
+// Below this, the estimate is missing too much of the recipe's actual mass
+// to be worth showing as a number — a dish whose main ingredient (by weight)
+// never matched can still have most of its *rows* matched, so gating on
+// coverage (grams) rather than matchedCount/totalCount (rows) is what
+// catches that case. Matches this app's photo-matching stance elsewhere
+// (src/theme/dishPhotos.ts): a confidently-wrong number is worse than none,
+// so below the line this shows nothing rather than a number that looks
+// precise and isn't.
+const MIN_NUTRITION_COVERAGE = 0.6;
+
 type Props = {
   recipe: Recipe | null;
   saved: boolean;
   onToggleSave: () => void;
   onStartCooking: () => void;
   onClose: () => void;
+  /** Fires once this sheet's own dismiss animation has actually finished —
+   *  iOS-only (RN no-ops it elsewhere), but this is an iOS-only problem: a
+   *  pageSheet's slide-down and another Modal's slide-up presenting in the
+   *  same commit race on the native side, and the loser shows as a blank
+   *  white sheet for a frame. Callers that need to open another Modal right
+   *  after this one closes (RecipesScreen's "Start cooking") wait for this
+   *  rather than firing in the same handler that calls onClose. */
+  onDismiss?: () => void;
 };
 
 export default function RecipeDetailScreen({
@@ -48,6 +66,7 @@ export default function RecipeDetailScreen({
   onToggleSave,
   onStartCooking,
   onClose,
+  onDismiss,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
@@ -57,18 +76,29 @@ export default function RecipeDetailScreen({
       animationType="slide"
       presentationStyle="pageSheet"
       onRequestClose={onClose}
+      onDismiss={onDismiss}
     >
-      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-        {recipe && (
-          <Body
-            recipe={recipe}
-            saved={saved}
-            onToggleSave={onToggleSave}
-            onStartCooking={onStartCooking}
-            onClose={onClose}
-          />
-        )}
-      </SafeAreaProvider>
+      {/* Unconditional, painted before Body (and its own same-colour
+          container) ever mounts: a pageSheet's native surface is its own
+          UIViewController, presented — and given at least one native paint —
+          before RN's first frame lands inside it. With nothing here but
+          {recipe && <Body/>}, that first native paint had nothing but the
+          system's default white to show. Same fix as CookModeScreen's own
+          Modal, which already wraps {hasSteps && <Body/>} in a colour-filled
+          View for exactly this reason. */}
+      <View style={{ flex: 1, backgroundColor: colors.backgroundLight }}>
+        <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+          {recipe && (
+            <Body
+              recipe={recipe}
+              saved={saved}
+              onToggleSave={onToggleSave}
+              onStartCooking={onStartCooking}
+              onClose={onClose}
+            />
+          )}
+        </SafeAreaProvider>
+      </View>
     </Modal>
   );
 }
@@ -136,6 +166,7 @@ function Body({
       <DishTile
         look={recipe.look}
         dishKey={recipe.dishKey}
+        title={recipe.title}
         size="hero"
         style={[styles.hero, { paddingTop: insets.top + 8 }]}
       >
@@ -197,12 +228,14 @@ function Body({
           </View>
         )}
 
-        {/* Nothing renders while the lookup is still in flight (undefined)
-            or came back with no match (null) — an estimate per serving, not
-            per the whole dish, so it's offered rather than asserted; see
-            the note on FatSecret's own serving_description on the pantry
-            item version of this same card. */}
-        {nutrition && (
+        {/* Nothing renders while the lookup is still in flight (undefined),
+            came back with no match (null), or matched too little of the
+            recipe's actual mass to trust — see MIN_NUTRITION_COVERAGE.
+            An estimate per serving, not per the whole dish, so it's offered
+            rather than asserted; see the note on FatSecret's own
+            serving_description on the pantry item version of this same
+            card. */}
+        {nutrition && nutrition.coverage >= MIN_NUTRITION_COVERAGE && (
           <View style={styles.nutritionSection}>
             <Eyebrow>Nutrition</Eyebrow>
             <Text style={styles.nutritionMatchedName} numberOfLines={1}>
@@ -210,6 +243,7 @@ function Body({
               {nutrition.matchedCount < nutrition.totalCount
                 ? ` · based on ${nutrition.matchedCount} of ${nutrition.totalCount} ingredients`
                 : ''}
+              {nutrition.coverage < 0.9 ? ' · may run low' : ''}
             </Text>
             <View style={styles.macroRow}>
               <MacroPill label="Calories" value={Math.round(nutrition.perServing.calories * ratio)} />

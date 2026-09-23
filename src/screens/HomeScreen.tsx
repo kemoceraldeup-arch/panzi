@@ -22,11 +22,13 @@ import { attentionCount, currentAttention } from '../services/notifications';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
 import PulsingMascot from '../components/PulsingMascot';
 import FloatingChatBubble from '../components/home/FloatingChatBubble';
-import { SCAN_BUTTON_LIFT } from '../navigation/TabBar';
+import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
+import { useCollapseOnScroll } from '../navigation/scrollCollapse';
 import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Brings the "See all" link's touch target to the 44pt minimum without giving
 // it a box of its own.
@@ -216,6 +218,16 @@ export default function HomeScreen({
   const styles = useStyles();
   const colors = useColors();
   const { uid } = useAuth();
+  // Drives the shared tab bar's Instagram-style collapse — see
+  // navigation/scrollCollapse.ts. Every tab's own ScrollView writes into the
+  // same value, so the bar's size reflects the current tab's own scroll
+  // position rather than any one screen owning it.
+  const collapseOnScroll = useCollapseOnScroll();
+  // The floating tab bar sits its own Math.max(insets.bottom, 10) gap above
+  // the screen edge (see TabBar.tsx's `wrap`) — this screen's own bottom
+  // padding has to add that back, or the last card ends short of where the
+  // bar actually is, leaving bare background between the two.
+  const insets = useSafeAreaInsets();
   const [name, setName] = useState<string | null>(() => (uid ? nameCache.get(uid) ?? null : null));
   // null until the pantry has been read once — the card stays out rather than
   // claiming "0 items tracked" before anything has loaded.
@@ -313,8 +325,19 @@ export default function HomeScreen({
     <View style={styles.container}>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          {
+            // Spent here rather than by a SafeAreaView above this screen, so
+            // its own background runs all the way to the top of the screen
+            // instead of stopping at a separate padded strip — see
+            // FULL_BLEED in navigation/MainTabs.
+            paddingTop: insets.top + space.md,
+            paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + Math.max(insets.bottom, 10) + space.lg,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
+        {...collapseOnScroll}
       >
         <View style={styles.header}>
           <View>
@@ -595,9 +618,12 @@ const useStyles = makeStyles((colors) => ({
   content: {
     paddingHorizontal: space.xl,
     paddingTop: space.md,
-    // Just the tab bar and the scan button raised out of it. The Panzi card is
-    // in the flow now, so there's no floating element to reserve a gap for.
-    paddingBottom: SCAN_BUTTON_LIFT + 34 + 24,
+    // The real paddingBottom is computed at render time (see the ScrollView
+    // JSX) and overrides this — it needs insets.bottom, which isn't
+    // available in a static StyleSheet. Kept here anyway as the fallback
+    // any static read of this style object sees, roughly matching the
+    // render-time value on a device with no home-indicator inset.
+    paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + 10 + space.lg,
     gap: space.xl,
   },
   header: {

@@ -106,6 +106,18 @@ export async function hasCompletedProfile(uid: string): Promise<boolean> {
 }
 
 /**
+ * Guarantees the account's row exists the moment signup succeeds, rather
+ * than waiting on the onboarding survey to create it. Writes nothing but
+ * the row itself — no `name`, so hasCompletedProfile above still correctly
+ * sends a freshly-created account through the survey rather than skipping
+ * it. Safe to call more than once: it's an upsert with $setOnInsert, so an
+ * account that already has a row is left untouched.
+ */
+export async function createProfile(): Promise<void> {
+  await apiFetch('/api/profile/create', {});
+}
+
+/**
  * The onboarding survey's write. The only thing that sets `name`, and therefore
  * the only thing that can mark an account as having finished onboarding.
  */
@@ -147,6 +159,27 @@ export async function saveAllergies(uid: string, allergies: string[]): Promise<v
 export async function saveProfilePhoto(uid: string, photoURL: string | null): Promise<void> {
   await apiFetch('/api/profile/save', { photoURL });
   refreshKey(KEY);
+}
+
+/** The only way to change `name` after onboarding — see the server route's own
+ *  comment for why this isn't folded into saveDietary/saveAllergies' shared
+ *  `/save` path. */
+export async function saveName(uid: string, name: string): Promise<void> {
+  await apiFetch('/api/profile/name', { name });
+  refreshKey(KEY);
+}
+
+/** Everything this account has, as one JSON object — "Your data" > Export. */
+export async function exportUserData(): Promise<unknown> {
+  return apiFetch('/api/profile/export');
+}
+
+/** Soft-deletes the account: disables Firebase sign-in and flags the document.
+ *  The caller is responsible for signing the device out immediately after —
+ *  the disabled account can still finish whatever request is already in
+ *  flight, but a fresh token request from it will start failing. */
+export async function deleteAccount(): Promise<void> {
+  await apiFetch('/api/profile/delete', {});
 }
 
 // Offered by the "+ Add" pickers. Free text is always allowed on top of these.

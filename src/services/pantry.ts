@@ -468,6 +468,13 @@ export async function deletePantryItems(itemIds: string[]) {
   refreshKey(KEY);
 }
 
+/** "Your data" > Clear pantry — every item on the shelves, gone in one request
+ *  rather than the caller having to list ids it would first have to fetch. */
+export async function clearPantry(): Promise<void> {
+  await apiFetch('/api/pantry/clear', {});
+  refreshKey(KEY);
+}
+
 /**
  * Writes corrections back onto an item that is already on the shelves.
  *

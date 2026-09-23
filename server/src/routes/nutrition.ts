@@ -1,9 +1,9 @@
 // server/src/routes/nutrition.ts
 //
 // Per-item macros, looked up from the FatSecret Platform API by the item's
-// recognized name. Lives server-side for the same reason the Anthropic key
-// does: FATSECRET_CLIENT_SECRET must never reach the device, since an Expo
-// bundle ships to every phone that installs the app.
+// recognized name. Lives server-side for the same reason the OpenAI key does:
+// FATSECRET_CLIENT_SECRET must never reach the device, since an Expo bundle
+// ships to every phone that installs the app.
 //
 // FatSecret's own API is a search, not a lookup by exact name — "cheddar"
 // can match dozens of branded products. The client sends the item's
@@ -46,9 +46,8 @@ const MAX_RESULTS = 6;
 type FatSecretToken = { accessToken: string; expiresAt: number };
 
 // One token shared by every request this process handles, refreshed lazily —
-// mirrors the anthropic()/openai()-style lazy singleton used in scan.ts and
-// recipes.ts, adapted for a credential that expires rather than one that
-// doesn't.
+// mirrors the openai()-style lazy singleton used in scan.ts and recipes.ts,
+// adapted for a credential that expires rather than one that doesn't.
 let cachedToken: FatSecretToken | null = null;
 
 async function getAccessToken(): Promise<string> {
@@ -257,14 +256,35 @@ const MASS_TO_G: Record<string, number> = {
   pounds: 453.6,
 };
 
+/** Every UNIT_WEIGHTS_G key is already singular/plural pairs, sorted longest
+ *  first so "leaves" matches before a shorter accidental prefix would. Built
+ *  once at module load rather than per call — this table never changes. */
+const UNIT_KEYWORDS = Object.keys(UNIT_WEIGHTS_G).sort((a, b) => b.length - a.length);
+
+/** When a recipe writes a bare count ("3") for something whose name already
+ *  says what's being counted ("bay leaves", "eggs"), the unit lives in the
+ *  ingredient name rather than the amount — a cook would never write "3
+ *  leaves" of "bay leaves", that would read as a typo, not "3". Looks for one
+ *  of the same countable-unit words parseAmountToGrams already knows inside
+ *  the ingredient's own name and returns it, so that number isn't thrown away
+ *  just because the unit was implied rather than spelled out. */
+function impliedUnitFromName(name: string): string | null {
+  const lower = name.toLowerCase();
+  return UNIT_KEYWORDS.find((word) => lower.includes(word)) ?? null;
+}
+
 /** Turns a recipe's free-text amount ("1/4 kg", "2 tbsp", "2 cloves,
  *  crushed", "a handful") into grams, so it can be scaled against a food's
  *  per-gram macros. Returns null on anything this can't confidently read —
  *  "a handful", "to taste", a stray unit not in the tables above — rather
  *  than guessing a number with nothing behind it. A skipped ingredient
  *  understates the total; a fabricated weight lies about it, which is worse.
+ *
+ *  `ingredientName`, when given, is a fallback only for a bare number with no
+ *  unit at all ("3" bay leaves) — see impliedUnitFromName above. An amount
+ *  that already has its own unit never consults the name.
  */
-export function parseAmountToGrams(amount: string): number | null {
+export function parseAmountToGrams(amount: string, ingredientName?: string): number | null {
   const cleaned = amount.trim().toLowerCase();
 
   // "1/4", "1 1/2", "2", "0.5" at the start of the string — a mixed number,
@@ -287,8 +307,8 @@ export function parseAmountToGrams(amount: string): number | null {
   }
   if (!Number.isFinite(quantity) || quantity <= 0) return null;
 
-  const unit = unitRaw ?? '';
-  if (!unit) return null; // a bare number with no unit — "2" of what? not guessable.
+  const unit = unitRaw || (ingredientName ? impliedUnitFromName(ingredientName) : null);
+  if (!unit) return null; // a bare number with no unit, and none guessable from the name.
 
   if (unit in MASS_TO_G) return quantity * MASS_TO_G[unit];
   if (unit in VOLUME_TO_ML) return quantity * VOLUME_TO_ML[unit]; // ml treated as g, water-density
@@ -543,7 +563,7 @@ nutritionRouter.post('/recipe', async (req: Request, res: Response): Promise<voi
   }
 
   const withGrams = ingredients
-    .map((ing) => ({ ...ing, grams: parseAmountToGrams(ing.amount) }))
+    .map((ing) => ({ ...ing, grams: parseAmountToGrams(ing.amount, ing.name) }))
     .filter((ing): ing is { name: string; amount: string; grams: number } => ing.grams !== null);
 
   let estimates: IngredientEstimate[];
@@ -590,10 +610,22 @@ nutritionRouter.post('/recipe', async (req: Request, res: Response): Promise<voi
     { calories: 0, proteinG: 0, carbsG: 0, fatG: 0 }
   );
 
+  // Coverage by ingredient *count* hides the case that actually matters: a
+  // recipe where the 8 seasonings all matched and the one 500g cut of meat
+  // didn't reads as "8 of 9 matched" — reassuring — while the total is
+  // missing most of the dish's real calories. Weighing by the grams each
+  // ingredient actually contributes is what the client needs to tell "a
+  // couple of garnishes missing" apart from "the main ingredient is missing"
+  // even when both cases matched the same number of rows.
+  const matchedGrams = estimates.reduce((sum, e) => sum + e.grams, 0);
+  const totalGrams = withGrams.reduce((sum, ing) => sum + ing.grams, 0);
+
   console.info('FatSecret recipe estimate', {
     uid: req.uid,
     ingredientCount: ingredients.length,
     matchedCount: estimates.length,
+    matchedGrams: Math.round(matchedGrams),
+    totalGrams: Math.round(totalGrams),
     servings,
   });
 
@@ -606,5 +638,11 @@ nutritionRouter.post('/recipe', async (req: Request, res: Response): Promise<voi
     },
     matchedCount: estimates.length,
     totalCount: ingredients.length,
+    // Fraction of the recipe's parseable mass the total above actually
+    // accounts for. 1 when every parseable ingredient matched; lower when a
+    // heavy ingredient (by weight) was the one that didn't. The client uses
+    // this, not matchedCount/totalCount, to decide how much to trust the
+    // number on screen.
+    coverage: totalGrams > 0 ? Math.round((matchedGrams / totalGrams) * 100) / 100 : 0,
   });
 });

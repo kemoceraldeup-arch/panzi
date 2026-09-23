@@ -97,16 +97,26 @@ type Props = {
   onChange: (iso: string | null) => void;
   /** The USE BY control's own "I don't know" radio — see the type's own
    *  doc comment on ScanCandidate for why this is a separate bit from
-   *  `value` being null. */
-  unknown: boolean;
+   *  `value` being null. `undefined` means the user hasn't touched this
+   *  control at all yet (radio off, no estimate panel) — treated the same
+   *  as `false` everywhere below except that it's never shown as "selected". */
+  unknown: boolean | undefined;
   onChangeUnknown: (unknown: boolean) => void;
   /** DateBasis alongside expiryDate/unknown — Phase 2's own finer-grained
    *  provenance (printed/manual/rough/estimated). Fired every time this
    *  component changes what kind of date it's holding, so the caller never
    *  has to re-derive basis from value+unknown by hand. */
-  basis: DateBasis;
+  /** `undefined` alongside `unknown === undefined` — the user hasn't made a
+   *  date decision of any kind yet. Not read by this component; carried
+   *  through purely for the caller to persist. */
+  basis: DateBasis | undefined;
   onChangeBasis: (basis: DateBasis) => void;
   foodClass: FoodClass;
+  /** The item's own typed/scanned name — passed through to
+   *  services/shelfLife.ts so a meat-fish estimate can tell a whole cut of
+   *  pork from ground meat from a fish fillet, each of which genuinely
+   *  keeps for a different length of time. Every other class ignores it. */
+  itemName: string;
   packageStatus: 'sealed' | 'opened' | undefined;
   openedAt: string | null;
   /** When the item was added to the pantry — the estimate's reference date
@@ -130,6 +140,7 @@ export default function DateField({
   basis,
   onChangeBasis,
   foodClass,
+  itemName,
   packageStatus,
   openedAt,
   addedAt,
@@ -190,7 +201,7 @@ export default function DateField({
   const bucket = bucketForLocation(storageLocation);
   const referenceDate = packageStatus === 'opened' && openedAt ? openedAt : addedAt ?? dateInDays(0);
 
-  const estimate = unknown ? estimateUseBy(foodClass, bucket, packageStatus, referenceDate) : null;
+  const estimate = unknown ? estimateUseBy(foodClass, bucket, packageStatus, referenceDate, itemName) : null;
 
   // Reports the live estimate up whenever its inputs actually change the
   // result — not on every render, which would fire onEstimate for parent
@@ -232,7 +243,7 @@ export default function DateField({
     const previous = previousBucketRef.current;
     previousBucketRef.current = bucket;
     if (previous === null || previous === bucket) return;
-    const est = estimateUseBy(foodClass, bucket, packageStatus, referenceDate);
+    const est = estimateUseBy(foodClass, bucket, packageStatus, referenceDate, itemName);
     setChangeNote(
       storageChangeNoteWithDate(previous, bucket, foodClass, packageStatus, est.date, unknown)
     );
@@ -368,7 +379,7 @@ export default function DateField({
         onPress={() => (unknown ? onChangeUnknown(false) : selectUnknown())}
         activeOpacity={0.7}
         accessibilityRole="radio"
-        accessibilityState={{ checked: unknown }}
+        accessibilityState={{ checked: unknown === true }}
       >
         <Ionicons
           name={unknown ? 'radio-button-on' : 'radio-button-off'}
@@ -434,7 +445,7 @@ function storageChangeNoteWithDate(
   foodClass: FoodClass,
   packageStatus: PackageStatusValue,
   nextDate: string,
-  unknown: boolean
+  unknown: boolean | undefined
 ): string | null {
   if (!unknown) return null;
   // Reuses foodClass.ts's own >50% threshold to decide *whether* to speak
@@ -565,6 +576,7 @@ const useStyles = makeStyles((colors) => ({
     flexWrap: 'wrap',
     gap: space.sm,
     marginTop: space.sm,
+    marginBottom: space.md,
   },
   // minHeight 44 (was 40) and borderStrong (was backgroundAlt), matching
   // every other unselected pill on this card — see PackageStatusField's

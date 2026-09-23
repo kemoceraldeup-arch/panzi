@@ -17,9 +17,17 @@ import { auth } from './firebaseClient';
 // use the IPv4 address, e.g. http://192.168.1.14:8080
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 
-/** Carries the server's error code so callers can react to specific failures. */
+/** Carries the server's error code so callers can react to specific failures.
+ *  `details` is whatever extra JSON fields the server's own error payload had
+ *  beyond `error`/`message` — e.g. verifyEmail's `attemptsLeft`/
+ *  `lockedUntilMs` — passed through as-is rather than the shape being pinned
+ *  here, since this class is shared by every route in the app. */
 export class ApiError extends Error {
-  constructor(public code: string, message: string) {
+  constructor(
+    public code: string,
+    message: string,
+    public details: Record<string, unknown> = {}
+  ) {
     super(message);
   }
 }
@@ -88,14 +96,19 @@ export async function apiFetch<T>(path: string, body?: unknown): Promise<T> {
     // has to be allowed to fail without hiding the status behind a syntax error.
     let code = 'internal';
     let message = 'Something went wrong.';
+    let details: Record<string, unknown> = {};
     try {
       const payload = await response.json();
       code = payload?.error ?? code;
       message = payload?.message ?? message;
+      if (payload && typeof payload === 'object') {
+        const { error: _error, message: _message, ...rest } = payload;
+        details = rest;
+      }
     } catch {
       code = response.status === 401 ? 'unauthenticated' : 'internal';
     }
-    throw new ApiError(code, message);
+    throw new ApiError(code, message, details);
   }
 
   return (await response.json()) as T;

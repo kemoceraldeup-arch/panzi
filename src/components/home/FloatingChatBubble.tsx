@@ -133,7 +133,10 @@ export default function FloatingChatBubble({ onPress, active }: Props) {
 
   return (
     <View
-      style={[styles.wrap, { bottom: insets.bottom + TAB_BAR_CLEARANCE, right: MARGIN }]}
+      style={[
+        styles.wrap,
+        { bottom: insets.bottom + TAB_BAR_CONTENT_HEIGHT + TAB_BAR_CLEARANCE, right: MARGIN },
+      ]}
       pointerEvents="box-none"
     >
       <TouchableOpacity

@@ -33,22 +33,37 @@ const UPDATED = 'August 2026';
 
 type Section = { heading: string; body: string[] };
 
+// Each line below is a field and a single stated purpose for it — not a list
+// of what's collected followed separately by a list of where things go. A
+// purpose-limitation notice that only says "we store X with Y" never actually
+// commits to using X for nothing else, so every line here names the one thing
+// that field is for.
 const PRIVACY: Section[] = [
   {
-    heading: 'What Panzi keeps',
+    heading: 'What Panzi keeps, and why',
     body: [
-      'Your account — the email address you signed in with, and the name you gave when you set the app up.',
-      'What you told it about your eating — the diet and allergy chips on your profile.',
-      'Your pantry — every item you add, its date, where you keep it, and any photo attached to it.',
-      'Your profile photo, if you set one.',
+      'Your email — to sign you in, and to reach you if something needs your attention (a security alert, a reply to feedback). Never for marketing.',
+      'Your name — shown back to you in the app, and nowhere else.',
+      'Your diet and allergy chips — used only to filter and flag the recipes Panzi suggests you. Never shared with anyone but the recipe model itself, and only as an ingredient filter, never linked back to your name or email when it is sent.',
+      'Your pantry — every item, its date, where you keep it, and any photo — kept only so the app can show you your own shelves and warn you before something goes off. Not analysed for anything beyond that.',
+      'Your profile photo, if you set one — shown back to you and nowhere else.',
     ],
   },
   {
-    heading: 'Where it goes',
+    heading: 'Where it is stored',
     body: [
-      'Your account and your pantry are stored with Google Firebase.',
+      'Your account, pantry, chats and saved recipes live in our own database (MongoDB Atlas), not a Firebase or Google product — Firebase is only what checks your password when you sign in.',
       'Your profile photo is stored with Supabase.',
-      'When you scan, the photo is sent to Anthropic to be read. When you ask for recipes, the list of what is in your pantry is sent for the same reason. Neither is kept by us after the answer comes back.',
+    ],
+  },
+  {
+    heading: 'What leaves the app, and only for that one reason',
+    body: [
+      'A scan photo goes to OpenAI once, to be read into text, and nothing about you rides along with it — no name, email or account id. OpenAI’s own policy is what governs how long they hold it; that is their commitment, not something this app can enforce.',
+      'A recipe request sends your pantry list, and your diet and allergy chips, to OpenAI — the chips are what let it filter suggestions for you, so they go every time you ask. No name, email or account id goes with it.',
+      'A chat message is sent to OpenAI to work out what you are asking for, and — if it needs your pantry to answer — the same pantry, diet and allergy information above. Again, never your name, email or account id.',
+      'An ingredient name is sent to FatSecret only to look up its calories and macros — nothing about you personally is attached to that lookup.',
+      'A live-trend chat question is sent to Serper as a plain search, with nothing from your account attached to it.',
     ],
   },
   {
@@ -57,6 +72,7 @@ const PRIVACY: Section[] = [
       'It does not sell your information, and there are no advertisers in it.',
       'There is no analytics or tracking built into the app.',
       'It does not read anything on your phone beyond the photos you choose and the camera while a scan is open.',
+      'Nothing collected for one of the reasons above is reused for a different one without telling you here first.',
     ],
   },
   {
@@ -64,7 +80,15 @@ const PRIVACY: Section[] = [
     body: [
       'Deleting an item removes it, and its photo, for good.',
       'Signing out leaves your data where it is so it is waiting when you come back.',
-      'To have the account and everything in it erased, ask through Help & feedback and it will be done.',
+      'Your data screen, under Account, can clear your pantry on its own, or delete your account outright — which erases your pantry, scans, saved recipes, chats and profile permanently, right away, not on a delay and not pending a manual review.',
+    ],
+  },
+  {
+    heading: 'Who is accountable for this',
+    body: [
+      'The team building Panzi is responsible for what this page says and for what the app actually does with your data — if the two ever disagree, that is our mistake to fix, not yours to work around.',
+      'Every account deletion is logged — who, and when — separately from the account itself, specifically so a deletion can be checked afterwards rather than taken on trust.',
+      'Something here wrong, out of date, or not matching what the app does in practice is a bug. Report it through Help & feedback and expect it corrected, not defended.',
     ],
   },
 ];

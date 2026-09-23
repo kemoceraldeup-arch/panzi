@@ -54,10 +54,14 @@ import {
 } from '../services/pantry';
 import EditItemSheet from './EditItemSheet';
 import { backfillItemPhotos } from '../services/scans';
+import { UserProfile } from '../services/profile';
+import { checkItemConflicts, ItemConflict } from '../services/dietCheck';
+import ConflictAlertModal from '../components/ConflictAlertModal';
 import { formatExpiry, getDaysLeft, isUseSoon } from '../utils/freshness';
 import { datePrefix } from '../utils/dateLabel';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
-import { SCAN_BUTTON_LIFT } from '../navigation/TabBar';
+import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
+import { useCollapseOnScroll, resetTabScroll } from '../navigation/scrollCollapse';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
@@ -121,6 +125,8 @@ type Props = {
    *  Only read on mount — this screen unmounts when the tab changes, so
    *  arriving here any other way starts on "All" as before. */
   initialCategory?: string | null;
+  /** For the diet/allergy conflict check on rename — see applyEdit. */
+  profile: UserProfile;
 };
 
 export default function ListScreen({
@@ -129,6 +135,7 @@ export default function ListScreen({
   onSelectionModeChange,
   justAddedIds,
   initialCategory,
+  profile,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
@@ -137,6 +144,15 @@ export default function ListScreen({
   // indicator the same way TabBar does — otherwise the list shifts when
   // selection starts, and the buttons sit under the indicator.
   const insets = useSafeAreaInsets();
+  const collapseOnScroll = useCollapseOnScroll();
+  // This screen remounts on every category change (see MainTabs' `key` on
+  // it), which would otherwise leave the shared collapse reading whatever
+  // scroll position the old mount last reported — a category switch that
+  // happens mid-scroll would hand the new, freshly-scrolled-to-top list a
+  // tab bar that's still collapsed for no reason visible on screen.
+  useEffect(() => {
+    resetTabScroll();
+  }, []);
 
   const [items, setItems] = useState<PantryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,6 +177,14 @@ export default function ListScreen({
   // the sheet keeps showing live values if the listener pushes an update while
   // it is open instead of freezing a copy taken when it was tapped.
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  // A rename that conflicts with the user's diet or allergies, held until they
+  // choose Cancel or Add anyway on ConflictAlertModal — see applyEdit.
+  const [pendingEdit, setPendingEdit] = useState<{
+    id: string;
+    changes: Partial<NewPantryItem>;
+    conflicts: ItemConflict[];
+  } | null>(null);
 
   // Runs at most once per mount, and only ever writes to items that have no
   // picture at all — see backfillItemPhotos. Guarded by a ref rather than state
@@ -365,6 +389,23 @@ export default function ListScreen({
     // list that already agrees with it.
     setEditingId(null);
     if (!id || Object.keys(changes).length === 0) return;
+
+    // Only a rename can introduce a new diet/allergy conflict — every other
+    // field on this sheet (quantity, date, location...) can't turn a safe item
+    // into an unsafe one. Checked against the new name, not the old, since
+    // that's the one about to be saved.
+    if (typeof changes.name === 'string') {
+      const conflicts = checkItemConflicts(changes.name, profile.dietary, profile.allergies);
+      if (conflicts.length > 0) {
+        setPendingEdit({ id, changes, conflicts });
+        return;
+      }
+    }
+
+    await saveEdit(id, changes);
+  }
+
+  async function saveEdit(id: string, changes: Partial<NewPantryItem>) {
     try {
       await updatePantryItem(id, changes);
     } catch (err: any) {
@@ -410,7 +451,7 @@ export default function ListScreen({
   if (items.length === 0) {
     return (
       <View style={styles.container}>
-        <View style={styles.titleBlock}>
+        <View style={[styles.titleBlock, { paddingTop: insets.top + space.md }]}>
           <Text style={styles.title}>My pantry</Text>
           <Text style={styles.subtitle}>Nothing in here yet</Text>
         </View>
@@ -457,9 +498,20 @@ export default function ListScreen({
   return (
     <View style={styles.container}>
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            // Spent here rather than by a SafeAreaView above this screen —
+            // see FULL_BLEED in navigation/MainTabs — so styles.container's
+            // own background runs all the way to the top of the screen
+            // instead of stopping at a separate padded strip.
+            paddingTop: insets.top + space.md,
+            paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + Math.max(insets.bottom, 10) + space.lg,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        {...collapseOnScroll}
       >
         {/* The header stays put in selection mode — only the subtitle and the
             two round buttons change, both of which keep the row's height, so
@@ -693,6 +745,26 @@ export default function ListScreen({
           const id = editingId;
           setEditingId(null);
           if (id) confirmRemove([id], 'delete');
+        }}
+      />
+
+      <ConflictAlertModal
+        visible={pendingEdit !== null}
+        items={
+          pendingEdit
+            ? [
+                {
+                  name: typeof pendingEdit.changes.name === 'string' ? pendingEdit.changes.name : '',
+                  conflicts: pendingEdit.conflicts,
+                },
+              ]
+            : []
+        }
+        onCancel={() => setPendingEdit(null)}
+        onAddAnyway={() => {
+          const edit = pendingEdit;
+          setPendingEdit(null);
+          if (edit) void saveEdit(edit.id, edit.changes);
         }}
       />
     </View>
@@ -1011,8 +1083,12 @@ const useStyles = makeStyles((colors) => ({
     textAlign: 'center',
   },
   scrollContent: {
-    // Clears the floating tab bar and the scan button raised out of it.
-    paddingBottom: 130 + SCAN_BUTTON_LIFT,
+    // The real paddingBottom is computed at render time (see the ScrollView
+    // JSX) and overrides this — it needs insets.bottom, which isn't
+    // available in a static StyleSheet. Kept here anyway as the fallback
+    // any static read of this style object sees, roughly matching the
+    // render-time value on a device with no home-indicator inset.
+    paddingBottom: SCAN_BUTTON_LIFT + TAB_BAR_CONTENT_HEIGHT + 10 + space.lg,
   },
   titleRow: {
     paddingHorizontal: space.xxl,

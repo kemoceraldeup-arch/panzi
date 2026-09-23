@@ -10,14 +10,17 @@ import cors from 'cors';
 import express from 'express';
 import { requireAuth } from './middleware/auth';
 import { chatRouter } from './routes/chat';
+import { dishPhotoRouter } from './routes/dishPhoto';
 import { feedbackRouter } from './routes/feedback';
 import { nutritionRouter } from './routes/nutrition';
 import { pantryRouter } from './routes/pantry';
 import { profileRouter } from './routes/profile';
+import { recipeRatingsRouter } from './routes/recipeRatings';
 import { recipesRouter } from './routes/recipes';
 import { savedRecipesRouter } from './routes/savedRecipes';
 import { scanRouter } from './routes/scan';
 import { scansRouter } from './routes/scans';
+import { verifyEmailRouter } from './routes/verifyEmail';
 
 const app = express();
 
@@ -55,15 +58,18 @@ app.use('/api/scan', requireAuth, scanRouter);
 app.use('/api/recipes', requireAuth, recipesRouter);
 app.use('/api/profile', requireAuth, profileRouter);
 app.use('/api/nutrition', requireAuth, nutritionRouter);
+app.use('/api/dish-photo', requireAuth, dishPhotoRouter);
 
 // The collections that moved off Firestore. Each one connects to Mongo lazily
 // on its first request, so a developer running only the scanner still needs no
 // cluster and no connection string.
 app.use('/api/pantry', requireAuth, pantryRouter);
 app.use('/api/saved-recipes', requireAuth, savedRecipesRouter);
+app.use('/api/recipe-ratings', requireAuth, recipeRatingsRouter);
 app.use('/api/scans', requireAuth, scansRouter);
 app.use('/api/feedback', requireAuth, feedbackRouter);
 app.use('/api/chat', requireAuth, chatRouter);
+app.use('/api/verify-email', requireAuth, verifyEmailRouter);
 
 // Anything thrown by a route or by the CORS check lands here rather than
 // crashing the process or hanging the request.

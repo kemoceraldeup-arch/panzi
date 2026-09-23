@@ -4,28 +4,41 @@
 // cards, the detail header and cook mode — one component so a dish is
 // recognisably the same object everywhere it appears.
 //
-// Two ways of drawing it, and which one you get depends only on whether a photo
-// exists for this dish yet:
+// Three ways of drawing it, tried in order:
 //
-//   photo in assets/dishes/  →  the photograph, with a scrim under the text
-//   nothing there            →  the gradient and glyph from dishLooks.ts
+//   photo in assets/dishes/       →  the bundled photograph, with a scrim
+//   a generated photo, once found →  same treatment, fetched at runtime
+//   neither                       →  the gradient and glyph from dishLooks.ts
 //
 // The gradient is not a placeholder waiting to be replaced. It is the correct
-// answer for every dish outside the named list, and most suggestions will land
-// there. Both paths are finished designs.
+// answer for every dish outside the named list until (and unless) a generated
+// photo for that exact title turns up, and most suggestions will land there.
+// All three paths are finished designs — the generated tier just means fewer
+// dishes end there than before.
 //
 // Children render on top either way, which is how the featured card keeps its
 // "uses expiring" pill and its why line inside the band.
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Text from '../Text';
 import { DishLook, dishGlyph, dishGradient } from '../../theme/dishLooks';
 import { DishKey, dishPhoto } from '../../theme/dishPhotos';
+import { fetchDishPhoto } from '../../services/recipes';
 
 export type TileSize = 'hero' | 'card' | 'mini';
+
+// One in-memory cache per app session, keyed by the same normalised-title
+// logic the server hashes on — good enough to stop the same screen re-asking
+// for a photo it already has this session; the server's own Supabase check is
+// what makes a cold app launch cheap too.
+const sessionPhotoCache = new Map<string, string | null>();
+
+function cacheKey(title: string): string {
+  return title.trim().toLowerCase();
+}
 
 const HEIGHTS: Record<TileSize, number> = {
   hero: 150,
@@ -41,9 +54,15 @@ const GLYPHS: Record<TileSize, number> = {
 
 type Props = {
   look: DishLook | string | null | undefined;
-  /** Names the dish for the photo lookup. Absent or unknown means the gradient,
-   *  which is why every caller does not have to have one. */
+  /** Names the dish for the bundled-photo lookup. Absent or unknown means no
+   *  bundled photo, which is when `title` gets a chance below. */
   dishKey?: DishKey | string | null;
+  /** The dish's own title, used only to ask the server for a generated photo
+   *  when there is no bundled one for `dishKey`. Optional so every existing
+   *  caller keeps compiling — omitting it just means this tile never tries
+   *  the generated tier and goes straight to the gradient, same as before
+   *  this prop existed. */
+  title?: string | null;
   size?: TileSize;
   radius?: number;
   style?: StyleProp<ViewStyle>;
@@ -53,12 +72,42 @@ type Props = {
 export default function DishTile({
   look,
   dishKey,
+  title,
   size = 'card',
   radius = 0,
   style,
   children,
 }: Props) {
-  const photo = dishPhoto(dishKey);
+  const bundledPhoto = dishPhoto(dishKey);
+  const [generatedUrl, setGeneratedUrl] = useState<string | null>(() =>
+    title ? sessionPhotoCache.get(cacheKey(title)) ?? null : null
+  );
+
+  useEffect(() => {
+    // The bundled photo always wins when there is one — no reason to ask the
+    // server for a dish the app already ships a picture for. Same when there
+    // is no title to ask about at all.
+    if (bundledPhoto || !title) return;
+
+    const key = cacheKey(title);
+    if (sessionPhotoCache.has(key)) {
+      setGeneratedUrl(sessionPhotoCache.get(key) ?? null);
+      return;
+    }
+
+    let cancelled = false;
+    fetchDishPhoto(title).then((url) => {
+      sessionPhotoCache.set(key, url);
+      if (!cancelled) setGeneratedUrl(url);
+    });
+    // No cleanup beyond the flag: a fetch that resolves after this tile
+    // unmounts still populates sessionPhotoCache for whoever asks next.
+    return () => {
+      cancelled = true;
+    };
+  }, [bundledPhoto, title]);
+
+  const photo = bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
   const frame = [{ minHeight: HEIGHTS[size], borderRadius: radius }, styles.tile, style];
 
   if (photo) {
@@ -102,7 +151,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   glyphLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
   },

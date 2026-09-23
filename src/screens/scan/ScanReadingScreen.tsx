@@ -286,7 +286,7 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: colors.surface,
   },
   wash: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     bottom: undefined,
     height: 320,
   },
@@ -318,7 +318,7 @@ const useStyles = makeStyles((colors) => ({
     overflow: 'hidden',
   },
   dim: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(22,31,17,0.35)',
   },
   sweep: {

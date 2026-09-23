@@ -18,6 +18,10 @@ export const fonts = {
   body: 'Nunito',
   /** Baloo 2 — headings and titles only. */
   display: 'Baloo2',
+  /** Quicksand — cook mode only. A screen read from a metre away with oily
+   *  hands is its own place, not a heading inside the rest of the app, so it
+   *  keeps its own family rather than borrowing Baloo2/Nunito. */
+  cook: 'Quicksand',
 } as const;
 
 export type FontFamily = (typeof fonts)[keyof typeof fonts];
@@ -75,6 +79,13 @@ const BALOO: Record<number, string> = {
   800: 'Baloo2_800ExtraBold',
 };
 
+const QUICKSAND: Record<number, string> = {
+  400: 'Quicksand_400Regular',
+  500: 'Quicksand_500Medium',
+  600: 'Quicksand_600SemiBold',
+  700: 'Quicksand_700Bold',
+};
+
 const DEFAULT_WEIGHT = 400;
 
 // Named weights RN accepts, mapped to numbers so the nearest-match below has
@@ -110,6 +121,6 @@ export function resolveFontFamily(
         ? (NAMED[weight] ?? Number(weight) ?? DEFAULT_WEIGHT)
         : DEFAULT_WEIGHT;
 
-  const table = family === fonts.display ? BALOO : NUNITO;
+  const table = family === fonts.display ? BALOO : family === fonts.cook ? QUICKSAND : NUNITO;
   return nearest(table, Number.isFinite(numeric) ? numeric : DEFAULT_WEIGHT);
 }

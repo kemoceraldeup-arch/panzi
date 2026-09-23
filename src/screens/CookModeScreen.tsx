@@ -1,525 +1,163 @@
 // src/screens/CookModeScreen.tsx
 //
-// Cooking, one step at a time — and then the part that matters.
+// Cook mode's entry point: fetches what CookStepScreen needs from a real
+// Recipe and mounts it full-screen. The step-by-step UI and the completion
+// sheet both live in src/screens/cook/ — this file's only job is the adapter
+// between the app's Recipe shape and that fixed, literally-specified design.
 //
-// Two things shape this screen. The first is where it is read from: a phone
-// propped against a rice cooker, a metre away, by someone with oily hands. So
-// the type is large, there is exactly one instruction visible at a time, and
-// the targets are buttons rather than swipes. The screen is kept awake, because
-// a phone that sleeps between step three and step four has to be unlocked with
-// a wet thumb.
+// Real recipes are missing three things the design wants: a named phase per
+// step (Recipe.steps is plain strings), a per-step ingredient list (only a
+// whole-recipe list exists), and a per-step photo (only one photo exists per
+// dish). Each is derived as far as the real data allows and omitted rather
+// than invented where it can't be — see stepsFromRecipe below for exactly
+// what that means per field. Cook time and servings are real fields
+// (Recipe.minutes, Recipe.servings) and are shown as given, including the
+// app's own "0 means the model didn't give a believable figure" convention.
 //
-// The second is the last screen. Panzi has always tracked food coming in and
-// food running out of time, but nothing has ever recorded food being *eaten* —
-// a pantry item's only exits were "deleted by hand" and "expired". Cooking is
-// the exit the whole app is arguing for, and "What did you use?" is where it
-// finally gets recorded.
-//
-// That screen deletes rows from someone's kitchen, so: nothing is offered that
-// the recipe did not name, the button says how many it will clear, backing out
-// cancels, and skipping costs one tap.
+// This replaces an earlier version of this screen that opened on an
+// ingredients-first page and, on finishing, offered to clear the recipe's
+// matched items from the pantry. Neither has an equivalent in the new design
+// (which starts directly on step one and ends on stats + Rate this cook /
+// Back to recipe) and both are dropped rather than grafted on.
 
-import React, { useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Modal,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useKeepAwake } from 'expo-keep-awake';
+import React, { useEffect, useState } from 'react';
+import { Modal, View } from 'react-native';
 import {
   SafeAreaProvider,
   initialWindowMetrics,
-  useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import Text from '../components/Text';
-import DishTile from '../components/recipes/DishTile';
-import { PantryItem, deletePantryItems } from '../services/pantry';
-import { Recipe, matchPantryUsed } from '../services/recipes';
-import { fonts, type } from '../theme/typography';
-import { makeStyles } from '../theme/makeStyles';
-import { useColors } from '../theme/ThemeProvider';
-import { space } from '../theme/spacing';
-
-const HIT_SLOP = { top: 12, bottom: 12, left: 12, right: 12 };
+import { ImageSourcePropType } from 'react-native';
+import CookStepScreen, { CookStep } from './cook/CookStepScreen';
+import { CookCompleteStat } from './cook/CookCompleteSheet';
+import { cookTokens } from './cook/cookTokens';
+import { auth } from '../config/firebaseClient';
+import { PantryItem } from '../services/pantry';
+import { Recipe, fetchDishPhoto } from '../services/recipes';
+import { rateRecipe } from '../services/recipeRatings';
+import { dishPhoto } from '../theme/dishPhotos';
+import { useTheme } from '../theme/ThemeProvider';
 
 type Props = {
   recipe: Recipe | null;
-  /** The pantry as it stands, for resolving what the dish used. */
+  /** Accepted for call-site compatibility with the screens that open cook
+   *  mode (RecipesScreen, MainTabs) — unused now that finishing a cook no
+   *  longer offers to clear matched pantry items. */
   items: PantryItem[];
   onClose: () => void;
 };
 
-export default function CookModeScreen({ recipe, items, onClose }: Props) {
-  const styles = useStyles();
-  const colors = useColors();
+/** One phase name per step, since the model that writes Recipe.steps never
+ *  names one — "Step 1", "Step 2"... reads honestly as what it is rather than
+ *  guessing at a phase ("Marinate", "Sear"...) the data doesn't actually say. */
+function phaseFor(index: number): string {
+  return `Step ${index + 1}`;
+}
+
+/**
+ * Recipe.ingredients is one whole-recipe list with no line saying which step
+ * uses which item, so there is no real per-step ingredient list to show —
+ * per the screen's own rule ("omit the label + row entirely when a step has
+ * no ingredients"), every step's chip row is correctly empty rather than
+ * populated with a guess.
+ */
+function stepsFromRecipe(recipe: Recipe, photo: ImageSourcePropType | null): CookStep[] {
+  return recipe.steps.map((instruction, i) => ({
+    phase: phaseFor(i),
+    instruction,
+    ingredients: [],
+    photo,
+  }));
+}
+
+function statsFor(recipe: Recipe): [CookCompleteStat, CookCompleteStat, CookCompleteStat] {
+  return [
+    { value: String(recipe.steps.length), label: 'STEPS' },
+    // 0 means the model's figure wasn't believable — shown as "—" rather
+    // than a false "0 min", matching how the rest of the app hides this case.
+    recipe.minutes > 0
+      ? { value: String(recipe.minutes), unit: 'min', label: 'COOK TIME' }
+      : { value: '—', label: 'COOK TIME' },
+    recipe.servings > 0
+      ? { value: String(recipe.servings), label: 'SERVINGS' }
+      : { value: '—', label: 'SERVINGS' },
+  ];
+}
+
+export default function CookModeScreen({ recipe, onClose }: Props) {
+  // CookStepScreen indexes steps[0] unconditionally — a real assumption for a
+  // screen built to a fixed 5-step example, but not a safe one for a Recipe
+  // the model could in principle return with no steps at all. Closing
+  // immediately (rather than opening onto a screen with nothing to show) is
+  // the same "nothing to cook" outcome recipes with zero steps already have
+  // everywhere else they're used.
+  const hasSteps = !!recipe && recipe.steps.length > 0;
+  const { scheme } = useTheme();
+
   return (
     <Modal
-      visible={recipe !== null}
+      visible={hasSteps}
       animationType="slide"
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
-      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-        {recipe && <Body recipe={recipe} items={items} onClose={onClose} />}
-      </SafeAreaProvider>
+      {/* iOS/Android both paint the Modal's native surface white for the
+          first frame of the slide-up transition, before any React content
+          underneath has had a chance to render on top of it — visible as a
+          blank white flash between tapping "Start cooking" and cook mode's
+          own page color appearing. An opaque View at cook mode's own page
+          color, sized to fill the modal before anything else mounts, removes
+          that gap: the surface is never bare white to begin with. */}
+      <View style={{ flex: 1, backgroundColor: cookTokens[scheme].page }}>
+        <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+          {hasSteps && <Body recipe={recipe} onClose={onClose} />}
+        </SafeAreaProvider>
+      </View>
     </Modal>
   );
 }
 
-function Body({ recipe, items, onClose }: { recipe: Recipe; items: PantryItem[]; onClose: () => void }) {
-  const styles = useStyles();
-  const colors = useColors();
-  useKeepAwake();
-  const insets = useSafeAreaInsets();
+function Body({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
+  // Same two-tier lookup DishTile uses everywhere else a dish gets a photo:
+  // the bundled photo for recipe.dishKey wins outright when there is one, and
+  // only a dish outside that hand-curated list asks the server to generate
+  // one. Fetched once per recipe, not once per step — every step reuses the
+  // same dish photo, and fetchDishPhoto pays a real generation cost the first
+  // time any user asks for a given title, so five calls for one recipe would
+  // be four wasted round trips for a picture that never changes within a cook.
+  const bundledPhoto = dishPhoto(recipe.dishKey);
+  const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
 
-  // 0 is the ingredient list, 1..n are the steps, and n+1 is the finish screen.
-  // Starting on the ingredients rather than on step one means nobody discovers
-  // a missing egg with the pan already hot.
-  const last = recipe.steps.length + 1;
-  const [page, setPage] = useState(0);
-
-  const used = useMemo(() => matchPantryUsed(recipe, items), [recipe, items]);
-  const [ticked, setTicked] = useState<Set<string>>(() => new Set(used.map((i) => i.id)));
-  const [clearing, setClearing] = useState(false);
-  const [clearFailed, setClearFailed] = useState(false);
-
-  const finishing = page === last;
-
-  const toggle = (id: string) => {
-    setTicked((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  useEffect(() => {
+    if (bundledPhoto) return;
+    let alive = true;
+    fetchDishPhoto(recipe.title).then((url) => {
+      if (alive) setGeneratedUrl(url);
     });
-  };
+    return () => {
+      alive = false;
+    };
+  }, [bundledPhoto, recipe.title]);
 
-  const finish = async () => {
-    const ids = used.filter((item) => ticked.has(item.id)).map((item) => item.id);
-    if (ids.length === 0) {
-      onClose();
-      return;
-    }
-
-    setClearing(true);
-    setClearFailed(false);
-    try {
-      await deletePantryItems(ids);
-      onClose();
-    } catch {
-      // Kept open rather than closed with a toast. The user believes their
-      // pantry is now correct; letting them leave on that belief when nothing
-      // was written is the worse failure.
-      setClearFailed(true);
-    } finally {
-      setClearing(false);
-    }
-  };
+  const photo = bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
+  const steps = stepsFromRecipe(recipe, photo);
+  const stats = statsFor(recipe);
 
   return (
-    <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <TouchableOpacity
-          onPress={onClose}
-          hitSlop={HIT_SLOP}
-          style={styles.closeButton}
-          accessibilityLabel="Stop cooking"
-        >
-          <Ionicons name="close" size={20} color={colors.primaryDarker} />
-        </TouchableOpacity>
-        <View style={styles.headerText}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {recipe.title}
-          </Text>
-          <Text style={styles.headerMeta}>
-            {finishing
-              ? 'Finished'
-              : page === 0
-                ? 'Before you start'
-                : `Step ${page} of ${recipe.steps.length}`}
-          </Text>
-        </View>
-      </View>
-
-      {/* Dots, not a bar. A cook wants to know how many moves are left, and
-          counting four dots is faster than reading a percentage. */}
-      {!finishing && (
-        <View style={styles.dots}>
-          {Array.from({ length: recipe.steps.length + 1 }).map((_, i) => (
-            <View key={i} style={[styles.dot, i <= page && styles.dotDone]} />
-          ))}
-        </View>
-      )}
-
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        {page === 0 && <Ingredients recipe={recipe} />}
-
-        {page > 0 && !finishing && (
-          <View style={styles.stepPage}>
-            <DishTile
-              look={recipe.look}
-              dishKey={recipe.dishKey}
-              size="mini"
-              radius={20}
-              style={styles.stepTile}
-            />
-            <Text style={styles.stepText}>{recipe.steps[page - 1]}</Text>
-          </View>
-        )}
-
-        {finishing && (
-          <Finish
-            used={used}
-            ticked={ticked}
-            onToggle={toggle}
-            failed={clearFailed}
-          />
-        )}
-      </ScrollView>
-
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 14 }]}>
-        {page > 0 && (
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => setPage((p) => p - 1)}
-            disabled={clearing}
-          >
-            <Ionicons name="chevron-back" size={22} color={colors.primaryDarker} />
-          </TouchableOpacity>
-        )}
-
-        {!finishing ? (
-          <TouchableOpacity
-            style={styles.nextButton}
-            onPress={() => setPage((p) => p + 1)}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.nextText}>
-              {page === 0 ? 'Start' : page === recipe.steps.length ? "I'm done" : 'Next'}
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.nextButton, clearing && styles.nextBusy]}
-            onPress={finish}
-            disabled={clearing}
-            activeOpacity={0.85}
-          >
-            {clearing ? (
-              <ActivityIndicator color={colors.onAccent} />
-            ) : (
-              <Text style={styles.nextText}>
-                {/* Says the number out loud. A button labelled "Done" that
-                    silently deletes four things is a trap. */}
-                {ticked.size === 0
-                  ? 'Close'
-                  : `Clear ${ticked.size} from pantry`}
-              </Text>
-            )}
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
+    <CookStepScreen
+      recipeName={recipe.title}
+      steps={steps}
+      stats={stats}
+      completeTitle={`${recipe.title} done!`}
+      completeBody={recipe.why || recipe.description || 'Nicely done.'}
+      onClose={onClose}
+      onRate={(stars) => {
+        const uid = auth.currentUser?.uid;
+        if (!uid) return;
+        // Fire-and-forget, same as saveRecipe/unsaveRecipe elsewhere — the
+        // sheet has already closed by the time this resolves, and a failed
+        // rating isn't worth blocking the "done cooking" moment over.
+        rateRecipe(uid, recipe.title, stars).catch(() => {});
+      }}
+    />
   );
 }
-
-function Ingredients({ recipe }: { recipe: Recipe }) {
-  const styles = useStyles();
-  const colors = useColors();
-  const have = recipe.ingredients.filter((i) => i.have);
-  const need = recipe.ingredients.filter((i) => !i.have);
-
-  return (
-    <View>
-      <DishTile
-        look={recipe.look}
-        dishKey={recipe.dishKey}
-        size="hero"
-        radius={24}
-        style={styles.heroTile}
-      />
-      <Text style={styles.pageTitle}>Get these out</Text>
-
-      {have.map((item, i) => (
-        <View key={`have-${i}`} style={styles.ingredientRow}>
-          <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-          <Text style={styles.ingredientName}>{item.name}</Text>
-          <Text style={styles.ingredientAmount}>{item.amount}</Text>
-        </View>
-      ))}
-
-      {need.length > 0 && (
-        <>
-          <Text style={[styles.pageTitle, styles.pageTitleNeed]}>You&apos;ll need to get</Text>
-          {need.map((item, i) => (
-            <View key={`need-${i}`} style={styles.ingredientRow}>
-              <Ionicons name="ellipse-outline" size={20} color={colors.accentDeep} />
-              <Text style={styles.ingredientName}>{item.name}</Text>
-              <Text style={styles.ingredientAmount}>{item.amount}</Text>
-            </View>
-          ))}
-        </>
-      )}
-    </View>
-  );
-}
-
-function Finish({
-  used,
-  ticked,
-  onToggle,
-  failed,
-}: {
-  used: PantryItem[];
-  ticked: Set<string>;
-  onToggle: (id: string) => void;
-  failed: boolean;
-}) {
-  const styles = useStyles();
-  const colors = useColors();
-  if (used.length === 0) {
-    return (
-      <View>
-        <Text style={styles.pageTitle}>Nice one</Text>
-        <Text style={styles.finishBody}>
-          Nothing from your pantry matched this recipe, so there is nothing to tidy up.
-        </Text>
-      </View>
-    );
-  }
-
-  return (
-    <View>
-      <Text style={styles.pageTitle}>What did you use?</Text>
-      <Text style={styles.finishBody}>
-        Ticked items leave your pantry. Untick anything you still have left.
-      </Text>
-
-      {used.map((item) => {
-        const on = ticked.has(item.id);
-        return (
-          <TouchableOpacity
-            key={item.id}
-            style={[styles.usedRow, on && styles.usedRowOn]}
-            onPress={() => onToggle(item.id)}
-            activeOpacity={0.8}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: on }}
-          >
-            <Ionicons
-              name={on ? 'checkbox' : 'square-outline'}
-              size={22}
-              color={on ? colors.primary : colors.checkboxRing}
-            />
-            <Text style={styles.usedName} numberOfLines={2}>
-              {item.name}
-            </Text>
-            {!!item.quantity && <Text style={styles.usedQuantity}>{item.quantity}</Text>}
-          </TouchableOpacity>
-        );
-      })}
-
-      {failed && (
-        <Text style={styles.finishError}>
-          Couldn&apos;t update your pantry just now — check your connection and try again.
-        </Text>
-      )}
-    </View>
-  );
-}
-
-const useStyles = makeStyles((colors) => ({
-  container: {
-    flex: 1,
-    backgroundColor: colors.backgroundLight,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingHorizontal: space.xl,
-    paddingBottom: space.md,
-  },
-  closeButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 13,
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.backgroundAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  headerTitle: {
-    fontFamily: fonts.display,
-    fontWeight: '800',
-    fontSize: type.subtitle.fontSize,
-    color: colors.primaryDarker,
-  },
-  headerMeta: {
-    fontWeight: '700',
-    fontSize: type.caption.fontSize,
-    color: colors.textSecondary,
-    marginTop: space.half,
-  },
-  dots: {
-    flexDirection: 'row',
-    gap: space.xs2,
-    paddingHorizontal: space.xl,
-    paddingBottom: space.sm,
-  },
-  dot: {
-    flex: 1,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: colors.backgroundAlt,
-  },
-  dotDone: {
-    backgroundColor: colors.primary,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    paddingHorizontal: space.xl,
-    paddingTop: space.md2,
-    paddingBottom: space.xxl,
-  },
-  heroTile: {
-    marginBottom: space.xl,
-  },
-  pageTitle: {
-    fontFamily: fonts.display,
-    fontWeight: '800',
-    fontSize: type.headline.fontSize,
-    color: colors.primaryDarker,
-    marginBottom: space.md,
-  },
-  pageTitleNeed: {
-    marginTop: space.xl2,
-    color: colors.accentDeep,
-  },
-  ingredientRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingVertical: space.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-  },
-  ingredientName: {
-    flex: 1,
-    minWidth: 0,
-    fontWeight: '700',
-    fontSize: type.bodyLarge.fontSize,
-    color: colors.primaryDarker,
-  },
-  ingredientAmount: {
-    fontWeight: '600',
-    fontSize: type.body.fontSize,
-    color: colors.textSecondary,
-  },
-  stepPage: {
-    paddingTop: space.sm,
-  },
-  stepTile: {
-    width: 74,
-    marginBottom: space.xxl,
-  },
-  stepText: {
-    // The whole reason this screen exists. Read from a metre away.
-    fontWeight: '700',
-    fontSize: type.headline.fontSize,
-    lineHeight: 36,
-    color: colors.primaryDarker,
-  },
-  finishBody: {
-    fontWeight: '600',
-    fontSize: type.bodySmall.fontSize,
-    lineHeight: 20,
-    color: colors.textSecondary,
-    marginBottom: space.lg2,
-  },
-  usedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingVertical: space.md2,
-    paddingHorizontal: space.md2,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.backgroundAlt,
-    backgroundColor: colors.card,
-    marginBottom: space.sm2,
-  },
-  usedRowOn: {
-    borderColor: colors.primaryLine,
-    backgroundColor: colors.primaryWash,
-  },
-  usedName: {
-    flex: 1,
-    minWidth: 0,
-    fontWeight: '700',
-    fontSize: type.body.fontSize,
-    color: colors.primaryDarker,
-  },
-  usedQuantity: {
-    fontWeight: '600',
-    fontSize: type.label.fontSize,
-    color: colors.textSecondary,
-  },
-  finishError: {
-    fontWeight: '700',
-    fontSize: type.label.fontSize,
-    lineHeight: 18,
-    color: colors.rust,
-    marginTop: space.xs2,
-  },
-  footer: {
-    flexDirection: 'row',
-    gap: space.md,
-    paddingHorizontal: space.xl,
-    paddingTop: space.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderWarm,
-    backgroundColor: colors.backgroundLight,
-  },
-  backButton: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.backgroundAlt,
-    backgroundColor: colors.card,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  nextButton: {
-    flex: 1,
-    height: 58,
-    borderRadius: 18,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  nextBusy: {
-    backgroundColor: colors.primaryPressed,
-  },
-  nextText: {
-    fontWeight: '800',
-    fontSize: type.subtitle.fontSize,
-    color: colors.onAccent,
-  },
-}));

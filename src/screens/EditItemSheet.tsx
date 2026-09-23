@@ -87,6 +87,11 @@ const FALLBACK_LOCATION = 'Cabinet';
 // free-text field and read the Other chip as selected.
 const FIXED_LOCATIONS = new Set<string>(STORAGE_LOCATIONS.filter((l) => l !== 'Other'));
 
+// Matches the server's own cap on a pantry item name, and the identical
+// constant in screens/scan/ScanReviewScreen.tsx — the two name fields in the
+// app have to agree on what a valid name is.
+const NAME_MAX_LENGTH = 60;
+
 function toDraft(item: PantryItem): Draft {
   return {
     name: item.name,
@@ -97,12 +102,16 @@ function toDraft(item: PantryItem): Draft {
     dateSource: item.dateSource,
     photoUri: item.photoUri,
     nutrition: item.nutrition,
-    // An item saved before Phase 2 has no basis of its own — read as
-    // 'estimated' only when it's actually missing a date entirely (the
-    // same "no printed date -> estimate" default every other unclassified
-    // item gets), otherwise treated as a real date nobody labelled, closest
-    // to 'manual' since it came from a person typing it in the old sheet.
-    basis: item.basis ?? (item.expiryDate ? 'manual' : 'estimated'),
+    // An item saved before Phase 2 has no basis of its own. A real date with
+    // no label is closest to 'manual', since it came from a person typing it
+    // in the old sheet. No date AND an actual stored estimate is a genuine
+    // pre-Phase-2 estimate that just never got tagged — 'estimated' is
+    // earned here too. No date and no estimate either is the untouched
+    // case (see ScanCandidate.expiryUnknown's own comment) — left
+    // undefined rather than defaulted to 'estimated', so reopening an item
+    // nobody ever gave a date decision to doesn't pre-select "I don't know"
+    // out from under them.
+    basis: item.basis ?? (item.expiryDate ? 'manual' : item.estimatedUseBy ? 'estimated' : undefined),
     estimatedUseBy: item.estimatedUseBy ?? null,
     estimateInputs: item.estimateInputs ?? null,
   };
@@ -274,7 +283,8 @@ function EditSheetBody({
       out.dateSource = draft.dateSource;
     }
     if (
-      draft.basis !== (item.basis ?? (item.expiryDate ? 'manual' : 'estimated')) ||
+      draft.basis !==
+        (item.basis ?? (item.expiryDate ? 'manual' : item.estimatedUseBy ? 'estimated' : undefined)) ||
       draft.estimatedUseBy !== (item.estimatedUseBy ?? null)
     ) {
       out.basis = draft.basis;
@@ -384,6 +394,10 @@ function EditSheetBody({
               placeholderTextColor={colors.mutedLight}
               selectionColor={colors.primaryDark}
               autoCapitalize="sentences"
+              // The server's own cap on a pantry item name — the same limit
+              // the scan review card's Name field enforces, so renaming an
+              // item here can't accept something adding it never would.
+              maxLength={NAME_MAX_LENGTH}
             />
             {nameEmpty && <Text style={styles.error}>An item needs a name.</Text>}
 
@@ -406,7 +420,7 @@ function EditSheetBody({
               }
               unknown={expiryUnknown}
               onChangeUnknown={setExpiryUnknown}
-              basis={draft.basis ?? 'estimated'}
+              basis={draft.basis}
               onChangeBasis={(basis) =>
                 patch(
                   basis === 'estimated'
@@ -415,6 +429,7 @@ function EditSheetBody({
                 )
               }
               foodClass={classifyFood(draft.category)}
+              itemName={draft.name}
               packageStatus={undefined}
               openedAt={null}
               addedAt={item.addedAt ? new Date(item.addedAt).toISOString().slice(0, 10) : null}

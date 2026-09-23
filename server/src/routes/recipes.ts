@@ -2,7 +2,7 @@
 //
 // What to cook tonight, built from what is actually on the user's shelves.
 //
-// The client sends the pantry; this route asks Claude for three suggestions and
+// The client sends the pantry; this route asks OpenAI for three suggestions and
 // returns them in the shape the recipe cards already render. The server holds
 // no pantry of its own — Firestore is the client's, and keeping a second copy
 // here would mean two versions of the truth about someone's fridge.
@@ -11,25 +11,26 @@
 // up what is about to go off. A recipe engine that ignores expiry dates is a
 // cookbook, and the user already has one of those.
 //
-// Same shape as routes/scan.ts throughout — cached system prompt, structured
-// outputs, a token line on every call — because the two routes have the same
-// cost profile and the same need to be measurable.
+// Same shape as routes/scan.ts throughout — structured outputs, a token line
+// on every call — because the two routes have the same cost profile and the
+// same need to be measurable.
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { Request, Response, Router } from 'express';
 import { dietGuidance, forbidsItem, violatesDiet, withoutExceptions } from './diets';
 
-// Sonnet rather than Opus, deliberately. Picking a dish from a list of twelve
-// pantry items is not hard reasoning — the hard part was writing the rules
-// below, and those are the same whoever reads them. What Opus was actually
-// spending its time on was writing out three full recipes token by token, and
-// the user sits watching a spinner for all of it. Sonnet writes the same
-// recipe several times faster for a fraction of the cost.
+// The cheapest tier, deliberately. Picking a dish from a list of twelve pantry
+// items is not hard reasoning — the hard part was writing the rules below, and
+// those are the same whoever reads them. The flagship model would mostly spend
+// its extra care writing out three full recipes token by token, and the user
+// sits watching a spinner for all of it. This tier writes the same recipe
+// several times faster for a fraction of the cost.
 //
-// The scan route stays on Opus: reading a smudged date off a crumpled label is
-// genuinely a hard perception problem, and getting it wrong puts a made-up date
-// in someone's pantry. Wrong here just means a dinner they don't fancy.
-const MODEL = 'claude-sonnet-5';
+// The scan route stays on the flagship model: reading a smudged date off a
+// crumpled label is genuinely a hard perception problem, and getting it wrong
+// puts a made-up date in someone's pantry. Wrong here just means a dinner they
+// don't fancy.
+const MODEL = 'gpt-5.6-luna';
 
 // Three suggestions: one featured, two alternates. More than that and the
 // screen becomes a list nobody reads; fewer and "shuffle" has nowhere to go.
@@ -250,7 +251,7 @@ export const RECIPE_SCHEMA = {
       type: 'string',
       enum: DISH_KEYS,
       description:
-        'Which named dish this is, so the app can show a photo of it. Choose a key ONLY when the dish genuinely is that thing — "adobo" for chicken or pork adobo, "sinigang" for any sinigang, "silog" for any -silog plate. Do not stretch: a pork stew that is not kaldereta is "other", not "kaldereta". A wrong key shows the user a photo of food they are not cooking, which is worse than showing no photo at all, so "other" is always the safe answer and is expected often.',
+        'Which named dish this is, so the app can show a photo of it. Choose a key ONLY when the dish genuinely is that thing — "adobo" for chicken or pork adobo, "sinigang" for any sinigang, "silog" for any -silog plate. Do not stretch: a pork stew that is not kaldereta is "other", not "kaldereta". A wrong key shows the user a photo of food they are not cooking, which is worse than showing no photo at all, so "other" is always the safe answer and is expected often. That said, if the dish\'s own title names one of these dishes plainly (e.g. a recipe titled "Beef bistek" or "Chicken tinola"), use that matching key — the title is the strongest signal of what the dish genuinely is, and leaving it "other" while the title says otherwise looks like a mistake to the user.',
     },
     minutes: {
       type: 'number',
@@ -259,7 +260,7 @@ export const RECIPE_SCHEMA = {
     servings: {
       type: 'number',
       description:
-        'How many people this recipe as written feeds — a realistic household serving count, e.g. 2, 4, 6. Not the number of pieces or ingredients; the number of people who could eat this amount of food as a meal.',
+        'How many people this recipe as written feeds — a realistic household serving count, e.g. 2, 4, 6. Not the number of pieces or ingredients; the number of people who could eat this amount of food as a meal. Must agree with the ingredient amounts you wrote: if the ingredient list is sized for one person eating alone (e.g. a quarter-kilo of meat as the only protein, a single egg), servings must be 1, not 4 — the app divides every ingredient amount and every nutrition figure by this number to show a single portion, so an inflated servings count on a small ingredient list quietly shrinks a real portion into a fraction of one and understates its calories.',
     },
     description: {
       type: 'string',
@@ -297,7 +298,8 @@ export const RECIPE_SCHEMA = {
           name: { type: 'string', description: 'The ingredient, short.' },
           amount: {
             type: 'string',
-            description: 'How much, as a cook would write it — "2 tbsp", "200 g", "a handful".',
+            description:
+              'How much, as a cook would write it — "2 tbsp", "200 g", "a handful". Always include a unit, even for whole countable items the ingredient name already implies: "3 leaves" or "3 pcs", not a bare "3" — a number with nothing after it cannot be converted to a nutrition estimate and gets silently dropped from the macro total, understating calories for every recipe that has one.',
           },
           have: {
             type: 'boolean',
@@ -475,13 +477,13 @@ VOICE.
 
 Panzi speaks plainly and in the first person. Titles are short and ordinary. The "description" line says what the dish is, plainly, for someone who has never heard of it.`;
 
-let client: Anthropic | null = null;
+let client: OpenAI | null = null;
 
-function anthropic(): Anthropic {
+function openai(): OpenAI {
   if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set — copy .env.example to .env');
-    client = new Anthropic({ apiKey });
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('OPENAI_API_KEY is not set — copy .env.example to .env');
+    client = new OpenAI({ apiKey });
   }
   return client;
 }
@@ -784,17 +786,22 @@ recipesRouter.post('/featured', async (req: Request, res: Response): Promise<voi
 
   let response;
   try {
-    response = await anthropic().messages.create({
+    response = await openai().chat.completions.create({
       model: MODEL,
-      max_tokens: 4000,
-      // Same cached prompt text as /alternates and the old combined route —
-      // byte-identical is what keeps this hitting the cache.
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
-      output_config: {
-        effort: 'low',
-        format: { type: 'json_schema', schema: FEATURED_RESULT_SCHEMA as unknown as Record<string, unknown> },
+      max_completion_tokens: 4000,
+      reasoning_effort: 'none',
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: brief },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'featured_recipe',
+          strict: true,
+          schema: FEATURED_RESULT_SCHEMA as unknown as Record<string, unknown>,
+        },
       },
-      messages: [{ role: 'user', content: brief }],
     });
   } catch (err: any) {
     console.error('Featured recipe call failed', { uid, message: err?.message });
@@ -806,22 +813,24 @@ recipesRouter.post('/featured', async (req: Request, res: Response): Promise<voi
     return;
   }
 
-  if (response.stop_reason === 'refusal') {
+  const choice = response.choices[0];
+
+  if (choice?.finish_reason === 'content_filter') {
     console.warn('Model declined the featured recipe request', { uid });
     res.json({ featured: null, skipped: [] });
     return;
   }
 
-  const block = response.content.find((entry) => entry.type === 'text');
-  if (!block || block.type !== 'text') {
-    console.error('No text block in featured recipe response', { uid, stopReason: response.stop_reason });
+  const raw = choice?.message?.content;
+  if (!raw) {
+    console.error('No content in featured recipe response', { uid, finishReason: choice?.finish_reason });
     res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
     return;
   }
 
   let body: { featured?: unknown };
   try {
-    body = JSON.parse(block.text);
+    body = JSON.parse(raw);
   } catch {
     console.error('Featured recipe response was not valid JSON', { uid });
     res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
@@ -839,10 +848,9 @@ recipesRouter.post('/featured', async (req: Request, res: Response): Promise<voi
     suggested: candidateCount,
     blockedByAllergy: skipped.filter((s) => s.reason === 'allergy').length,
     blockedByDiet: skipped.filter((s) => s.reason === 'diet').length,
-    inputTokens: response.usage.input_tokens,
-    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
-    outputTokens: response.usage.output_tokens,
+    inputTokens: response.usage?.prompt_tokens ?? 0,
+    cachedTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    outputTokens: response.usage?.completion_tokens ?? 0,
   });
 
   res.json({ featured: safe[0] ?? null, skipped });
@@ -871,15 +879,22 @@ recipesRouter.post('/alternates', async (req: Request, res: Response): Promise<v
 
   let response;
   try {
-    response = await anthropic().messages.create({
+    response = await openai().chat.completions.create({
       model: MODEL,
-      max_tokens: 6000,
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
-      output_config: {
-        effort: 'low',
-        format: { type: 'json_schema', schema: ALTERNATES_RESULT_SCHEMA as unknown as Record<string, unknown> },
+      max_completion_tokens: 6000,
+      reasoning_effort: 'none',
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: brief },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'alternate_recipes',
+          strict: true,
+          schema: ALTERNATES_RESULT_SCHEMA as unknown as Record<string, unknown>,
+        },
       },
-      messages: [{ role: 'user', content: brief }],
     });
   } catch (err: any) {
     console.error('Alternates call failed', { uid, message: err?.message });
@@ -891,22 +906,24 @@ recipesRouter.post('/alternates', async (req: Request, res: Response): Promise<v
     return;
   }
 
-  if (response.stop_reason === 'refusal') {
+  const choice = response.choices[0];
+
+  if (choice?.finish_reason === 'content_filter') {
     console.warn('Model declined the alternates request', { uid });
     res.json({ alternates: [], skipped: [] });
     return;
   }
 
-  const block = response.content.find((entry) => entry.type === 'text');
-  if (!block || block.type !== 'text') {
-    console.error('No text block in alternates response', { uid, stopReason: response.stop_reason });
+  const raw = choice?.message?.content;
+  if (!raw) {
+    console.error('No content in alternates response', { uid, finishReason: choice?.finish_reason });
     res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
     return;
   }
 
   let body: { alternates?: unknown };
   try {
-    body = JSON.parse(block.text);
+    body = JSON.parse(raw);
   } catch {
     console.error('Alternates response was not valid JSON', { uid });
     res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
@@ -929,10 +946,9 @@ recipesRouter.post('/alternates', async (req: Request, res: Response): Promise<v
     suggested: candidateCount,
     blockedByAllergy: skipped.filter((s) => s.reason === 'allergy').length,
     blockedByDiet: skipped.filter((s) => s.reason === 'diet').length,
-    inputTokens: response.usage.input_tokens,
-    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
-    outputTokens: response.usage.output_tokens,
+    inputTokens: response.usage?.prompt_tokens ?? 0,
+    cachedTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    outputTokens: response.usage?.completion_tokens ?? 0,
   });
 
   res.json({ alternates: safe.slice(0, ALTERNATE_COUNT), skipped });
@@ -1002,24 +1018,22 @@ recipesRouter.post('/browse', async (req: Request, res: Response): Promise<void>
 
   let response;
   try {
-    response = await anthropic().messages.create({
+    response = await openai().chat.completions.create({
       model: MODEL,
-      max_tokens: 8000,
-      system: [
-        {
-          type: 'text',
-          text: SYSTEM_BROWSE,
-          cache_control: { type: 'ephemeral' },
-        },
+      max_completion_tokens: 8000,
+      reasoning_effort: 'none',
+      messages: [
+        { role: 'system', content: SYSTEM_BROWSE },
+        { role: 'user', content: brief },
       ],
-      output_config: {
-        effort: 'low',
-        format: {
-          type: 'json_schema',
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'browse_recipes',
+          strict: true,
           schema: BROWSE_RESULT_SCHEMA as unknown as Record<string, unknown>,
         },
       },
-      messages: [{ role: 'user', content: brief }],
     });
   } catch (err: any) {
     console.error('Recipe browse call failed', { uid, message: err?.message });
@@ -1031,17 +1045,19 @@ recipesRouter.post('/browse', async (req: Request, res: Response): Promise<void>
     return;
   }
 
-  if (response.stop_reason === 'refusal') {
+  const choice = response.choices[0];
+
+  if (choice?.finish_reason === 'content_filter') {
     console.warn('Model declined the recipe browse request', { uid });
     res.json({ recipes: [], skipped: [] } satisfies BrowseResult);
     return;
   }
 
-  const block = response.content.find((entry) => entry.type === 'text');
-  if (!block || block.type !== 'text') {
-    console.error('No text block in recipe browse response', {
+  const raw = choice?.message?.content;
+  if (!raw) {
+    console.error('No content in recipe browse response', {
       uid,
-      stopReason: response.stop_reason,
+      finishReason: choice?.finish_reason,
     });
     res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
     return;
@@ -1049,7 +1065,7 @@ recipesRouter.post('/browse', async (req: Request, res: Response): Promise<void>
 
   let parsed: { recipes?: unknown };
   try {
-    parsed = JSON.parse(block.text);
+    parsed = JSON.parse(raw);
   } catch {
     console.error('Recipe browse response was not valid JSON', { uid });
     res.status(502).json({ error: 'internal', message: 'Could not read that answer — try again.' });
@@ -1080,10 +1096,9 @@ recipesRouter.post('/browse', async (req: Request, res: Response): Promise<void>
     suggested: candidates.length,
     blockedByAllergy: skipped.filter((s) => s.reason === 'allergy').length,
     blockedByDiet: skipped.filter((s) => s.reason === 'diet').length,
-    inputTokens: response.usage.input_tokens,
-    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-    cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
-    outputTokens: response.usage.output_tokens,
+    inputTokens: response.usage?.prompt_tokens ?? 0,
+    cachedTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    outputTokens: response.usage?.completion_tokens ?? 0,
   });
 
   // TEMP DIAGNOSTIC — remove once Pantry Only on All Recipes is confirmed

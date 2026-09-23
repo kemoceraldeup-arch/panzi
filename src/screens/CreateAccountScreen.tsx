@@ -12,6 +12,7 @@ import {
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  ScrollView,
   Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -22,28 +23,24 @@ import Text from '../components/Text';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../config/firebaseClient';
-import { signInWithFacebook } from '../auth/facebookSignIn';
-import { GoogleIcon, FacebookIcon } from '../components/auth/SocialIcons';
+import { createProfile } from '../services/profile';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
 import { fonts, type } from '../theme/typography';
-
-// Google sign-in can't work inside Expo Go, full stop — not a missing config
-// value, a platform limit. See the same note in SignInScreen. Facebook is
-// wired up for real below via react-native-fbsdk-next, which needs that same
-// custom dev build to run at all.
-function handleGoogleSignIn() {
-  Alert.alert(
-    'Not available yet',
-    "Google sign-in needs a custom build of the app — it can't run inside Expo Go. Use email or guest for now."
-  );
-}
+import PrivacySheet from '../components/profile/PrivacySheet';
+import { Ionicons } from '@expo/vector-icons';
 
 // Not a full RFC 5322 parser — just enough to catch the obviously-wrong
 // entries (no @, no domain, stray spaces) before they round-trip to Firebase
 // for the same verdict a beat later.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PASSWORD_MIN_LENGTH = 6;
+// Firebase's own floor is 6 and won't enforce anything past length — this
+// app's own policy is stricter than that default, so it has to be checked
+// here, not left to the auth/weak-password error Firebase would otherwise
+// never actually raise.
+const PASSWORD_MIN_LENGTH = 8;
+const SPECIAL_CHAR_PATTERN = /[^A-Za-z0-9]/;
+const SPACE_PATTERN = /\s/;
 
 function getEmailError(value: string): string | null {
   const trimmed = value.trim();
@@ -52,9 +49,39 @@ function getEmailError(value: string): string | null {
   return null;
 }
 
+/** Every rule a password must satisfy, checked independently so the UI can
+ *  show each one ticking live as the user types instead of only surfacing
+ *  whichever is wrong first. */
+type PasswordChecks = {
+  length: boolean;
+  noSpaces: boolean;
+  capital: boolean;
+  number: boolean;
+  special: boolean;
+};
+
+function getPasswordChecks(value: string): PasswordChecks {
+  return {
+    length: value.length >= PASSWORD_MIN_LENGTH,
+    noSpaces: !SPACE_PATTERN.test(value),
+    capital: /[A-Z]/.test(value),
+    number: /[0-9]/.test(value),
+    special: SPECIAL_CHAR_PATTERN.test(value),
+  };
+}
+
+/** One rule at a time, most-basic first — a password missing three things
+ *  only ever shows the first one it's missing, not a stacked list, so the
+ *  message always names the very next thing to fix rather than everything
+ *  at once. Spaces are checked right after emptiness since a password full
+ *  of spaces would otherwise pass the length check and confuse the reason. */
 function getPasswordError(value: string): string | null {
   if (!value) return 'Enter a password.';
+  if (SPACE_PATTERN.test(value)) return 'Passwords can\'t contain spaces.';
   if (value.length < PASSWORD_MIN_LENGTH) return `Use at least ${PASSWORD_MIN_LENGTH} characters.`;
+  if (!/[A-Z]/.test(value)) return 'Add at least one capital letter.';
+  if (!/[0-9]/.test(value)) return 'Add at least one number.';
+  if (!SPECIAL_CHAR_PATTERN.test(value)) return 'Add at least one special character.';
   return null;
 }
 
@@ -69,6 +96,24 @@ type Props = {
   onSignIn: () => void;
   onGuest: () => void;
 };
+
+/** One live-checked requirement line — ticks over to a checkmark the moment
+ *  its rule is satisfied, so the user sees progress as they type instead of
+ *  finding out what's still wrong only after submitting. */
+function PasswordRule({ met, label }: { met: boolean; label: string }) {
+  const styles = useStyles();
+  const colors = useColors();
+  return (
+    <View style={styles.passwordRuleRow}>
+      <Ionicons
+        name={met ? 'checkmark-circle' : 'ellipse-outline'}
+        size={14}
+        color={met ? colors.primaryActive : colors.textMuted}
+      />
+      <Text style={[styles.passwordRuleItem, met && styles.passwordRuleItemMet]}>{label}</Text>
+    </View>
+  );
+}
 
 export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Props) {
   const styles = useStyles();
@@ -88,15 +133,24 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
   const [passwordTouched, setPasswordTouched] = useState(false);
   const [confirmTouched, setConfirmTouched] = useState(false);
 
+  // Gates both signup paths — Create account and Continue as guest — because
+  // a guest still gets a row in this server's database the moment either flow
+  // finishes (createProfile below, or its equivalent on the guest path). The
+  // sheet itself is the same one Profile shows later; nothing here duplicates
+  // its text, so a change to what Panzi actually does only has to be made once.
+  const [agreed, setAgreed] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+
   const emailError = getEmailError(email);
   const passwordError = getPasswordError(password);
+  const passwordChecks = getPasswordChecks(password);
   const confirmError = getConfirmError(password, confirmPassword);
 
   const showEmailError = emailTouched && !!emailError;
   const showPasswordError = passwordTouched && !!passwordError;
   const showConfirmError = confirmTouched && !!confirmError;
 
-  const canSubmit = !emailError && !passwordError && !confirmError;
+  const canSubmit = !emailError && !passwordError && !confirmError && agreed;
 
   async function handleCreate() {
     if (!canSubmit) return;
@@ -104,6 +158,17 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
     setLoading(true);
     try {
       await createUserWithEmailAndPassword(auth, email.trim(), password);
+      // Guarantees a database row exists the moment signup succeeds, rather
+      // than waiting on the onboarding survey to create one later. Best-
+      // effort: a account that's created in Firebase but never gets its row
+      // here still gets one the moment the survey runs (its own upsert),
+      // so a network hiccup on this call is not allowed to block or fail
+      // the signup the user is actually waiting on.
+      try {
+        await createProfile();
+      } catch (createErr) {
+        console.warn('createProfile failed after signup — the survey upsert will still cover it', createErr);
+      }
       onCreated();
       // Deliberately still loading: see the same note in SignInScreen.
       return;
@@ -111,7 +176,10 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
       if (err.code === 'auth/email-already-in-use') {
         Alert.alert('Account already exists', 'That email already has an account — try signing in instead.');
       } else if (err.code === 'auth/weak-password') {
-        Alert.alert('Password too short', `Use at least ${PASSWORD_MIN_LENGTH} characters.`);
+        Alert.alert(
+          'Password too weak',
+          `Use at least ${PASSWORD_MIN_LENGTH} characters, with a capital letter, a number, and a special character.`
+        );
       } else if (err.code === 'auth/invalid-email') {
         Alert.alert('Check that email', "That address doesn't look right.");
       } else if (err.code === 'auth/network-request-failed') {
@@ -124,6 +192,10 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
   }
 
   function handleGuest() {
+    if (!agreed) {
+      Alert.alert('Privacy & terms', 'Please agree to the privacy notice and terms first.');
+      return;
+    }
     Alert.alert(
       'Continue as guest?',
       'You can create an account anytime.',
@@ -143,17 +215,6 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
     }
   }
 
-  async function handleFacebookSignIn() {
-    setLoading(true);
-    const signedIn = await signInWithFacebook();
-    if (signedIn) {
-      onCreated();
-      // Deliberately still loading: see the same note in handleCreate above.
-      return;
-    }
-    setLoading(false);
-  }
-
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
@@ -161,7 +222,12 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-          <View style={styles.scrollContent}>
+          <ScrollView
+            style={styles.flex}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
           <View style={styles.navRow}>
             <TouchableOpacity
               style={styles.back}
@@ -226,7 +292,11 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
                   style={styles.inputText}
                   value={password}
                   onChangeText={(text) => {
-                    setPassword(text);
+                    // Stripped rather than merely flagged — a password full
+                    // of spaces would otherwise sail past every other check
+                    // and only fail server-side, or worse, not fail at all.
+                    const noSpaces = text.replace(/\s/g, '');
+                    setPassword(noSpaces);
                     setPasswordTouched(true);
                     // Confirm Password's own error depends on password too
                     // (must match it) — once Confirm has been touched, its
@@ -239,7 +309,7 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
                     setFocus(null);
                     setPasswordTouched(true);
                   }}
-                  placeholder="At least 6 characters"
+                  placeholder="Password"
                   placeholderTextColor={colors.mutedLight}
                   secureTextEntry={!showPassword}
                   autoComplete="password-new"
@@ -252,6 +322,13 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
                 </TouchableOpacity>
               </View>
               {showPasswordError && <Text style={styles.errorText}>{passwordError}</Text>}
+
+              <View style={styles.passwordRules}>
+                <PasswordRule met={passwordChecks.length} label="At least 8 characters" />
+                <PasswordRule met={passwordChecks.capital} label="1 capital letter" />
+                <PasswordRule met={passwordChecks.number} label="1 number" />
+                <PasswordRule met={passwordChecks.special} label="1 special character" />
+              </View>
             </View>
 
             <View style={styles.field}>
@@ -285,6 +362,24 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
             </View>
           </View>
 
+          <TouchableOpacity
+            style={styles.consentRow}
+            onPress={() => setAgreed((v) => !v)}
+            activeOpacity={0.7}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: agreed }}
+          >
+            <View style={[styles.checkbox, agreed && styles.checkboxChecked]}>
+              {agreed && <Ionicons name="checkmark" size={14} color={colors.backgroundLight} />}
+            </View>
+            <Text style={styles.consentText}>
+              I agree to Panzi&apos;s{' '}
+              <Text style={styles.consentLink} onPress={() => setShowTerms(true)}>
+                Privacy & terms
+              </Text>
+            </Text>
+          </TouchableOpacity>
+
           <View style={styles.ctaWrap}>
             <TouchableOpacity
               style={[styles.cta, !canSubmit && styles.ctaDisabled]}
@@ -297,32 +392,6 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
               ) : (
                 <Text style={styles.ctaText}>Create account</Text>
               )}
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.divider}>
-            <View style={styles.dividerRule} />
-            <Text style={styles.dividerLabel}>or continue with</Text>
-            <View style={styles.dividerRule} />
-          </View>
-
-          <View style={styles.social}>
-            <TouchableOpacity
-              style={styles.socialButton}
-              onPress={handleGoogleSignIn}
-              activeOpacity={0.8}
-              accessibilityLabel="Continue with Google"
-            >
-              <GoogleIcon size={26} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.socialButton}
-              onPress={handleFacebookSignIn}
-              disabled={loading}
-              activeOpacity={0.8}
-              accessibilityLabel="Continue with Facebook"
-            >
-              <FacebookIcon size={26} />
             </TouchableOpacity>
           </View>
 
@@ -343,9 +412,11 @@ export default function CreateAccountScreen({ onCreated, onSignIn, onGuest }: Pr
               <Text style={styles.footerLink}>Sign in</Text>
             </TouchableOpacity>
           </View>
-          </View>
+          </ScrollView>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
+
+      <PrivacySheet visible={showTerms} onClose={() => setShowTerms(false)} />
     </SafeAreaView>
   );
 }
@@ -454,6 +525,37 @@ const useStyles = makeStyles((colors) => ({
     fontSize: 13,
     color: colors.primaryActive,
   },
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingTop: 18,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: colors.backgroundAlt,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    backgroundColor: colors.primaryActive,
+    borderColor: colors.primaryActive,
+  },
+  consentText: {
+    flex: 1,
+    fontSize: 13.5,
+    lineHeight: 19,
+    color: colors.textSecondary,
+  },
+  consentLink: {
+    fontWeight: '800',
+    color: colors.primaryActive,
+  },
   ctaWrap: {
     paddingTop: 18,
   },
@@ -481,42 +583,8 @@ const useStyles = makeStyles((colors) => ({
     fontSize: 19,
     color: colors.backgroundLight,
   },
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingTop: 30,
-    paddingBottom: 20,
-  },
-  dividerRule: {
-    flex: 1,
-    height: 1,
-    backgroundColor: colors.backgroundAlt,
-  },
-  dividerLabel: {
-    fontWeight: '700',
-    fontSize: 12,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    color: colors.textMuted,
-  },
-  social: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 18,
-  },
-  socialButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: colors.card,
-    borderWidth: 1.5,
-    borderColor: colors.backgroundAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   guestRow: {
-    paddingTop: 22,
+    paddingTop: 30,
     flexDirection: 'row',
     justifyContent: 'center',
   },
@@ -534,6 +602,24 @@ const useStyles = makeStyles((colors) => ({
     fontSize: type.body.fontSize,
     fontWeight: '700',
     color: colors.textSecondary,
+  },
+  passwordRules: {
+    marginTop: 8,
+    gap: 5,
+  },
+  passwordRuleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  passwordRuleItemMet: {
+    color: colors.primaryActive,
+    fontWeight: '700',
+  },
+  passwordRuleItem: {
+    fontSize: 12.5,
+    lineHeight: 17,
+    color: colors.textMuted,
   },
   footer: {
     marginTop: 'auto',

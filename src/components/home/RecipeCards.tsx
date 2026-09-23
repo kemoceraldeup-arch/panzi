@@ -97,6 +97,7 @@ export function FeaturedRecipeCard({
         <DishTile
           look={recipe.look}
           dishKey={recipe.dishKey}
+          title={recipe.title}
           size="card"
           style={styles.photo}
         >

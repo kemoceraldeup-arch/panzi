@@ -94,7 +94,7 @@ export default function TabLayer({
     <Animated.View
       pointerEvents={active ? 'auto' : 'none'}
       style={[
-        StyleSheet.absoluteFillObject,
+        StyleSheet.absoluteFill,
         { opacity, transform: [{ translateX }] },
         !visible && styles.parked,
       ]}

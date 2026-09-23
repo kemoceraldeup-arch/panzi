@@ -12,7 +12,7 @@ which is free on the Spark plan. Nothing here needs the Blaze plan.
 Panzi app (Expo)  ─┐
                    ├─→  this server  ─→  MongoDB Atlas
 Admin panel (web) ─┘         │
-                             ├─→  Anthropic  (the scanner)
+                             ├─→  OpenAI  (the scanner)
                              └─→  firebase-admin  (verifies login tokens)
 ```
 
@@ -21,11 +21,11 @@ Admin panel (web) ─┘         │
 ```bash
 cd server
 npm install
-cp .env.example .env      # then fill in ANTHROPIC_API_KEY
+cp .env.example .env      # then fill in OPENAI_API_KEY
 npm run dev
 ```
 
-The Anthropic key is the only secret in `.env`, and `.env` is gitignored. It
+The OpenAI key is the only secret in `.env`, and `.env` is gitignored. It
 must never be pasted into a source file, a chat, or a commit.
 
 Point the app at the server by copying the repo root's `.env.example` to `.env`

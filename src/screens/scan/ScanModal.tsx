@@ -7,7 +7,7 @@
 // that outlives it. Each phase is a presentational screen taking callbacks.
 //
 // Recognition runs on the API (server/src/routes/scan.ts), which is where the
-// Anthropic key lives — everything in an Expo bundle ships to the device, so
+// OpenAI key lives — everything in an Expo bundle ships to the device, so
 // the call cannot happen here.
 //
 // Two rules shape the machine:
@@ -53,6 +53,9 @@ import { RipenessStage } from '../../utils/ripeness';
 import { getDaysLeft } from '../../utils/freshness';
 import { makeStyles } from '../../theme/makeStyles';
 import { useColors } from '../../theme/ThemeProvider';
+import { UserProfile } from '../../services/profile';
+import { checkItemConflicts } from '../../services/dietCheck';
+import ConflictAlertModal, { ConflictingItem } from '../../components/ConflictAlertModal';
 
 export type ScanPhase =
   | 'permission'
@@ -78,6 +81,8 @@ type Props = {
   /** Reports a landed batch so the pantry can mark the rows and offer Undo.
    *  `note` names what to eat first, when the batch had anything urgent. */
   onAdded: (count: number, ids: string[], note: string | null) => void;
+  /** For the diet/allergy conflict check before a batch is saved — see submit(). */
+  profile: UserProfile;
 };
 
 type Capture = { uri: string; width: number; height: number };
@@ -132,18 +137,47 @@ export default function ScanModal({
   startScan = null,
   onClose,
   onAdded,
+  profile,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const [permission, requestPermission] = useCameraPermissions();
 
-  const [phase, setPhase] = useState<ScanPhase>('aiming');
+  // True once the native Modal below has actually finished its slide-in —
+  // `visible` flips the instant the modal is *told* to open, but the
+  // transition itself takes a beat, and a touch that lands on a freshly
+  // mounted TextInput during that beat gets eaten by the in-flight
+  // transition rather than focusing the field. This is what "add by hand"
+  // below waits on, so the Name field's first real tap isn't racing the
+  // animation the way it was — see that effect's own comment.
+  const [modalShown, setModalShown] = useState(false);
+
+  // Reset the instant the modal is told to close, not on some later cleanup
+  // — the next open (a fresh "Add item" tap) needs to wait on a real onShow
+  // of its own, not read a stale true left over from the last time.
+  useEffect(() => {
+    if (!visible) setModalShown(false);
+  }, [visible]);
+
+  // Candidates that conflict with the user's diet/allergies, held until they
+  // choose Cancel or Add anyway on ConflictAlertModal — see submit().
+  const [pendingConflicts, setPendingConflicts] = useState<ConflictingItem[] | null>(null);
+
+  // Manual mode starts on the review phase directly rather than on 'aiming'
+  // and switching over once modalShown fires — starting at 'aiming' meant the
+  // camera screen actually mounted and rendered for the beat before that
+  // effect ran, a visible flash of the scan screen behind "Add item"'s
+  // slide-in. MainTabs remounts this component fresh (a new `key`) for every
+  // open, so reading startMode once here at mount is safe.
+  const [phase, setPhase] = useState<ScanPhase>(startMode === 'manual' ? 'review' : 'aiming');
   const [photo, setPhoto] = useState<Capture | null>(null);
-  const [sceneLabel, setSceneLabel] = useState('Scan');
-  // Empty until a read produces something. Starting it pre-populated would mean
-  // anyone who reached the review page without scanning landed on a list of
-  // items they never captured.
-  const [candidates, setCandidates] = useState<ScanCandidate[]>([]);
+  const [sceneLabel, setSceneLabel] = useState(startMode === 'manual' ? 'Typed in' : 'Scan');
+  // Empty until a read produces something, except in manual mode, which starts
+  // with the one blank row "add by hand" edits — see the modalShown effect
+  // below for why editingId still waits on the modal's slide-in to finish.
+  const [candidates, setCandidates] = useState<ScanCandidate[]>(() =>
+    startMode === 'manual' ? [blankCandidate()] : []
+  );
 
   const [progress, setProgress] = useState(0);
   const [foundCount, setFoundCount] = useState<number | null>(null);
@@ -236,15 +270,25 @@ export default function ScanModal({
   useEffect(() => stopRead, [stopRead]);
 
   // "Add by hand" from the pantry opens the same review page with one empty row
-  // already being edited. One item form in the app, not two that drift.
+  // already being edited. One item form in the app, not two that drift. The
+  // blank row itself is created eagerly (see the candidates initializer above)
+  // so the review page — not the camera — is what's behind the modal's
+  // slide-in from the very first frame; only *editingId* waits here.
+  //
+  // Gated on modalShown rather than visible — see that state's own comment.
+  // Focusing the Name TextInput the instant `visible` flips true meant the
+  // field became a tap target while the modal's own slide-in was still
+  // playing, so the very first tap — the one "type it in" exists for — landed
+  // mid-transition and was swallowed by it rather than focusing the input.
+  // Waiting for the modal to actually finish presenting means the field is
+  // genuinely interactive by the time there is anything on screen to tap.
   useEffect(() => {
-    if (!visible || startMode !== 'manual') return;
-    const blank = blankCandidate();
-    setCandidates([blank]);
-    setEditingId(blank.id);
-    setSceneLabel('Typed in');
-    setPhase('review');
-  }, [visible, startMode]);
+    if (!modalShown || startMode !== 'manual') return;
+    setEditingId((current) => current ?? candidates[0]?.id ?? null);
+    // candidates is intentionally not a dependency — this only ever needs to
+    // read the blank row created at mount, not re-run when editing adds more.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalShown, startMode]);
 
   // Opened straight onto a past scan. Keyed on the scan's id rather than the
   // object, because the record arrives from a live Firestore subscription and
@@ -650,12 +694,28 @@ export default function ScanModal({
     if (saving || candidates.length === 0 || blockedByBlankRow()) return;
 
     // Reopened from history: those rows already exist in the pantry, so this is
-    // a write-back rather than a second insert.
+    // a write-back rather than a second insert. Nothing new is being added, so
+    // there is nothing to run the conflict check against.
     if (reopened && scanId) {
       await saveFixes();
       return;
     }
 
+    const conflicting: ConflictingItem[] = candidates
+      .map((c) => ({ name: c.name, conflicts: checkItemConflicts(c.name, profile.dietary, profile.allergies) }))
+      .filter((entry) => entry.conflicts.length > 0);
+    if (conflicting.length > 0) {
+      setPendingConflicts(conflicting);
+      return;
+    }
+
+    await commitBatch();
+  }
+
+  /** The actual write, split from submit() so ConflictAlertModal's "Add
+   *  anyway" can call straight through to it without re-running the check it
+   *  was just shown for. */
+  async function commitBatch() {
     setSaving(true);
     try {
       const ids = await addPantryItems(uid, candidates.map((c) => candidateToItem(c, photo)));
@@ -755,6 +815,10 @@ export default function ScanModal({
       animationType="slide"
       presentationStyle="fullScreen"
       onRequestClose={handleClose}
+      // Marks the slide-in as actually finished — see modalShown's own
+      // comment for why "add by hand" waits on this rather than on
+      // `visible` alone.
+      onShow={() => setModalShown(true)}
       statusBarTranslucent
     >
       <StatusBar barStyle={colors.statusBar} />
@@ -852,6 +916,16 @@ export default function ScanModal({
           )}
         </View>
       </SafeAreaProvider>
+
+      <ConflictAlertModal
+        visible={pendingConflicts !== null}
+        items={pendingConflicts ?? []}
+        onCancel={() => setPendingConflicts(null)}
+        onAddAnyway={() => {
+          setPendingConflicts(null);
+          void commitBatch();
+        }}
+      />
     </Modal>
   );
 }

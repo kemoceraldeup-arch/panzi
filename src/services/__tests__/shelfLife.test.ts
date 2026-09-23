@@ -82,6 +82,45 @@ describe('estimateUseBy — order of magnitude per class', () => {
   });
 });
 
+describe('estimateUseBy — meat-fish sub-types', () => {
+  // The regression this covers: "pork" (a whole cut) used to get the same
+  // flat 2-day fridge window as ground meat, fish, and everything else
+  // under meat-fish — real guidance (USDA FoodKeeper) puts a whole cut of
+  // pork or beef at 3-5 days refrigerated, not 2.
+  test('a whole cut (pork) gets more days than the flat meat-fish fallback', () => {
+    const pork = estimateUseBy('meat-fish', 'fridge', undefined, today, 'Pork');
+    const flat = estimateUseBy('meat-fish', 'fridge', undefined, today);
+    const porkDays = daysBetween(today, pork.date);
+    const flatDays = daysBetween(today, flat.date);
+    expect(porkDays).toBeGreaterThan(flatDays);
+    expect(porkDays).toBeGreaterThanOrEqual(3);
+    expect(porkDays).toBeLessThanOrEqual(5);
+  });
+
+  test('ground meat keeps the short flat-fallback window', () => {
+    const { date } = estimateUseBy('meat-fish', 'fridge', undefined, today, 'Ground beef');
+    expect(daysBetween(today, date)).toBeLessThanOrEqual(2);
+  });
+
+  test('cured/smoked meat lasts noticeably longer, and is exempt from the class ceiling', () => {
+    const { date } = estimateUseBy('meat-fish', 'fridge', undefined, today, 'Bacon');
+    expect(daysBetween(today, date)).toBeGreaterThan(7);
+  });
+
+  test('fish and poultry still read as short-window, same as before', () => {
+    const salmon = estimateUseBy('meat-fish', 'fridge', undefined, today, 'Salmon fillet');
+    const chicken = estimateUseBy('meat-fish', 'fridge', undefined, today, 'Whole chicken');
+    expect(daysBetween(today, salmon.date)).toBeLessThanOrEqual(2);
+    expect(daysBetween(today, chicken.date)).toBeLessThanOrEqual(2);
+  });
+
+  test('an unrecognised or absent name falls back to the flat figure, never blocks', () => {
+    const named = estimateUseBy('meat-fish', 'fridge', undefined, today, 'Mystery meat');
+    const unnamed = estimateUseBy('meat-fish', 'fridge', undefined, today);
+    expect(named.date).toBe(unnamed.date);
+  });
+});
+
 describe('estimateUseBy — the sanity clamp', () => {
   test('a misclassified dairy item never estimates past the class ceiling', () => {
     // Simulates the exact bug: a fridge-stored dairy item somehow computing

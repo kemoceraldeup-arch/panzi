@@ -183,6 +183,17 @@ pantryRouter.post(
   })
 );
 
+// The whole shelf at once, for "Your data" > Clear pantry. Takes no body —
+// unlike /delete, there is no list of ids to check, because the point of this
+// route is that the caller does not have to know them.
+pantryRouter.post(
+  '/clear',
+  withDb(async (req, res) => {
+    const result = await PantryItem.deleteMany({ userId: req.uid });
+    res.json({ ok: true, deleted: result.deletedCount ?? 0 });
+  })
+);
+
 /**
  * Different fields onto different items, in one write.
  *
