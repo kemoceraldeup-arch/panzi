@@ -11,8 +11,9 @@
 // "nothing matched" instead of a document somebody else's client can see.
 
 import { Router } from 'express';
-import { PantryItem } from '../models';
-import { badRequest, isValidId, withDb } from './helpers';
+import mongoose from '../mongo';
+import { ItemDisposition, PantryItem } from '../models';
+import { badRequest, isValidId, localDay, withDb } from './helpers';
 
 export const pantryRouter = Router();
 
@@ -174,11 +175,60 @@ pantryRouter.post(
 pantryRouter.post(
   '/delete',
   withDb(async (req, res) => {
-    const { ids } = (req.body ?? {}) as { ids?: string[] };
+    const { ids, reason, portion } = (req.body ?? {}) as { ids?: string[]; reason?: string; portion?: number };
     if (!Array.isArray(ids) || ids.length === 0) return badRequest(res, 'No ids were sent.');
     if (!ids.every(isValidId)) return badRequest(res, 'An id was not usable.');
 
-    await PantryItem.deleteMany({ _id: { $in: ids }, userId: req.uid });
+    if (reason !== undefined && !['consumed', 'discarded', 'expired', 'removed', 'undone'].includes(reason)) {
+      return badRequest(res, 'Choose a valid removal reason.');
+    }
+    if (portion !== undefined && (typeof portion !== 'number' || !(portion > 0 && portion <= 1))) {
+      return badRequest(res, 'The amount thrown out must be more than 0 and at most 1.');
+    }
+    // 'undone' is the scan batch's Undo: items added by mistake a moment ago.
+    // Nothing happened to any food, so nothing is written to the outcome
+    // journal; counting these would inflate "removed without a reason".
+    if (reason === 'undone') {
+      await PantryItem.deleteMany({ _id: { $in: ids }, userId: req.uid });
+      res.json({ ok: true });
+      return;
+    }
+    // Removal and its outcome commit together. Deletion here is hard — the
+    // document that would carry a `disposition` field is the document that
+    // goes away — so this journal is the only thing that can ever tell "eaten"
+    // apart from "thrown out", and a failed journal write must not silently
+    // lose the only evidence of what happened to the item.
+    await mongoose.connection.transaction(async (session) => {
+      const doomed = await PantryItem.find({ _id: { $in: ids }, userId: req.uid })
+        .select({ name: 1, category: 1, quantity: 1, expiryDate: 1, estimatedUseBy: 1 })
+        .session(session)
+        .lean();
+      if (doomed.length === 0) return;
+      await PantryItem.deleteMany({ _id: { $in: ids }, userId: req.uid }, { session });
+      const today = localDay();
+      await ItemDisposition.insertMany(
+        doomed.map((item: any) => {
+          // A Panzi estimate stands in when nothing was printed or typed, the
+          // same one timeline the list sorts on — otherwise every estimated
+          // item would be filed as "not past its date", which is a claim the
+          // data does not support.
+          const due = item.expiryDate ?? item.estimatedUseBy ?? null;
+          return {
+            userId: req.uid,
+            itemId: String(item._id),
+            name: item.name,
+            category: item.category ?? '',
+            reason: reason ?? 'removed',
+            portion: reason === 'discarded' ? portion ?? 1 : 1,
+            quantity: typeof item.quantity === 'string' ? item.quantity : '',
+            expiryDate: due,
+            pastExpiry: Boolean(due && due < today),
+          };
+        }),
+        { session }
+      );
+    });
+
     res.json({ ok: true });
   })
 );
@@ -186,11 +236,42 @@ pantryRouter.post(
 // The whole shelf at once, for "Your data" > Clear pantry. Takes no body —
 // unlike /delete, there is no list of ids to check, because the point of this
 // route is that the caller does not have to know them.
+//
+// Every cleared item is journalled as 'removed' in the same transaction, the
+// way a single delete is. Clearing says nothing about whether the food was
+// eaten or binned, so it counts as "removed without a reason" — but it must not
+// vanish from the outcome figures altogether.
 pantryRouter.post(
   '/clear',
   withDb(async (req, res) => {
-    const result = await PantryItem.deleteMany({ userId: req.uid });
-    res.json({ ok: true, deleted: result.deletedCount ?? 0 });
+    let deleted = 0;
+    await mongoose.connection.transaction(async (session) => {
+      const doomed = await PantryItem.find({ userId: req.uid })
+        .select({ name: 1, category: 1, quantity: 1, expiryDate: 1, estimatedUseBy: 1 })
+        .session(session)
+        .lean();
+      if (doomed.length === 0) return;
+      const result = await PantryItem.deleteMany({ userId: req.uid }, { session });
+      deleted = result.deletedCount ?? 0;
+      const today = localDay();
+      await ItemDisposition.insertMany(
+        doomed.map((item: any) => {
+          const due = item.expiryDate ?? item.estimatedUseBy ?? null;
+          return {
+            userId: req.uid,
+            itemId: String(item._id),
+            name: item.name,
+            category: item.category ?? '',
+            reason: 'removed',
+            quantity: typeof item.quantity === 'string' ? item.quantity : '',
+            expiryDate: due,
+            pastExpiry: Boolean(due && due < today),
+          };
+        }),
+        { session }
+      );
+    });
+    res.json({ ok: true, deleted });
   })
 );
 

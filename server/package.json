@@ -9,14 +9,17 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "check": "tsx scripts/check-connections.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.7.0",
     "firebase-admin": "^13.0.0",
+    "helmet": "^8.3.0",
     "mongoose": "^9.9.3",
     "nodemailer": "^10.0.0",
     "openai": "^7.15.0"

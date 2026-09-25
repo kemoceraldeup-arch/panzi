@@ -74,10 +74,13 @@ savedRecipesRouter.post(
 savedRecipesRouter.post(
   '/unsave',
   withDb(async (req, res) => {
-    const { id } = (req.body ?? {}) as { id?: string };
+    const { id, legacyId } = (req.body ?? {}) as { id?: string; legacyId?: string };
     if (!isValidId(id)) return badRequest(res, 'No recipe id was sent.');
+    // legacyId is where the same dish lives if it was saved before saves were
+    // keyed by recipe fingerprint rather than title.
+    const ids = isValidId(legacyId) ? [id, legacyId] : [id];
 
-    await SavedRecipe.deleteOne({ _id: id, userId: req.uid });
+    await SavedRecipe.deleteMany({ _id: { $in: ids }, userId: req.uid });
     res.json({ ok: true });
   })
 );

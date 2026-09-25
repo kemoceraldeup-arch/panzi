@@ -1,0 +1,1393 @@
+/* Design tokens, lifted verbatim from the Claude Design prototype. Every
+   colour in the console resolves to one of these — a hex literal inside a
+   component means a token is missing, not that the token was inconvenient. */
+:root {
+  --green-darkest: #143324;
+  --green-deep: #2c5c39;
+  --green-primary: #4c8c5a;
+  --green-mid: #7ba37f;
+  --green-soft: #8fbe9b;
+  --green-pale: #c8dcc9;
+  --green-chip-bg: #e1ede3;
+
+  --sidebar-text: #e8efe7;
+  --sidebar-muted: #8fa894;
+  --sidebar-idle: #a9bfae;
+  --sidebar-section: #6f8a76;
+  --sidebar-hairline: rgba(255, 255, 255, 0.13);
+  --nav-active-fill: rgba(255, 255, 255, 0.14);
+  --nav-hover-fill: rgba(255, 255, 255, 0.08);
+
+  --canvas: #f2efe7;
+  --card: #ffffff;
+  --input-fill: #fafaf5;
+  --subtle-fill: #f7f6ef;
+  --neutral-fill: #e9eae0;
+  --chip-fill: #edefe6;
+  --chip-fill-border: #dde2d8;
+  --chip-neutral: #ecede4;
+  --track: #e9ebe2;
+  --border: #e4e3d8;
+  --border-strong: #d8d9ce;
+  --divider: #f0f0e7;
+  --divider-strong: #ebebe1;
+  --scrollbar: #d3d6cb;
+  --row-hover: #f6f7f1;
+  --button-hover: #edeee5;
+
+  --ink: #1a1b22;
+  --ink-2: #3a3b44;
+  --ink-muted: #6c6f7a;
+  --ink-faint: #8a8d96;
+
+  --amber: #de9e58;
+  --amber-text: #8a5f22;
+  --amber-chip-bg: #f7ecdc;
+  --clay: #c0503f;
+  --clay-chip-bg: #f8e7e3;
+  --destructive-bg: #fcf3f1;
+  --destructive-border: #e8c4bc;
+  --destructive-hover: #f6e3de;
+  --dashed-accent: #a9c7af;
+  --placeholder-stripe: #dde2d8;
+  --placeholder-label: #7c8a79;
+
+  --scrim: rgba(20, 51, 36, 0.38);
+  --shadow-modal: 0 32px 64px rgba(20, 51, 36, 0.26);
+
+  --font: "DM Sans", system-ui, sans-serif;
+  --mono: ui-monospace, Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--green-primary);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--green-deep);
+  text-decoration: underline;
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 6px;
+}
+
+/* ------------------------------------------------------------------ shell */
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--canvas);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 30px 36px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--canvas);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.page-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.032em;
+  color: var(--ink);
+}
+.page-sub {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink-muted);
+  max-width: 640px;
+  text-wrap: pretty;
+}
+.page-body {
+  flex: 1;
+  padding: 28px 36px 56px;
+}
+
+
+/* ------------------------------------------------------------------- rail */
+
+/* A real flex item, not an overlay. It was fixed while the rail opened on
+   hover, because a layout that reflowed every time the pointer crossed the left
+   edge would have been unusable. Now that it only moves when the toggle is
+   pressed, sticky is right: the page gets the width back when the rail closes
+   instead of leaving a dead strip, and nothing is ever covered. */
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  flex: 0 0 auto;
+  z-index: 40;
+  background: var(--green-darkest);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 62px;
+  flex: 0 0 auto;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--sidebar-hairline);
+  white-space: nowrap;
+}
+/* The open/close control. Deliberately the first thing in the rail and always
+   in the same place, open or closed — a toggle that moves is a toggle people
+   stop trusting. */
+.rail-toggle {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-muted);
+  padding: 9px;
+  border-radius: 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.rail-toggle:hover {
+  color: #ffffff;
+  background: var(--nav-hover-fill);
+}
+.rail-toggle:focus-visible {
+  outline: 2px solid var(--green-primary);
+  outline-offset: -2px;
+}
+.rail-logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: block;
+  flex: 0 0 auto;
+}
+.rail-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The wordmark reads as one thing on one line: the product name carries the
+   weight and "Admin" trails it, lighter, as the qualifier it is. Both classes
+   had no rules at all until now, which is why this had been rendering as two
+   plain stacked lines. */
+.sidebar-org {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.1;
+}
+.sidebar-eyebrow {
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.1;
+  color: var(--sidebar-muted);
+}
+
+.rail-nav {
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* The page's scrollbar is styled for the light canvas — a pale thumb, which
+     renders as a bright strip down the dark rail. It also takes ~10px of width,
+     which is what pushed every collapsed icon left of centre. The rail holds
+     eight fixed items and only scrolls on a very short window, so it hides the
+     bar and keeps the scrolling. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.rail-nav::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.rail-group {
+  font-size: 12px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--sidebar-section);
+  padding: 10px 8px 5px;
+  height: 30px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.rail-separator {
+  height: 1px;
+  background: var(--sidebar-hairline);
+  margin: 6px 4px;
+  flex: 0 0 auto;
+}
+
+.rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 42px;
+  padding: 0 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--sidebar-idle);
+  background: transparent;
+  border: none;
+  text-decoration: none;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  width: 100%;
+}
+.rail-item:hover {
+  background: var(--nav-hover-fill);
+  color: #ffffff;
+  text-decoration: none;
+}
+.rail-item.active {
+  background: var(--nav-active-fill);
+  color: #ffffff;
+}
+/* The design's 3px left bar, kept — but as an inset pseudo-element so it does
+   not shift the icon by three pixels when a row becomes active. */
+.rail-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--green-primary);
+}
+.rail-item:focus-visible {
+  outline: 2px solid var(--green-primary);
+  outline-offset: -2px;
+}
+.rail-icon {
+  flex: 0 0 auto;
+}
+
+.rail-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.rail-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-chevron {
+  color: var(--sidebar-section);
+  flex: 0 0 auto;
+}
+/* Collapsed stand-in for a count. */
+/* Anchored to the icon so it reads as a badge on this row, not a loose dot
+   sitting in the space the centred glyph left behind. The ring is the rail's
+   own background, which is what keeps the dot legible where it overlaps the
+   icon's stroke. */
+.rail-iconwrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  /* Fixed 20px so every row — glyph, avatar, sign-out — shares one axis, and
+     that axis does not move when the rail width animates. */
+  width: 20px;
+  height: 20px;
+}
+.rail-pip {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green-primary);
+  box-shadow: 0 0 0 2px var(--green-darkest);
+}
+
+.rail-foot {
+  flex: 0 0 auto;
+  padding: 10px;
+  border-top: 1px solid var(--sidebar-hairline);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Collapsed the footer is just the avatar — sign out is hidden rather than
+   stacked, so a mis-click cannot end the session from a rail of bare glyphs. */
+/* Identity, not a control — no hover highlight, no pointer. */
+.rail-account {
+  text-align: left;
+  height: 44px;
+  cursor: default;
+  /* Takes the leftover width so the sign-out button lands at the right edge.
+     min-width:0 is what lets a long username ellipsis instead of shoving the
+     button off the end. */
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+.rail-account:hover {
+  background: transparent;
+  color: var(--sidebar-idle);
+}
+.rail-account-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sidebar-text);
+  line-height: 1.25;
+}
+.rail-account .sidebar-role {
+  display: block;
+  line-height: 1.25;
+}
+/* Square icon button beside the profile, the way the footer read before the
+   rail existed. It keeps its own width rather than stretching with the row. */
+.rail-signout {
+  color: var(--sidebar-muted);
+  width: 40px;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 0;
+}
+.rail-signout:hover {
+  color: #ffffff;
+}
+.rail-avatar {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--green-deep);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.rail-avatar.big {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  font-size: 11.5px;
+}
+
+/* ----------------------------------------------------------------- pieces */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+}
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.card-sub {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+.eyebrow {
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.section-eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.btn {
+  border-radius: 8px;
+  padding: 9px 15px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-secondary {
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--ink-2);
+}
+.btn-secondary:hover {
+  background: var(--button-hover);
+}
+.btn-primary {
+  border: none;
+  background: var(--green-primary);
+  color: #ffffff;
+}
+.btn-primary:hover {
+  background: var(--green-deep);
+}
+.btn-destructive {
+  border: 1px solid var(--destructive-border);
+  background: var(--destructive-bg);
+  color: var(--clay);
+}
+.btn-destructive:hover {
+  background: var(--destructive-hover);
+}
+.btn:disabled,
+.btn-small:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.btn-small {
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--ink-2);
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-small:hover {
+  background: var(--button-hover);
+}
+
+.range-control {
+  display: flex;
+  background: var(--neutral-fill);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+.range-control button {
+  border: none;
+  cursor: pointer;
+  padding: 6px 13px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: transparent;
+  color: var(--ink-muted);
+}
+.range-control button.on {
+  background: var(--card);
+  color: var(--green-darkest);
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.input {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--input-fill);
+  color: var(--ink);
+  outline: none;
+}
+.input:focus {
+  border-color: var(--green-primary);
+}
+textarea.input {
+  resize: vertical;
+}
+.search-input {
+  padding: 9px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--input-fill);
+  color: var(--ink);
+  outline: none;
+  flex: 1;
+  max-width: 340px;
+}
+.search-input:focus {
+  border-color: var(--green-primary);
+}
+
+.pill {
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--ink-2);
+}
+.pill.on {
+  background: var(--green-darkest);
+  border-color: var(--green-darkest);
+  color: var(--canvas);
+}
+
+.chip {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 20px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--divider-strong);
+}
+.table-head {
+  padding: 11px 22px;
+  background: var(--subtle-fill);
+  border-bottom: 1px solid var(--divider-strong);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  font-weight: 600;
+  display: grid;
+  gap: 16px;
+}
+.table-row {
+  display: grid;
+  gap: 16px;
+  align-items: center;
+  padding: 13px 22px;
+  border-bottom: 1px solid var(--divider);
+}
+.table-row.clickable {
+  cursor: pointer;
+}
+.table-row:hover {
+  background: var(--row-hover);
+}
+.table-foot {
+  padding: 14px 22px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* The prototype has no empty state. A filter that matches nothing rendering as
+   a blank strip under a header reads as a broken page, so every table says so
+   instead. */
+.table-empty {
+  padding: 30px 22px;
+  font-size: 13px;
+  color: var(--ink-muted);
+  text-align: center;
+  border-bottom: 1px solid var(--divider);
+}
+
+.progress-track {
+  background: var(--track);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+}
+
+.avatar {
+  border-radius: 50%;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.icon-close {
+  border: none;
+  background: transparent;
+  color: var(--sidebar-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.icon-close:hover {
+  color: var(--ink-2);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-row {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--divider);
+}
+
+/* --------------------------------------------------------------- overlays */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+}
+.overlay-title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.028em;
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------------- gate */
+
+.gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: var(--canvas);
+}
+.gate-card {
+  width: 380px;
+  max-width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 30px 30px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.gate-error {
+  font-size: 12.5px;
+  color: var(--clay);
+  background: var(--clay-chip-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-wrap: pretty;
+}
+.gate-note {
+  font-size: 12px;
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+/* Banner for screens the prototype drew against data the backend does not
+   store yet. Better to say so on the screen than to let a demo number be
+   mistaken for a measurement. */
+.sample-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--amber-chip-bg);
+  border: 1px solid #eddcc2;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--amber-text);
+  margin-bottom: 18px;
+  text-wrap: pretty;
+}
+
+/* The prototype was drawn desktop-only. These two breakpoints keep it from
+   collapsing on a laptop rather than pretending a phone layout was designed. */
+@media (max-width: 1100px) {
+  .grid-4 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .grid-split,
+  .grid-split-wide,
+  .grid-halves {
+    grid-template-columns: 1fr !important;
+  }
+}
+@media (max-width: 820px) {
+  .rail {
+    display: none;
+  }
+  .page-header,
+  .page-body {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
+
+/* ------------------------------------------------------------------ login */
+
+/* Login styles are scoped to keep the console's working screens unchanged. */
+.login {
+  --login-cream: #faf9f4;
+  --login-sage: #d8e7bb;
+  --login-muted: #b7c9ba;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: 16px;
+  background: var(--login-cream);
+}
+.login-brand {
+  background: var(--green-darkest);
+  color: var(--sidebar-text);
+  padding: 36px clamp(30px, 4.4vw, 76px) 28px;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 42px;
+  min-width: 0;
+}
+.login-lockup { display: flex; align-items: center; gap: 10px; }
+.login-lockup img { width: 46px; height: 46px; border-radius: 12px; }
+.login-wordmark { font-size: 32px; font-weight: 700; letter-spacing: -1.6px; }
+.login-wordmark > span { color: var(--login-sage); }
+.login-workspace {
+  margin-left: auto;
+  padding: 7px 11px;
+  border: 1px solid var(--sidebar-hairline);
+  border-radius: 30px;
+  font-size: 13px;
+  color: var(--login-muted);
+  white-space: nowrap;
+}
+.login-message { width: 100%; max-width: 500px; margin: auto; }
+.login-eyebrow { display: block; font-size: 13px; font-weight: 700; letter-spacing: 2px; }
+.login-message > .login-eyebrow { color: var(--login-sage); margin-bottom: 20px; }
+.login-message h2 {
+  margin: 0;
+  font-size: clamp(40px, 4.5vw, 68px);
+  line-height: 1.06;
+  font-weight: 500;
+  letter-spacing: -2.8px;
+  color: var(--login-cream);
+}
+.login-message h2 em { font-family: Georgia, serif; font-weight: 400; color: var(--login-sage); }
+.login-animated-word {
+  position: relative;
+  display: inline-grid;
+  vertical-align: bottom;
+  overflow: hidden;
+  padding: .12em .14em;
+  margin: -.12em -.14em;
+  white-space: nowrap;
+}
+.login-word-size { grid-area: 1 / 1; visibility: hidden; }
+.login-word-slide { position: absolute; top: .12em; left: .14em; }
+.login .field-error { font-size: 13px; }
+
+.login-message > p { margin: 22px 0 28px; max-width: 355px; font-size: 15px; line-height: 1.8; color: var(--login-muted); }
+.login-photo { position: relative; margin: 0; overflow: hidden; border-radius: 12px; aspect-ratio: 1.85; }
+.login-photo > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; object-position: 50% 53%; }
+.login-photo::after { pointer-events: none; content: ''; position: absolute; inset: 35% 0 0; background: linear-gradient(transparent, rgba(12, 28, 19, .88)); }
+.login-photo figcaption { position: absolute; z-index: 1; bottom: 20px; left: 20px; right: 20px; display: flex; gap: 11px; align-items: center; color: var(--card); font-size: 15px; font-weight: 500; }
+.login-photo figcaption small { display: block; margin-top: 4px; font-size: 13px; font-weight: 400; color: var(--sidebar-text); }
+.login-photo-count { margin-left: auto; color: var(--sidebar-text); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.login-photo-icon { flex-shrink: 0; display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--sidebar-hairline); border-radius: 50%; background: var(--nav-hover-fill); }
+.login-fineprint { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--login-muted); }
+.login-fineprint > span:last-child { font-size: 11px; letter-spacing: 1.5px; }
+.login-panel { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 48px; padding: 26px clamp(28px, 5vw, 88px) 16px; }
+.login-panel-label { display: flex; gap: 7px; align-items: center; align-self: flex-end; font-size: 13px; color: var(--ink-muted); }
+.login-form { width: 100%; max-width: 380px; margin: auto 0; }
+.login-heading { margin-bottom: 32px; }
+.login-heading .login-eyebrow { color: var(--green-deep); font-size: 12px; letter-spacing: 1.8px; }
+.login-heading h1 { margin: 12px 0 9px; font-size: clamp(32px, 3.1vw, 44px); line-height: 1.15; letter-spacing: -1.7px; font-weight: 500; color: var(--green-darkest); }
+.login-heading p { margin: 0; color: var(--ink-muted); font-size: 15px; }
+.login-card { display: flex; flex-direction: column; gap: 22px; }
+.login .field-label { font-size: 14px; font-weight: 600; color: var(--green-darkest); }
+.login .input { min-height: 51px; border-radius: 9px; padding: 14px 15px; font-size: 15px; background: var(--card); }
+.login .input::placeholder { color: var(--ink-muted); opacity: .85; }
+.login .input:focus { outline: 2px solid var(--green-deep); outline-offset: 2px; }
+.login .input-invalid { border-color: var(--clay); }
+.login .input-invalid:focus { outline-color: var(--clay); }
+.login .input-with-icon .input { padding-right: 50px; }
+.login .input-icon-button { width: 40px; height: 40px; }
+.login .login-submit { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 4px; width: 100%; min-height: 52px; padding: 14px 18px; border-radius: 9px; font-size: 15px; background: var(--green-darkest); color: var(--card); }
+.login .login-submit:hover:not(:disabled) { background: var(--green-deep); }
+.login button:focus-visible { outline: 2px solid var(--green-deep); outline-offset: 4px; }
+.login-help { margin-top: 23px; text-align: center; font-size: 14px; }
+.login-help-toggle { display: flex; align-items: center; justify-content: center; gap: 5px; width: fit-content; margin: auto; padding: 7px 0; border: 0; background: none; color: var(--green-deep); font-size: inherit; cursor: pointer; text-underline-offset: 4px; }
+.login-help-toggle > span { display: flex; }
+.login-help-content { overflow: hidden; }
+.login-help-body { padding-top: 14px; }
+.login-help-toggle:hover { text-decoration: underline; }
+.login-help p { margin: 0; padding: 14px; border: 1px solid var(--border); border-radius: 9px; text-align: left; line-height: 1.7; color: var(--ink-muted); }
+.login-session { position: relative; margin: 30px 0 0; border-top: 1px solid var(--border); padding: 22px 0 0 25px; font-size: 13px; line-height: 1.8; color: var(--ink-muted); }
+.login-session svg { position: absolute; top: 24px; left: 0; color: var(--green-deep); }
+.login-panel-footer { margin: 0; font-size: 13px; color: var(--ink-muted); }
+
+.login-banner {
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-size: 14px;
+  font-weight: 500;
+  text-wrap: pretty;
+}
+.login-banner-error {
+  background: var(--destructive-bg);
+  border: 1px solid var(--destructive-border);
+  color: var(--clay);
+}
+.login-banner-warn {
+  background: var(--amber-chip-bg);
+  border: 1px solid #eddcc2;
+  color: var(--amber-text);
+}
+.login-banner-ok {
+  background: var(--green-chip-bg);
+  border: 1px solid var(--green-pale);
+  color: var(--green-deep);
+}
+
+/* A text button that reads as a link — Show/Hide and Forgot password. A real
+   <button> rather than an <a href="#">: neither one navigates, and a link that
+   goes nowhere is a trap for anyone using a keyboard or a screen reader. */
+.login-link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--green-primary);
+  cursor: pointer;
+}
+.login-link-button:hover {
+  color: var(--green-deep);
+  text-decoration: underline;
+}
+
+.input-invalid {
+  border-color: var(--clay);
+}
+.field-error {
+  font-size: 13px;
+  color: var(--clay);
+  text-wrap: pretty;
+}
+
+.login-foot {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--sidebar-muted);
+  text-wrap: pretty;
+}
+
+.gate-pre {
+  margin: 0;
+  background: var(--subtle-fill);
+  border: 1px solid var(--divider-strong);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-2);
+  overflow-x: auto;
+}
+
+@media (min-width: 1600px) {
+  .login { padding: 24px; }
+  .login-brand { padding-top: 44px; padding-bottom: 36px; }
+}
+@media (max-width: 1000px) {
+  .login-brand { padding: 28px; }
+  .login-workspace { display: none; }
+  .login-panel { padding-left: 32px; padding-right: 24px; }
+  .login-message h2 { font-size: 46px; }
+  .login-photo { aspect-ratio: 1.35; }
+  .login-fineprint > span:last-child { display: none; }
+}
+@media (max-width: 700px) {
+  .login { grid-template-columns: 1fr; padding: 10px; }
+  .login-brand { border-radius: 14px; padding: 18px 22px 24px; gap: 25px; }
+  .login-lockup img { width: 36px; height: 36px; }
+  .login-wordmark { font-size: 28px; }
+  .login-workspace { display: block; font-size: 12px; }
+  .login-message { max-width: none; }
+  .login-message > .login-eyebrow { font-size: 11px; margin-bottom: 12px; }
+  .login-message h2 { font-size: 38px; letter-spacing: -1.5px; }
+  .login-message h2 br { display: none; }
+  .login-message > p, .login-photo, .login-fineprint { display: none; }
+  .login-panel { padding: 28px 16px 18px; gap: 30px; }
+  .login-panel-label { align-self: center; }
+  .login-heading { margin-bottom: 28px; }
+  .login .input { font-size: 16px; }
+  .login-panel-footer { margin-top: 8px; }
+}
+
+/* Password field with a keyboard-accessible reveal control. */
+.input-with-icon {
+  position: relative;
+  display: flex;
+}
+.input-with-icon .input {
+  width: 100%;
+  padding-right: 42px;
+}
+.input-icon-button {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: none;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--green-primary);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.input-icon-button:hover {
+  color: var(--green-deep);
+  background: var(--button-hover);
+}
+
+/* ------------------------------------------------------- user modal
+   The account panel opened from the users table. It centres itself rather
+   than sliding in from the right: it is read once and dismissed, so it
+   belongs where the eye already is.
+   Fixed height so switching tabs never resizes the panel under the cursor —
+   a dialog that grows when you click a tab feels broken even when it isn't. */
+
+.modal-scrim {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  z-index: 60;
+}
+.user-modal {
+  width: 560px;
+  max-width: 100%;
+  max-height: min(660px, 100%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  outline: none;
+}
+
+.user-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 22px 24px 18px;
+  background: var(--subtle-fill);
+  border-bottom: 1px solid var(--divider-strong);
+}
+
+.user-modal-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 18px 24px 4px;
+}
+.stat-tile {
+  background: var(--subtle-fill);
+  border: 1px solid var(--divider-strong);
+  border-radius: 12px;
+  padding: 13px 15px;
+}
+.stat-tile-value {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  line-height: 1.1;
+}
+.stat-tile-label {
+  font-size: 11px;
+  color: var(--ink-muted);
+  margin-top: 3px;
+}
+
+.user-modal-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 14px 24px 0;
+  border-bottom: 1px solid var(--divider);
+}
+.user-tab {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 8px 12px 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.user-tab.is-active {
+  color: var(--ink);
+}
+.user-tab-underline {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--green-primary);
+}
+
+.user-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 24px 22px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 18px;
+  margin: 0;
+}
+.detail-cell:last-child {
+  grid-column: 1 / -1;
+}
+.detail-label {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.detail-value {
+  margin: 3px 0 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.detail-value.is-copyable {
+  cursor: pointer;
+}
+.detail-value.is-copyable:hover {
+  color: var(--green-deep);
+}
+.detail-hint {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  margin-top: 3px;
+}
+
+.pantry-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--divider);
+}
+
+.user-modal-foot {
+  padding: 16px 24px 18px;
+  border-top: 1px solid var(--divider-strong);
+  background: var(--subtle-fill);
+}
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ------------------------------------------------------ needs review
+   Two queues under one header. Cards rather than table rows: a feedback
+   message is a paragraph and an unsure scan carries a list of alternatives,
+   and neither fits a column of fixed width. */
+
+.queue-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--divider-strong);
+  margin-bottom: 16px;
+}
+.queue-tab {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 9px 14px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.queue-tab.is-active {
+  color: var(--ink);
+}
+.queue-tab-count {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--chip-neutral);
+  color: var(--ink-muted);
+}
+.queue-tab.is-active .queue-tab-count {
+  background: var(--green-chip-bg);
+  color: var(--green-deep);
+}
+.queue-tab-underline {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--green-primary);
+}
+
+.queue-card {
+  padding: 18px 20px;
+}
+.queue-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.queue-block {
+  margin-top: 15px;
+  padding-top: 14px;
+  border-top: 1px solid var(--divider);
+}
+.queue-pill {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 20px;
+  background: var(--chip-fill);
+  color: var(--ink-2);
+  border: 1px solid var(--chip-fill-border);
+}
+.queue-pill.is-quiet {
+  background: transparent;
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.queue-message {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.queue-reply {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--green-deep);
+  text-decoration: none;
+}
+.queue-reply:hover {
+  text-decoration: underline;
+}
+
+.table-foot-paged {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+/* --------------------------------------------------------- swirling loader
+   From the 21st.dev component, kept as CSS rather than the source's inline
+   <style> tag so the rules exist once instead of once per mounted spinner.
+
+   Two animations at once is the whole trick: the circle rotates while its dash
+   array stretches and contracts against that rotation, so the arc appears to
+   chase itself rather than simply turn. The dash animation alternates and the
+   spin does not, and the spin is timed at 1.333× the dash so the two never fall
+   into step — a loader that visibly repeats reads as a frozen one. */
+
+@keyframes swirl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes swirl-dash {
+  0% {
+    stroke-dasharray: 1, 800;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 400, 400;
+    stroke-dashoffset: -200px;
+  }
+  100% {
+    stroke-dasharray: 800, 1;
+    stroke-dashoffset: -800px;
+  }
+}
+
+.swirl-circle {
+  transform-origin: center;
+  animation:
+    swirl-dash var(--duration, 1.5s) ease-in-out infinite alternate,
+    swirl-spin calc(var(--duration, 1.5s) * 1.333333) linear infinite;
+}
+
+/* Anyone who has asked their system not to animate things gets a still ring
+   rather than nothing — the element still says "waiting", it just stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  .swirl-circle {
+    animation: none;
+    stroke-dasharray: 420, 400;
+    opacity: 0.55;
+  }
+}
+
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.loading-state-label {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+/* ---------------------------------------------------- settings & chatbot */
+
+.config-row,
+.admin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--divider);
+}
+.config-value {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-align: right;
+  flex: 0 0 auto;
+  max-width: 46%;
+}
+
+.accuracy-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.turn {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--divider);
+}
+.turn-who {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-muted);
+  margin-bottom: 5px;
+}
+.turn-user .turn-who {
+  color: var(--green-deep);
+}
+.turn-text {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.turn-recipe {
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-muted);
+}
+
+@media (max-width: 1100px) {
+  .accuracy-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

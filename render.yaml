@@ -1,0 +1,62 @@
+# Render Blueprint for the Panzi admin console (admin/), a static site.
+#
+# The API service (panzi.onrender.com) was created by hand in the dashboard and
+# is deliberately not listed here, so applying this Blueprint only adds the
+# admin site and never touches the running API.
+#
+# After the first deploy, add this site's URL to the API service's
+# ALLOWED_ORIGINS, or every request from the console is refused by CORS.
+services:
+  - type: web
+    runtime: static
+    name: panzi-admin
+    rootDir: admin
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: VITE_API_URL
+        value: https://panzi.onrender.com
+      - key: VITE_SAMPLE_DATA
+        value: "false"
+      - key: VITE_SKIP_AUTH
+        value: "false"
+      # Firebase web config is public by design: it names the project, it does
+      # not authorise anything. The admin claim on the account is what gates
+      # the console, checked here and again by requireAdmin on the API.
+      - key: VITE_FIREBASE_API_KEY
+        value: AIzaSyB8gITvvAaTufQHvyj6v6pF8BxlVCP8088
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        value: panzi-c2830.firebaseapp.com
+      - key: VITE_FIREBASE_PROJECT_ID
+        value: panzi-c2830
+      - key: VITE_FIREBASE_STORAGE_BUCKET
+        value: panzi-c2830.firebasestorage.app
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        value: "860455272099"
+      - key: VITE_FIREBASE_APP_ID
+        value: 1:860455272099:web:2774f882332bf8a05c0916
+    # The console uses client-side routes (/users, /review, ...), so every
+    # path serves index.html and the router takes it from there.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    # The same policy `vite preview` serves (see admin/vite.config.ts). Keep
+    # the two in step.
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://panzi.onrender.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains
