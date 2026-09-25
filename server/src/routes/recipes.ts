@@ -17,6 +17,7 @@
 
 import OpenAI from 'openai';
 import { Request, Response, Router } from 'express';
+import { recordUsage, tokensFrom } from '../usage';
 import { dietGuidance, forbidsItem, violatesDiet, withoutExceptions } from './diets';
 
 // The cheapest tier, deliberately. Picking a dish from a list of twelve pantry
@@ -839,6 +840,14 @@ recipesRouter.post('/featured', async (req: Request, res: Response): Promise<voi
 
   const { safe, skipped, candidateCount } = cleanAndGate([body.featured], items, allergies, dietary);
 
+  recordUsage({
+    userId: uid,
+    route: 'recipes.featured',
+    model: MODEL,
+    durationMs: Date.now() - startedAt,
+    ...tokensFrom(response.usage),
+  });
+
   console.info('Featured recipe complete', {
     uid,
     ms: Date.now() - startedAt,
@@ -936,6 +945,14 @@ recipesRouter.post('/alternates', async (req: Request, res: Response): Promise<v
     allergies,
     dietary
   );
+
+  recordUsage({
+    userId: uid,
+    route: 'recipes.alternates',
+    model: MODEL,
+    durationMs: Date.now() - startedAt,
+    ...tokensFrom(response.usage),
+  });
 
   console.info('Alternates complete', {
     uid,
@@ -1088,6 +1105,14 @@ recipesRouter.post('/browse', async (req: Request, res: Response): Promise<void>
       return false;
     }
     return true;
+  });
+
+  recordUsage({
+    userId: uid,
+    route: 'recipes.browse',
+    model: MODEL,
+    durationMs: Date.now() - startedAt,
+    ...tokensFrom(response.usage),
   });
 
   console.info('Recipe browse complete', {

@@ -27,6 +27,7 @@
 
 import OpenAI from 'openai';
 import { Request, Response, Router } from 'express';
+import { recordUsage, tokensFrom } from '../usage';
 
 // The cheapest tier, same as the other routes. Reading a faded expiry stamp or
 // judging ripeness from skin freckling is genuinely hard perception, so this
@@ -438,6 +439,7 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
   const brief =
     'This is a photo of food — on a counter, in a fridge, in a cupboard, or just unpacked. List every distinct food item you can see, including ones that are small, partly hidden behind something else, or sitting at the back or edges of the shot — not just the items at the front. Read pack sizes and printed dates off the labels where they are legible, and judge the ripeness of any loose fruit or vegetables.';
 
+  const startedAt = Date.now();
   let response;
   try {
     response = await openai().chat.completions.create({
@@ -552,6 +554,17 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
           : 0,
       };
     });
+
+  // The per-scan cost, kept rather than only printed. "API cost per scan" is
+  // an admin feature in HANDOFF.md, and one row per call is the whole of what
+  // makes it answerable later.
+  recordUsage({
+    userId: uid,
+    route: 'scan',
+    model: MODEL,
+    durationMs: Date.now() - startedAt,
+    ...tokensFrom(response.usage),
+  });
 
   // The per-scan cost line, so a spike in either figure shows up in the logs
   // rather than only on the bill at the end of the month.

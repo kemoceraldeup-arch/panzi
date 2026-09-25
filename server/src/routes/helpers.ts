@@ -57,3 +57,44 @@ export function badRequest(res: Response, message: string): void {
 export function isValidId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 128;
 }
+
+/**
+ * '4 minutes ago'. Coarse on purpose: an admin scanning a feed wants to know
+ * whether something happened just now or last week, and a precise duration
+ * ("3 days, 4 hours") reads slower for that question than a rounded one.
+ *
+ * Here rather than in admin.ts because two routers render the same phrase, and
+ * the one place they could both import it from without one importing the other
+ * is this file.
+ */
+export function relativeTime(value: Date | string | number | null | undefined): string {
+  if (!value) return 'never';
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return 'never';
+
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return 'yesterday';
+  return `${days} days ago`;
+}
+
+/**
+ * The calendar day, 'YYYY-MM-DD', as the people using Panzi experience it.
+ *
+ * Expiry dates are calendar days typed or printed in the Philippines. Working
+ * out "today" from the server clock instead would make "due tomorrow" wrong by
+ * a day for eight hours of every day on a host that runs in UTC. APP_TIMEZONE
+ * overrides the default for a deployment somewhere else.
+ */
+export const APP_TIMEZONE = process.env.APP_TIMEZONE || 'Asia/Manila';
+const dayFormat = new Intl.DateTimeFormat('en-CA', {
+  timeZone: APP_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+});
+export function localDay(date: Date = new Date()): string {
+  return dayFormat.format(date);
+}

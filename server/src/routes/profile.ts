@@ -10,14 +10,19 @@
 
 import { Router } from 'express';
 import admin from '../firebase';
+import { revokeNow } from '../middleware/auth';
 import { AVATAR_BUCKET, supabase } from '../supabase';
 import {
+  AdminReview,
+  ApiUsage,
   ChatConversation,
   ChatMessage,
   DeletionAuditLog,
   EmailVerification,
   Feedback,
+  ItemDisposition,
   PantryItem,
+  RecipeRating,
   SavedRecipe,
   Scan,
   User,
@@ -246,13 +251,19 @@ profileRouter.get(
   '/export',
   withDb(async (req, res) => {
     const uid = req.uid!;
-    const [user, pantryItems, savedRecipes, scans, conversations, messages] = await Promise.all([
+    // Everything stored against this uid, so the export matches what the
+    // delete route below removes: feedback, ratings, and the record of what
+    // happened to removed pantry items belong to the person too.
+    const [user, pantryItems, savedRecipes, scans, conversations, messages, feedback, ratings, removals] = await Promise.all([
       User.findById(uid).lean(),
       PantryItem.find({ userId: uid }).lean(),
       SavedRecipe.find({ userId: uid }).lean(),
       Scan.find({ userId: uid }).lean(),
       ChatConversation.find({ userId: uid }).lean(),
       ChatMessage.find({ userId: uid }).lean(),
+      Feedback.find({ userId: uid }).select({ message: 1, appVersion: 1, platform: 1, createdAt: 1 }).lean(),
+      RecipeRating.find({ userId: uid }).lean(),
+      ItemDisposition.find({ userId: uid }).lean(),
     ]);
 
     res.json({
@@ -263,6 +274,9 @@ profileRouter.get(
       scans,
       chatConversations: conversations,
       chatMessages: messages,
+      feedback,
+      recipeRatings: ratings,
+      pantryRemovals: removals,
     });
   })
 );
@@ -281,6 +295,10 @@ profileRouter.get(
  * survives the User document it is about): a right to erasure is not a right
  * to make the erasure unaccountable, and this row holds nothing about the
  * person beyond the uid and when they asked.
+ *
+ * The one thing it neither deletes nor keeps intact is api_usage, which is
+ * unlinked instead — see the comment on that line for why a spend record is
+ * the one place where rewriting beats removing.
  */
 profileRouter.post(
   '/delete',
@@ -295,6 +313,7 @@ profileRouter.post(
       return;
     }
 
+    revokeNow(uid);
     await DeletionAuditLog.create({ uid, requestedAt: new Date(), requestedVia: 'profile-screen' });
 
     try {
@@ -307,16 +326,43 @@ profileRouter.post(
       console.error('Avatar removal during account deletion failed', { uid, message: err?.message });
     }
 
+    // The team's review notes about this person's scans and feedback go too.
+    // They live in their own collection so the app can never read them, which
+    // also means deleting the scans and feedback alone would leave the notes
+    // behind, still describing someone who asked to be erased.
+    const [scanIds, feedbackIds] = await Promise.all([
+      Scan.find({ userId: uid }).distinct('_id'),
+      Feedback.find({ userId: uid }).distinct('_id'),
+    ]);
+    const reviewKeys = [
+      ...scanIds.map((id: unknown) => `scans:${String(id)}`),
+      ...feedbackIds.map((id: unknown) => `feedback:${String(id).toLowerCase()}`),
+    ];
+
     await Promise.all([
+      AdminReview.deleteMany({ _id: { $in: reviewKeys } }),
       PantryItem.deleteMany({ userId: uid }),
       SavedRecipe.deleteMany({ userId: uid }),
+      RecipeRating.deleteMany({ userId: uid }),
       Scan.deleteMany({ userId: uid }),
       ChatConversation.deleteMany({ userId: uid }),
       ChatMessage.deleteMany({ userId: uid }),
       Feedback.deleteMany({ userId: uid }),
+      // What happened to this person's food is about this person. The admin
+      // console's waste figures lose these rows, which is the correct trade:
+      // an aggregate is not a reason to keep someone's record after they asked
+      // for it to go.
+      ItemDisposition.deleteMany({ userId: uid }),
       EmailVerification.deleteOne({ _id: uid }),
       User.deleteOne({ _id: uid }),
     ]);
+
+    // api_usage is the one collection emptied by rewriting rather than by
+    // deleting. Each row is a bill we actually paid, and deleting them would
+    // quietly reduce last month's recorded spend to something that never
+    // happened. Unlinking the uid removes the person from it while leaving the
+    // money true, which is what the erasure is actually for.
+    await ApiUsage.updateMany({ userId: uid }, { $set: { userId: 'deleted' } });
 
     try {
       await admin.auth().deleteUser(uid);

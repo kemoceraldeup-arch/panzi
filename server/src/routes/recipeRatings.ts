@@ -14,8 +14,9 @@ export const recipeRatingsRouter = Router();
 recipeRatingsRouter.post(
   '/',
   withDb(async (req, res) => {
-    const { id, title, stars } = (req.body ?? {}) as {
+    const { id, key, title, stars } = (req.body ?? {}) as {
       id?: string;
+      key?: string;
       title?: string;
       stars?: number;
     };
@@ -30,7 +31,7 @@ recipeRatingsRouter.post(
 
     await RecipeRating.updateOne(
       { _id: id, userId: req.uid },
-      { $set: { userId: req.uid, title: title.trim(), stars } },
+      { $set: { userId: req.uid, title: title.trim(), stars, key: typeof key === 'string' && key.length <= 160 ? key : null } },
       { upsert: true }
     );
     res.json({ ok: true });
