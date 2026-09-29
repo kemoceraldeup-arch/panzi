@@ -97,6 +97,17 @@ export function formatCost(value: number | null): string {
   return `$${value.toFixed(2)}`;
 }
 
+/**
+ * What one scan costs on average. The fill-level pass ('scan-measure') is a
+ * second call made for some scans, so its spend is added in but its calls are
+ * not — the divisor is scans, not requests. Null before the first scan.
+ */
+export function perScanCost(byRoute: Map<string, { calls: number; cost: number }>): number | null {
+  const scan = byRoute.get('scan');
+  if (!scan || scan.calls === 0) return null;
+  return (scan.cost + (byRoute.get('scan-measure')?.cost ?? 0)) / scan.calls;
+}
+
 export interface UsageRecord extends TokenCounts {
   /**
    * `req.uid` is optional in the Express types even though requireAuth has

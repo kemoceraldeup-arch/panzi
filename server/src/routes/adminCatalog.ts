@@ -9,7 +9,7 @@
 import { Router } from 'express';
 import { ApiUsage, PantryItem, RecipeRating, SavedRecipe } from '../models';
 import { provenanceBucket } from './admin';
-import { costOf, formatCost } from '../usage';
+import { costOf, formatCost, perScanCost } from '../usage';
 import { withDb } from './helpers';
 
 export const adminCatalogRouter = Router();
@@ -436,6 +436,7 @@ adminCatalogRouter.get(
     const peak = Math.max(1e-9, ...buckets.map((bucket) => bucket.cost));
 
     const scanRoute = byRoute.get('scan');
+    const scanCost = perScanCost(byRoute);
     const recipeRoute = byRoute.get('recipes');
 
     const allTokens = rows.reduce((sum, row) => sum + totalTokens(row), 0);
@@ -450,7 +451,7 @@ adminCatalogRouter.get(
         },
         {
           label: 'Per scan',
-          value: scanRoute ? formatCost(scanRoute.cost / scanRoute.calls) : '—',
+          value: scanCost === null ? '—' : formatCost(scanCost),
           note: scanRoute ? `${scanRoute.calls.toLocaleString()} scans` : 'no scans yet',
         },
         {
