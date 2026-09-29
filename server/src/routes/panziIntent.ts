@@ -15,6 +15,7 @@
 // chat.ts, not here — this file only classifies.
 
 import OpenAI from 'openai';
+import { recordUsage, tokensFrom } from '../usage';
 
 // Cheap and fast on purpose: this call gates every single message, so it has
 // to add negligible latency next to the real reply that follows it for an
@@ -102,7 +103,14 @@ function openai(): OpenAI {
  * already has a catch around its own model call and can treat this call's
  * failure the same way.
  */
-export async function classifyIntent(message: string): Promise<{ intent: Intent; inScope: boolean }> {
+export async function classifyIntent(
+  message: string,
+  /** Whose message this was, so the classification's own spend lands under an
+   *  account rather than under 'unknown'. Optional because the classifier is a
+   *  library function and a caller without a uid is still worth serving. */
+  uid?: string
+): Promise<{ intent: Intent; inScope: boolean }> {
+  const startedAt = Date.now();
   const response = await openai().chat.completions.create({
     model: MODEL,
     max_completion_tokens: 100,
@@ -119,6 +127,16 @@ export async function classifyIntent(message: string): Promise<{ intent: Intent;
         schema: CLASSIFY_SCHEMA as unknown as Record<string, unknown>,
       },
     },
+  });
+
+  // Small per call and made on every chat turn, which is exactly the shape of
+  // spend that goes unnoticed until it is a line on the bill.
+  recordUsage({
+    userId: uid,
+    route: 'intent',
+    model: MODEL,
+    durationMs: Date.now() - startedAt,
+    ...tokensFrom(response.usage),
   });
 
   const raw = response.choices[0]?.message?.content;

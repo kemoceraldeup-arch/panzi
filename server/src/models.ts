@@ -107,6 +107,12 @@ const userSchema = new Schema(
     allergies: { type: String, default: '' },
     mealPlanOptIn: { type: Boolean, default: false },
     photoURL: { type: String, default: null },
+    // The platform this account last called the API from — 'iOS', 'Android',
+    // 'Expo Go' or 'Web' — noted from the User-Agent by device.ts. Coarse on
+    // purpose: a full user-agent string is a fingerprint, and the only question
+    // the admin console asks of it is which app someone is using.
+    lastPlatform: { type: String, default: null },
+    lastPlatformAt: { type: Date, default: null },
   },
   { timestamps: true, collection: 'users' }
 );
@@ -348,6 +354,10 @@ const recipeRatingSchema = new Schema(
     _id: { type: String, required: true },
     userId: { type: String, required: true, index: true },
     title: { type: String, required: true },
+    // recipeKey from the app: title plus a fingerprint of the ingredient names,
+    // so two different dishes sharing a title are rated apart. Null on ratings
+    // made before it existed, which fall back to the title.
+    key: { type: String, default: null },
     stars: { type: Number, required: true, min: 1, max: 5 },
   },
   { timestamps: true, collection: 'recipe_ratings' }
@@ -409,6 +419,106 @@ const chatMessageSchema = new Schema(
 // now the unit a screen ever asks for.
 chatMessageSchema.index({ conversationId: 1, createdAt: -1 });
 
+
+// ---------------------------------------------------------------------------
+// api_usage
+// ---------------------------------------------------------------------------
+
+// One document per model call. These numbers were already being computed —
+// every model call logged its usage to stdout and dropped it — and HANDOFF.md
+// asks for API cost per scan as an admin feature. Writing them down is the
+// whole difference between that question being answerable and not.
+//
+// Tokens are stored raw and cost is derived at read time. Prices change; a
+// stored dollar figure would silently become a lie, while a stored token count
+// stays true forever.
+//
+// `inputTokens` is the *uncached remainder* only, the same split the Anthropic
+// response reports — the true prompt size is the three input figures added
+// together. Reading inputTokens alone makes caching look like it shrank the
+// prompt rather than repriced it.
+const apiUsageSchema = new Schema(
+  {
+    userId: { type: String, required: true, index: true },
+    route: { type: String, required: true, index: true },
+    model: { type: String, required: true },
+    inputTokens: { type: Number, default: 0 },
+    cacheReadTokens: { type: Number, default: 0 },
+    cacheWriteTokens: { type: Number, default: 0 },
+    outputTokens: { type: Number, default: 0 },
+    durationMs: { type: Number, default: 0 },
+    ok: { type: Boolean, default: true },
+  },
+  { timestamps: true, collection: 'api_usage' }
+);
+
+// Every read is "spend over a window", newest first.
+apiUsageSchema.index({ createdAt: -1 });
+
+// Retention, enforced by Mongo rather than by remembering.
+//
+// This collection grows by one row per model call and is never edited, so
+// without a ceiling it is the only thing in this database that grows without
+// bound. A year is chosen so that "what did this cost us last spring" is still
+// answerable; beyond that the rows are storage, not information.
+//
+// A TTL index deletes. That is the point of it, and it is worth saying plainly:
+// api_usage rows older than a year will disappear on their own.
+apiUsageSchema.index({ createdAt: 1 }, { expireAfterSeconds: 365 * 24 * 60 * 60 });
+
+// ---------------------------------------------------------------------------
+// admin_audit
+// ---------------------------------------------------------------------------
+
+// Who looked at what. The admin routes are the only ones in this system that
+// deliberately read across accounts, so they are the only ones where "an
+// administrator opened this person's pantry" is a fact worth keeping. Without
+// it the console is a room with no lock on the outside and no record of who
+// went in.
+//
+// The actor is the verified uid from the token, never anything the client sent.
+const adminAuditSchema = new Schema(
+  {
+    actorId: { type: String, required: true, index: true },
+    actorEmail: { type: String, default: null },
+    method: { type: String, required: true },
+    path: { type: String, required: true },
+    status: { type: Number, default: 0 },
+    durationMs: { type: Number, default: 0 },
+    // Present only when a route is scoped to one account, so "which user was
+    // this admin looking at" is answerable without parsing the path.
+    targetUserId: { type: String, default: null, index: true },
+    ip: { type: String, default: null },
+  },
+  { timestamps: true, collection: 'admin_audit' }
+);
+
+adminAuditSchema.index({ createdAt: -1 });
+
+// Six months, and shorter than api_usage on purpose. An access log is a record
+// of what an administrator read about identifiable people; keeping it forever
+// makes it a bigger liability every day, and nobody investigates a page view
+// from two years ago. Same warning as above: this deletes.
+adminAuditSchema.index({ createdAt: 1 }, { expireAfterSeconds: 180 * 24 * 60 * 60 });
+
+// ---------------------------------------------------------------------------
+// admin_reviews
+// ---------------------------------------------------------------------------
+
+// The console's own triage state for a scan or a feedback message: who is
+// looking at it, and what they wrote down. Kept separate from app records on
+// purpose — internal notes must never reach mobile clients, and the only way
+// to guarantee that is for them not to live on a document the app reads.
+const adminReviewSchema = new Schema({
+  _id: { type: String, required: true },
+  kind: { type: String, enum: ['scans', 'feedback'], required: true },
+  targetId: { type: String, required: true },
+  status: { type: String, enum: ['new', 'in_progress', 'resolved'], required: true },
+  note: { type: String, default: '', maxlength: 2000 },
+  revision: { type: Number, required: true },
+  updatedBy: { type: String, required: true },
+}, { timestamps: true, collection: 'admin_reviews' });
+
 // `mongoose.models.X ?? model(...)` rather than a bare `model(...)`: tsx watch
 // re-executes this file on every save, and registering the same model twice
 // throws OverwriteModelError, which reads as a crash rather than a reload.
@@ -431,3 +541,8 @@ export const DeletionAuditLog =
   mongoose.models.DeletionAuditLog ?? mongoose.model('DeletionAuditLog', deletionAuditLogSchema);
 export const RecipeRating =
   mongoose.models.RecipeRating ?? mongoose.model('RecipeRating', recipeRatingSchema);
+export const ApiUsage = mongoose.models.ApiUsage ?? mongoose.model('ApiUsage', apiUsageSchema);
+export const AdminAudit =
+  mongoose.models.AdminAudit ?? mongoose.model('AdminAudit', adminAuditSchema);
+export const AdminReview =
+  mongoose.models.AdminReview ?? mongoose.model('AdminReview', adminReviewSchema);

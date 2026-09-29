@@ -27,6 +27,7 @@
 
 import OpenAI from 'openai';
 import { Request, Response, Router } from 'express';
+import { recordUsage, tokensFrom } from '../usage';
 
 // The cheapest tier, same as the other routes. Reading a faded expiry stamp or
 // judging ripeness from skin freckling is genuinely hard perception, so this
@@ -613,6 +614,7 @@ export async function measureFillLevels(
     })
     .join('\n');
 
+  const startedAt = Date.now();
   try {
     const response = await openai().chat.completions.create({
       model: MEASURE_MODEL,
@@ -635,6 +637,16 @@ export async function measureFillLevels(
           schema: MEASURE_SCHEMA as unknown as Record<string, unknown>,
         },
       },
+    });
+
+    // A second, high-detail look at the same photo — billed on its own, so it
+    // gets its own row rather than hiding inside the scan's.
+    recordUsage({
+      userId: uid,
+      route: 'scan-measure',
+      model: MEASURE_MODEL,
+      durationMs: Date.now() - startedAt,
+      ...tokensFrom(response.usage),
     });
 
     const raw = response.choices[0]?.message?.content;
@@ -749,6 +761,7 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
   const brief =
     'This is a photo of food — on a counter, in a fridge, in a cupboard, or just unpacked. List every distinct food item you can see, including ones that are small, partly hidden behind something else, or sitting at the back or edges of the shot — not just the items at the front. Read pack sizes and printed dates off the labels where they are legible, and judge the ripeness of any loose fruit or vegetables.';
 
+  const startedAt = Date.now();
   let response;
   try {
     response = await openai().chat.completions.create({
@@ -869,6 +882,17 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
           : 0,
       };
     });
+
+  // The per-scan cost, kept rather than only printed. "API cost per scan" is
+  // an admin feature in HANDOFF.md, and one row per call is the whole of what
+  // makes it answerable later.
+  recordUsage({
+    userId: uid,
+    route: 'scan',
+    model: MODEL,
+    durationMs: Date.now() - startedAt,
+    ...tokensFrom(response.usage),
+  });
 
   // A closer look at anything whose level can be seen, before the numbers go
   // out — see measureFillLevels.

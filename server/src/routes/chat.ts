@@ -33,6 +33,7 @@ import { randomUUID } from 'crypto';
 import OpenAI, { toFile } from 'openai';
 import { Router } from 'express';
 import { ChatConversation, ChatMessage, PantryItem, User } from '../models';
+import { recordUsage, tokensFrom } from '../usage';
 import { badRequest, isValidId, withDb } from './helpers';
 import { Recipe as PantryRecipe } from './recipes';
 import { classifyIntent, Intent } from './panziIntent';
@@ -562,7 +563,7 @@ chatRouter.post(
     // real path.
     let intent: Intent;
     try {
-      ({ intent } = await classifyIntent(text));
+      ({ intent } = await classifyIntent(text, uid));
     } catch (err: any) {
       console.error('Intent classification failed', { uid, message: err?.message });
       intent = 'recipe'; // Same fail-open reasoning as classifyIntent's own fallback.
@@ -752,6 +753,17 @@ chatRouter.post(
     if (trendingUnavailable) {
       replyText = replyText ? `${TRENDING_UNAVAILABLE_PREFIX}${replyText}` : TRENDING_UNAVAILABLE_PREFIX.trim();
     }
+
+    // The same four numbers the log line below carries, kept rather than
+    // printed: api_usage is what makes the console's Costs screen able to
+    // answer "what did chat spend this week".
+    recordUsage({
+      userId: uid,
+      route: 'chat',
+      model: MODEL,
+      durationMs: Date.now() - startedAt,
+      ...tokensFrom(response.usage),
+    });
 
     console.info('Chat reply complete', {
       uid,
