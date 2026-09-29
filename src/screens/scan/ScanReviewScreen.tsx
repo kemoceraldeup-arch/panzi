@@ -51,8 +51,16 @@ import {
   provenanceChip,
   splitByAttention,
 } from '../../services/scan';
-import { ItemQuantity, classifyMeasure, loadMeasurePref, saveMeasurePref } from '../../services/quantity';
-import { suggestFoods, lookupFood, FALLBACK_LOCATION } from '../../data/foodCatalogue';
+import {
+  ItemQuantity,
+  Measure,
+  classifyMeasure,
+  defaultAmount,
+  loadMeasurePref,
+  saveMeasurePref,
+} from '../../services/quantity';
+import { toBaseUnitAmount } from '../../services/recognition';
+import { suggestFoods, lookupFood } from '../../data/foodCatalogue';
 import { Capture, AttentionChip, DateChip, Eyebrow, MeasureControl, HIT_SLOP, ItemThumb } from './atoms';
 import DateField from './DateField';
 import PackageStatusField from './PackageStatusField';
@@ -75,6 +83,39 @@ const FIXED_LOCATIONS = new Set<string>(STORAGE_LOCATIONS.filter((l) => l !== 'O
 // routes/recipes.ts both truncate to 60) — see the Name field below for why
 // the client enforces the same number rather than leaving it to the server.
 const NAME_MAX_LENGTH = 60;
+
+/**
+ * The candidate's amount re-expressed in another measure, for when a
+ * remembered preference switches it.
+ *
+ * Carrying the number across as-is was a real bug: a scanned 375 g became 375
+ * packs the moment a past correction said this product is counted in packs.
+ * With a printed pack size the two convert exactly (375 g of a 500 g pack is
+ * ¾ pack); without one there is nothing to convert through, so the new
+ * measure starts from its own default rather than a number that meant
+ * something else.
+ */
+function amountInMeasure(c: ScanCandidate, to: Measure): number {
+  const from = c.quantity.measure;
+  if (from === to) return c.quantity.amount;
+
+  const packBase = c.size ? toBaseUnitAmount(c.size.value, c.size.unit) : 0;
+  const sizeIsVolume = !!c.size && /^(ml|l|ltr|litre|liter)$/i.test(c.size.unit.trim());
+  const sizeMeasure: Measure = sizeIsVolume ? 'volume' : 'weight';
+
+  if (packBase > 0) {
+    if (from === 'pack' && to === sizeMeasure) return Math.round(c.quantity.amount * packBase);
+    if (from === sizeMeasure && to === 'pack') {
+      // The pack stepper works in quarters, with ¼ as its floor.
+      return Math.max(0.25, Math.round((c.quantity.amount / packBase) * 4) / 4);
+    }
+  }
+  // Packs and pieces are both "how many" — a count of 2 is 2 either way,
+  // though pieces can't hold the quarter a pack can.
+  if (from === 'pack' && to === 'pieces') return Math.max(1, Math.round(c.quantity.amount));
+  if (from === 'pieces' && to === 'pack') return c.quantity.amount;
+  return defaultAmount(to);
+}
 
 type Props = {
   candidates: ScanCandidate[];
@@ -101,6 +142,9 @@ type Props = {
   onRemove: (id: string) => void;
   onOpenFreshness: (candidate: ScanCandidate) => void;
   onAddByHand: () => void;
+  /** When true, an open card whose name is still blank puts the cursor in
+   *  its Name field and raises the keyboard — "Add item" opens ready to type. */
+  autoFocusBlank?: boolean;
   /** Reads a photo attached to a hand-added row, replacing that row. */
   onScanAttached: (id: string, photo: Capture) => void;
   onSubmit: () => void;
@@ -123,6 +167,7 @@ export default function ScanReviewScreen({
   onRemove,
   onOpenFreshness,
   onAddByHand,
+  autoFocusBlank = false,
   onScanAttached,
   onSubmit,
 }: Props) {
@@ -289,6 +334,7 @@ export default function ScanReviewScreen({
                     candidate={candidate}
                     photo={photo}
                     scrollRef={scrollRef}
+                    autoFocusBlank={autoFocusBlank}
                     onPatch={(patch) => onPatch(candidate.id, patch)}
                     onScanAttached={(shot) => onScanAttached(candidate.id, shot)}
                     onCollapse={onCollapse}
@@ -330,6 +376,7 @@ export default function ScanReviewScreen({
                     candidate={candidate}
                     photo={photo}
                     scrollRef={scrollRef}
+                    autoFocusBlank={autoFocusBlank}
                     onPatch={(patch) => onPatch(candidate.id, patch)}
                     onScanAttached={(shot) => onScanAttached(candidate.id, shot)}
                     onCollapse={onCollapse}
@@ -464,13 +511,14 @@ function AttentionCard({
           box={candidate.box}
           ownPhotoUri={candidate.photoUri}
           hideIfEmpty
+          previewTitle={displayName(candidate)}
         />
         <View style={styles.cardBody}>
           <Text style={styles.cardName} numberOfLines={1}>
             {displayName(candidate)}
           </Text>
           <Text style={styles.cardMeta} numberOfLines={1}>
-            {candidate.location || FALLBACK_LOCATION} · {describeQuantity(candidate)}
+            {candidate.location ? `${candidate.location} · ` : ''}{describeQuantity(candidate)}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={17} color={colors.chevron} />
@@ -513,6 +561,7 @@ function CleanCard({
           box={candidate.box}
           ownPhotoUri={candidate.photoUri}
           hideIfEmpty
+          previewTitle={displayName(candidate)}
         />
         <View style={styles.cardBody}>
           <Text style={styles.cardName} numberOfLines={1}>
@@ -540,6 +589,7 @@ function EditCard({
   candidate,
   photo,
   scrollRef,
+  autoFocusBlank,
   onPatch,
   onScanAttached,
   onCollapse,
@@ -553,6 +603,7 @@ function EditCard({
    *  above the keyboard the moment its amount field gains focus — see
    *  quantitySectionRef and handleAmountFocus below. */
   scrollRef: React.RefObject<ScrollView | null>;
+  autoFocusBlank: boolean;
   onPatch: (patch: Partial<ScanCandidate>) => void;
   onScanAttached: (photo: Capture) => void;
   onCollapse: () => void;
@@ -578,6 +629,17 @@ function EditCard({
   // the field only needs the final ISO date, not the modal's own open state.
   const pickDateResolveRef = useRef<((iso: string | null) => void) | null>(null);
   const quantitySectionRef = useRef<View>(null);
+  const nameInputRef = useRef<TextInput>(null);
+
+  // A blank row exists to be typed into — put the cursor there as soon as
+  // the page can take the focus. Keyed on the card, so it fires once per
+  // freshly opened blank row and never steals focus back mid-edit.
+  useEffect(() => {
+    if (!autoFocusBlank || candidate.name.trim()) return;
+    const timer = setTimeout(() => nameInputRef.current?.focus(), 60);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocusBlank, candidate.id]);
 
   function pickOpenedDate(): Promise<string | null> {
     setPickDateOpen(true);
@@ -669,7 +731,14 @@ function EditCard({
     let cancelled = false;
     loadMeasurePref(uid, candidate.name).then((pref) => {
       if (!cancelled && pref && !measureTouched.current) {
-        onPatch({ quantity: { ...candidate.quantity, measure: pref.measure, splittable: pref.splittable } });
+        onPatch({
+          quantity: {
+            ...candidate.quantity,
+            measure: pref.measure,
+            splittable: pref.splittable,
+            amount: amountInMeasure(candidate, pref.measure),
+          },
+        });
       }
     });
     return () => {
@@ -701,6 +770,7 @@ function EditCard({
           box={candidate.box}
           ownPhotoUri={candidate.photoUri}
           hideIfEmpty
+          previewTitle={displayName(candidate)}
         />
         <View style={styles.cardBody}>
           <Text style={styles.editName} numberOfLines={1}>
@@ -729,6 +799,7 @@ function EditCard({
       <Eyebrow style={styles.fieldLabel}>Name</Eyebrow>
       <View style={[styles.field, nameFocused && styles.fieldFocused]}>
         <TextInput
+          ref={nameInputRef}
           style={styles.fieldInput}
           value={candidate.name}
           onChangeText={setName}
@@ -750,7 +821,8 @@ function EditCard({
           autoFocus={candidate.nameUnsure && candidate.name.trim().length > 0}
           onFocus={() => setNameFocused(true)}
           onBlur={() => setNameFocused(false)}
-          selectionColor={colors.primaryDark}
+          selectionColor={colors.accent}
+          cursorColor={colors.accent}
           returnKeyType="done"
         />
       </View>
@@ -937,7 +1009,8 @@ function EditCard({
             placeholderTextColor={colors.mutedLight}
             onFocus={() => setLocationFocused(true)}
             onBlur={() => setLocationFocused(false)}
-            selectionColor={colors.primaryDark}
+            selectionColor={colors.accent}
+            cursorColor={colors.accent}
             autoCapitalize="sentences"
             returnKeyType="done"
           />
@@ -957,7 +1030,7 @@ function EditCard({
         onPress={() => setCategoriesOpen((v) => !v)}
         activeOpacity={0.7}
       >
-        <Text style={styles.fieldValue} numberOfLines={1}>
+        <Text style={[styles.fieldValue, !candidate.category && styles.fieldValueEmpty]} numberOfLines={1}>
           {candidate.category || 'Pick one'}
         </Text>
         <Ionicons name="chevron-down" size={14} color={colors.chevron} />
@@ -1013,8 +1086,8 @@ function StoreInField({ location, onPress }: { location: string | null; onPress:
     <>
       <Eyebrow style={styles.fieldLabel}>Store in</Eyebrow>
       <TouchableOpacity style={styles.field} onPress={onPress} activeOpacity={0.7}>
-        <Text style={styles.fieldValue} numberOfLines={1}>
-          {location || FALLBACK_LOCATION}
+        <Text style={[styles.fieldValue, !location && styles.fieldValueEmpty]} numberOfLines={1}>
+          {location || 'Pick one'}
         </Text>
         <Ionicons name="chevron-down" size={14} color={colors.chevron} />
       </TouchableOpacity>
@@ -1322,9 +1395,13 @@ const useStyles = makeStyles((colors) => ({
   // while the input genuinely has focus. primaryMid rather than
   // primaryBright: the dark-appropriate accent variant (see palettes.ts),
   // since a bright saturated green at this size halates on the dark card.
+  // The field being typed into. Was a 1.5px mid-green border that was easy
+  // to miss, especially in dark mode — a full 2px in the strong ink colour
+  // plus a tint makes the active field unmistakable.
   fieldFocused: {
-    borderWidth: 1.5,
-    borderColor: colors.primaryMid,
+    borderWidth: 2,
+    borderColor: colors.primaryDark,
+    backgroundColor: colors.primaryLighter,
   },
   fieldInput: {
     fontFamily: 'Nunito_700Bold',
@@ -1337,6 +1414,12 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '700',
     fontSize: type.bodyLarge.fontSize,
     color: colors.primaryDarker,
+  },
+  // Nothing picked yet — muted like a placeholder, so "Pick one" can't be
+  // mistaken for a real answer.
+  fieldValueEmpty: {
+    color: colors.mutedLight,
+    fontWeight: '600',
   },
   suggestionRow: {
     flexDirection: 'row',

@@ -65,6 +65,7 @@ type Draft = {
   name: string;
   quantity: string;
   category: string;
+  /** '' while nothing is picked — the item is saved without a location. */
   location: string;
   expiryDate: string | null;
   dateSource: PantryItem['dateSource'];
@@ -79,8 +80,6 @@ type Draft = {
   estimatedUseBy: PantryItem['estimatedUseBy'];
   estimateInputs: PantryItem['estimateInputs'];
 };
-
-const FALLBACK_LOCATION = 'Cabinet';
 
 // Everything the chip row can select directly. A location outside this set —
 // empty, or something typed in for Other — is what tells the form to show the
@@ -97,7 +96,9 @@ function toDraft(item: PantryItem): Draft {
     name: item.name,
     quantity: item.quantity,
     category: item.category,
-    location: item.location ?? FALLBACK_LOCATION,
+    // Blank stays blank. This used to show 'Cabinet' for an item with no
+    // location, and then refuse to save any edit while the field was empty.
+    location: item.location ?? '',
     expiryDate: item.expiryDate,
     dateSource: item.dateSource,
     photoUri: item.photoUri,
@@ -167,6 +168,13 @@ function EditSheetBody({
   const styles = useStyles();
   const colors = useColors();
   const [draft, setDraft] = useState<Draft>(() => toDraft(item));
+  // Whether "Other" is picked and its free-text field showing. Its own state
+  // rather than read off the text: an empty location is also "not one of the
+  // fixed chips", and that used to show Other as picked, with an empty
+  // "Where do you keep it?" box, on every item that had no storage at all.
+  const [otherOpen, setOtherOpen] = useState(
+    () => !!item.location && !FIXED_LOCATIONS.has(item.location),
+  );
   const scrollRef = useRef<ScrollView>(null);
   const quantityFieldRef = useRef<View>(null);
   // Not persisted directly — expiryUnknown is DateField's own radio state,
@@ -277,7 +285,7 @@ function EditSheetBody({
     if (name !== item.name) out.name = name;
     if (quantity !== item.quantity) out.quantity = quantity;
     if (draft.category !== item.category) out.category = draft.category;
-    if (location !== (item.location ?? FALLBACK_LOCATION)) out.location = location;
+    if (location !== (item.location ?? '')) out.location = location || null;
     if (draft.expiryDate !== item.expiryDate) {
       out.expiryDate = draft.expiryDate;
       out.dateSource = draft.dateSource;
@@ -307,7 +315,6 @@ function EditSheetBody({
   }, [draft, item]);
 
   const nameEmpty = draft.name.trim().length === 0;
-  const locationEmpty = draft.location.trim().length === 0;
   const dirty = Object.keys(changes).length > 0;
 
   // Re-derived from the string on every edit rather than held as its own
@@ -369,9 +376,9 @@ function EditSheetBody({
                   // Nothing to write, or nothing to call it — either way Save
                   // would be a lie, so it greys out rather than silently
                   // doing nothing.
-                  disabled={!dirty || nameEmpty || locationEmpty}
+                  disabled={!dirty || nameEmpty}
                 >
-                  <Text style={[styles.save, (!dirty || nameEmpty || locationEmpty) && styles.saveOff]}>
+                  <Text style={[styles.save, (!dirty || nameEmpty) && styles.saveOff]}>
                     Save
                   </Text>
                 </TouchableOpacity>
@@ -465,21 +472,28 @@ function EditSheetBody({
                 // A saved custom location ("Pantry cart") is not itself one of
                 // the fixed chips, but it came from picking Other — so Other is
                 // what should read as selected, not nothing.
-                const selected =
-                  location === 'Other'
-                    ? !FIXED_LOCATIONS.has(draft.location)
-                    : draft.location === location;
+                const selected = location === 'Other' ? otherOpen : draft.location === location;
                 return (
                   <Chip
                     key={location}
                     label={location}
                     selected={selected}
-                    onPress={() => patch({ location: location === 'Other' ? '' : location })}
+                    onPress={() => {
+                      if (location === 'Other') {
+                        setOtherOpen(true);
+                        if (FIXED_LOCATIONS.has(draft.location)) patch({ location: '' });
+                        return;
+                      }
+                      setOtherOpen(false);
+                      // Tapping the chosen spot again clears it — storage is
+                      // optional, so there has to be a way back to none.
+                      patch({ location: draft.location === location ? '' : location });
+                    }}
                   />
                 );
               })}
             </View>
-            {!FIXED_LOCATIONS.has(draft.location) && (
+            {otherOpen && (
               <TextInput
                 style={[styles.input, styles.otherLocationInput]}
                 value={draft.location}

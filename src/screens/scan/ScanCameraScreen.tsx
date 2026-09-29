@@ -506,7 +506,8 @@ const useStyles = makeStyles((colors) => ({
     paddingVertical: space.sm,
     paddingHorizontal: space.md,
     borderRadius: 999,
-    backgroundColor: 'rgba(251,246,235,0.92)',
+    // Cream in light mode, black in dark — see cameraPill in palettes.ts.
+    backgroundColor: colors.cameraPill,
   },
   hintAvatar: {
     width: 20,
@@ -517,7 +518,7 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '700',
     fontSize: type.caption.fontSize,
     lineHeight: 14,
-    color: colors.primaryDarker,
+    color: colors.cameraPillText,
   },
   controls: {
     flexDirection: 'row',

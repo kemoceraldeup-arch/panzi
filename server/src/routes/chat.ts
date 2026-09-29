@@ -30,7 +30,7 @@
 // have/missing split are how the card stays honest about the gap either way.
 
 import { randomUUID } from 'crypto';
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import { Router } from 'express';
 import { ChatConversation, ChatMessage, PantryItem, User } from '../models';
 import { badRequest, isValidId, withDb } from './helpers';
@@ -63,6 +63,8 @@ const CONTEXT_TURNS = 20;
 // out to fill all the remaining space reads as cut off far more often than
 // one that stops early on its own.
 const TITLE_MAX_LENGTH = 24;
+// A name the user typed gets more room than an auto title — they chose it.
+const RENAME_MAX_LENGTH = 60;
 
 // What kind of dish this is, for the card's fallback gradient/glyph when
 // there's no photo. Kept in step with src/theme/dishLooks.ts on the client —
@@ -350,6 +352,8 @@ function toConversationRow(doc: any) {
   return {
     id: doc._id,
     title: doc.title as string,
+    pinned: doc.pinned === true,
+    archived: doc.archived === true,
     updatedAt: doc.updatedAt ? new Date(doc.updatedAt).getTime() : Date.now(),
   };
 }
@@ -400,7 +404,16 @@ export const chatRouter = Router();
 chatRouter.get(
   '/conversations',
   withDb(async (req, res) => {
-    const rows = await ChatConversation.find({ userId: req.uid })
+    // Archived chats are a list of their own (the drawer's "Archived chats"
+    // screen, ?archived=true) rather than a filter over one shared page, so a
+    // pile of archived ones can never push live chats past HISTORY_PAGE.
+    // `$ne: true` rather than `false` so chats saved before the field existed
+    // still count as live.
+    const archived = req.query.archived === 'true';
+    const rows = await ChatConversation.find({
+      userId: req.uid,
+      archived: archived ? true : { $ne: true },
+    })
       .sort({ updatedAt: -1 })
       .limit(HISTORY_PAGE)
       .lean();
@@ -438,6 +451,79 @@ chatRouter.post(
       ChatMessage.deleteMany({ conversationId: id, userId: req.uid }),
     ]);
     res.json({ ok: true });
+  })
+);
+
+// Voice input: the phone records, this turns it into text, and the text goes
+// into the chat's input box for the user to read over before sending — never
+// straight to Panzi, since a mis-heard ingredient is easier to fix as text
+// than as a wrong answer. Sent as base64 in JSON, the same way scan photos
+// travel, so there's no second upload path to maintain. A minute of mono AAC
+// is well under the 10mb body limit.
+const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
+const AUDIO_TYPES: Record<string, string> = {
+  m4a: 'audio/mp4',
+  mp4: 'audio/mp4',
+  '3gp': 'audio/3gpp',
+  webm: 'audio/webm',
+  wav: 'audio/wav',
+};
+
+chatRouter.post(
+  '/transcribe',
+  withDb(async (req, res) => {
+    const { audio, format } = req.body ?? {};
+    if (typeof audio !== 'string' || !audio) return badRequest(res, 'No audio was sent.');
+    const extension = typeof format === 'string' && AUDIO_TYPES[format] ? format : 'm4a';
+
+    const bytes = Buffer.from(audio, 'base64');
+    if (bytes.length === 0) return badRequest(res, 'The recording was empty.');
+    if (bytes.length > MAX_AUDIO_BYTES) return badRequest(res, 'That recording is too long.');
+
+    const result = await openai().audio.transcriptions.create({
+      file: await toFile(bytes, `speech.${extension}`, { type: AUDIO_TYPES[extension] }),
+      model: 'gpt-4o-mini-transcribe',
+      // Nudges spelling toward the words this app actually hears — dish and
+      // ingredient names, many of them Filipino — without forcing a language.
+      prompt: 'A question to a cooking assistant about recipes, ingredients and a pantry, e.g. adobo, sinigang, kangkong, calamansi.',
+    });
+
+    res.json({ text: (result.text ?? '').trim() });
+  })
+);
+
+// Pin, rename and archive from the drawer's long-press menu. Any subset of the
+// three in one call. `timestamps: false` so none of them bump updatedAt — the
+// list is ordered by last message, and pinning a chat is not talking in it.
+chatRouter.post(
+  '/conversations/:id/update',
+  withDb(async (req, res) => {
+    const { id } = req.params;
+    if (!isValidId(id)) return badRequest(res, 'No conversation id was sent.');
+
+    const { title, pinned, archived } = req.body ?? {};
+    const set: Record<string, unknown> = {};
+    if (typeof title === 'string') {
+      const trimmed = title.trim().slice(0, RENAME_MAX_LENGTH);
+      if (!trimmed) return badRequest(res, 'A chat needs a name.');
+      set.title = trimmed;
+      set.titleLocked = true;
+    }
+    if (typeof pinned === 'boolean') set.pinned = pinned;
+    if (typeof archived === 'boolean') {
+      set.archived = archived;
+      // An archived chat drops its pin; it is out of the list it was pinned in.
+      if (archived) set.pinned = false;
+    }
+    if (Object.keys(set).length === 0) return badRequest(res, 'Nothing to change.');
+
+    const doc = await ChatConversation.findOneAndUpdate(
+      { _id: id, userId: req.uid },
+      { $set: set },
+      { new: true, timestamps: false }
+    ).lean();
+    if (!doc) return badRequest(res, 'That conversation no longer exists.');
+    res.json({ conversation: toConversationRow(doc) });
   })
 );
 
@@ -503,7 +589,12 @@ chatRouter.post(
         }),
         ChatConversation.updateOne(
           { _id: id, userId: uid },
-          { $set: { updatedAt: new Date(), ...(isFirstMessage ? { title: titleFrom(text) } : {}) } }
+          {
+          $set: {
+            updatedAt: new Date(),
+            ...(isFirstMessage && !conversation.titleLocked ? { title: titleFrom(text) } : {}),
+          },
+        }
         ),
       ]);
       console.info('Chat reply out of scope', { uid, conversationId: id });
@@ -705,7 +796,12 @@ chatRouter.post(
       // started it — see the note on chat_conversations in models.ts.
       ChatConversation.updateOne(
         { _id: id, userId: uid },
-        { $set: { updatedAt: new Date(), ...(isFirstMessage ? { title: titleFrom(text) } : {}) } }
+        {
+          $set: {
+            updatedAt: new Date(),
+            ...(isFirstMessage && !conversation.titleLocked ? { title: titleFrom(text) } : {}),
+          },
+        }
       ),
     ]);
 

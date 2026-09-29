@@ -35,13 +35,22 @@ function getTransporter() {
  * decides whether sending it is even necessary (a fresh code vs. a resend);
  * this just puts an already-decided code on the wire.
  */
-export async function sendVerificationEmail(to: string, code: string): Promise<void> {
+export async function sendVerificationEmail(
+  to: string,
+  code: string,
+  purpose: 'signup' | 'login' = 'signup',
+): Promise<void> {
   const from = process.env.GMAIL_USER;
+  const kind = purpose === 'login' ? 'sign-in' : 'verification';
+  const ignore =
+    purpose === 'login'
+      ? "If you didn't just try to sign in to Panzi, someone may know your password — change it."
+      : "If you didn't try to create a Panzi account, you can ignore this email.";
   await getTransporter().sendMail({
     from: `Panzi <${from}>`,
     to,
-    subject: `${code} is your Panzi verification code`,
-    text: `Your Panzi verification code is ${code}. It expires in 10 minutes.\n\nIf you didn't try to create a Panzi account, you can ignore this email.`,
+    subject: `${code} is your Panzi ${kind} code`,
+    text: `Your Panzi ${kind} code is ${code}. It expires in 10 minutes.\n\n${ignore}`,
     html: verificationEmailHtml(code),
   });
 }

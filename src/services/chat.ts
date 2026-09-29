@@ -17,8 +17,20 @@ import { dishKeyFor } from '../theme/dishPhotos';
 export type Conversation = {
   id: string;
   title: string;
+  pinned: boolean;
+  archived: boolean;
   updatedAt: number;
 };
+
+function normaliseConversation(raw: any): Conversation {
+  return {
+    id: raw.id,
+    title: raw.title,
+    pinned: raw.pinned === true,
+    archived: raw.archived === true,
+    updatedAt: raw.updatedAt,
+  };
+}
 
 export type ChatMessage = {
   id: string;
@@ -79,22 +91,39 @@ async function guarded<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-export async function fetchConversations(): Promise<Conversation[]> {
+/** Live chats by default; `{ archived: true }` for the Archived chats screen. */
+export async function fetchConversations(
+  options: { archived?: boolean } = {}
+): Promise<Conversation[]> {
   return guarded(async () => {
-    const { conversations } = await apiFetch<{ conversations: Conversation[] }>(
-      '/api/chat/conversations'
+    const { conversations } = await apiFetch<{ conversations: any[] }>(
+      `/api/chat/conversations${options.archived ? '?archived=true' : ''}`
     );
-    return conversations;
+    return conversations.map(normaliseConversation);
   });
 }
 
 export async function createConversation(): Promise<Conversation> {
   return guarded(async () => {
-    const { conversation } = await apiFetch<{ conversation: Conversation }>(
+    const { conversation } = await apiFetch<{ conversation: any }>(
       '/api/chat/conversations',
       {}
     );
-    return conversation;
+    return normaliseConversation(conversation);
+  });
+}
+
+/** Pin, rename or archive — any subset, from the drawer's long-press menu. */
+export async function updateConversation(
+  id: string,
+  changes: { title?: string; pinned?: boolean; archived?: boolean }
+): Promise<Conversation> {
+  return guarded(async () => {
+    const { conversation } = await apiFetch<{ conversation: any }>(
+      `/api/chat/conversations/${id}/update`,
+      changes
+    );
+    return normaliseConversation(conversation);
   });
 }
 

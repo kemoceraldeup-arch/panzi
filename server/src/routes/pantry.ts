@@ -10,8 +10,9 @@
 // be forgotten halfway down a function, and a mismatched owner comes back as
 // "nothing matched" instead of a document somebody else's client can see.
 
+import { randomUUID } from 'crypto';
 import { Router } from 'express';
-import { PantryItem } from '../models';
+import { PantryItem, PantryRemoval, REMOVAL_REASONS } from '../models';
 import { badRequest, isValidId, withDb } from './helpers';
 
 export const pantryRouter = Router();
@@ -180,6 +181,112 @@ pantryRouter.post(
 
     await PantryItem.deleteMany({ _id: { $in: ids }, userId: req.uid });
     res.json({ ok: true });
+  })
+);
+
+/**
+ * Takes items off the shelves and writes down why, in one request.
+ *
+ * Separate from '/delete' on purpose. '/delete' is for taking back something
+ * that should never have been there — a scan's Undo, an item added by mistake
+ * — and logging those as "removed" would count food nobody ate or wasted.
+ * This is the route for food actually leaving the kitchen.
+ *
+ * The history rows are written before the items are deleted, so a failure in
+ * between leaves food on the shelf with a history row the user can see, rather
+ * than food gone with no record of where it went.
+ */
+pantryRouter.post(
+  '/remove',
+  withDb(async (req, res) => {
+    const { ids, reason } = (req.body ?? {}) as { ids?: string[]; reason?: string };
+    if (!Array.isArray(ids) || ids.length === 0) return badRequest(res, 'No ids were sent.');
+    if (!ids.every(isValidId)) return badRequest(res, 'An id was not usable.');
+    if (!REMOVAL_REASONS.includes(reason as (typeof REMOVAL_REASONS)[number])) {
+      return badRequest(res, 'That is not a removal reason.');
+    }
+
+    const items = await PantryItem.find({ _id: { $in: ids }, userId: req.uid }).lean();
+    if (items.length === 0) {
+      res.json({ ok: true, removed: 0 });
+      return;
+    }
+
+    const removedAt = new Date();
+    await PantryRemoval.insertMany(
+      items.map((item: any) => ({
+        _id: randomUUID(),
+        userId: req.uid,
+        itemId: item._id,
+        name: item.name,
+        quantity: item.quantity ?? '',
+        category: item.category ?? '',
+        location: item.location ?? null,
+        expiryDate: item.expiryDate ?? item.estimatedUseBy ?? null,
+        addedAt: item.createdAt ?? null,
+        reason,
+        removedAt,
+      }))
+    );
+    await PantryItem.deleteMany({ _id: { $in: items.map((i: any) => i._id) }, userId: req.uid });
+    res.json({ ok: true, removed: items.length });
+  })
+);
+
+// How many history rows the list sends back. The per-reason counts below are
+// taken over every row regardless, so the chart stays right for an account
+// whose history has outgrown the list.
+const HISTORY_LIMIT = 300;
+
+pantryRouter.get(
+  '/history',
+  withDb(async (req, res) => {
+    const [rows, grouped] = await Promise.all([
+      PantryRemoval.find({ userId: req.uid }).sort({ removedAt: -1 }).limit(HISTORY_LIMIT).lean(),
+      PantryRemoval.aggregate([
+        { $match: { userId: req.uid } },
+        { $group: { _id: '$reason', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const counts: Record<string, number> = Object.fromEntries(REMOVAL_REASONS.map((r) => [r, 0]));
+    for (const g of grouped) {
+      if (g._id in counts) counts[g._id] = g.count;
+    }
+
+    res.json({
+      records: rows.map((row: any) => ({
+        id: row._id,
+        itemId: row.itemId,
+        name: row.name,
+        quantity: row.quantity ?? '',
+        category: row.category ?? '',
+        location: row.location ?? null,
+        expiryDate: row.expiryDate ?? null,
+        addedAt: row.addedAt ? new Date(row.addedAt).getTime() : null,
+        reason: row.reason,
+        removedAt: new Date(row.removedAt).getTime(),
+      })),
+      counts,
+    });
+  })
+);
+
+// The other half of an undo that puts removed items back on the shelves.
+// Keyed by item id rather than history id because the caller is holding the
+// items it is restoring, not the rows '/remove' wrote for them.
+pantryRouter.post(
+  '/history/undo',
+  withDb(async (req, res) => {
+    const { itemIds } = (req.body ?? {}) as { itemIds?: string[] };
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      res.json({ ok: true, deleted: 0 });
+      return;
+    }
+    if (!itemIds.every(isValidId)) return badRequest(res, 'An id was not usable.');
+
+    const result = await PantryRemoval.deleteMany({ itemId: { $in: itemIds }, userId: req.uid });
+    res.json({ ok: true, deleted: result.deletedCount ?? 0 });
   })
 );
 

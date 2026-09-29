@@ -35,6 +35,13 @@ import AppTransition from './src/components/AppTransition';
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import { hasCompletedProfile } from './src/services/profile';
 import {
+  VerificationPurpose,
+  clearLoginVerified,
+  isLoginVerified,
+  markLoginVerified,
+  usesEmailPassword,
+} from './src/services/emailVerification';
+import {
   getOnboardingSeen,
   setOnboardingSeen,
   setProfileDoneCached,
@@ -115,6 +122,9 @@ function Root() {
   // it must not itself retrigger the effect as flow changes afterward.
   const flowRef = useRef(flow);
   flowRef.current = flow;
+  // Which code the verify screen is asking for: 'signup' for an account that
+  // has never proved its address, 'login' for an email sign-in on this phone.
+  const [verifyPurpose, setVerifyPurpose] = useState<VerificationPurpose>('signup');
 
   useEffect(() => {
     if (authKey === null || seenOnboarding === null) return;
@@ -130,6 +140,8 @@ function Root() {
     const isColdStart = flowRef.current === null;
 
     if (authKey === 'signed-out') {
+      // The next email sign-in has to confirm a fresh code.
+      void clearLoginVerified();
       // Returning users who have already sat through the intro go straight to
       // the sign-in screen; only a genuinely fresh install sees the carousel.
       setFlow(seenOnboarding ? 'account' : 'onboarding');
@@ -160,9 +172,19 @@ function Root() {
       }
       if (cancelled) return;
       if (!isAnonymous && auth.currentUser?.emailVerified === false) {
+        setVerifyPurpose('signup');
         setFlow('verifyEmail');
         return;
       }
+      // A verified email account still confirms a code sent to its inbox on
+      // every sign-in — unless this phone already did since it signed in.
+      if (usesEmailPassword() && !(await isLoginVerified(authKey as string))) {
+        if (cancelled) return;
+        setVerifyPurpose('login');
+        setFlow('verifyEmail');
+        return;
+      }
+      if (cancelled) return;
       proceedPastVerification();
     }
 
@@ -213,6 +235,9 @@ function Root() {
   // and rebuilt on every authKey change and so cannot be reached from here.
   function finishVerification() {
     if (!authKey || authKey === 'signed-out') return;
+    // Either code counts for this sign-in — a brand-new account that just
+    // proved its address isn't asked for a second one straight after.
+    void markLoginVerified(authKey);
     hasCompletedProfile(authKey).then((done) => {
       setFlow(done ? 'dashboard' : 'survey');
     });
@@ -295,6 +320,7 @@ function Root() {
       {flow === 'verifyEmail' && (
         <VerifyEmailScreen
           email={verifyEmailAddress}
+          purpose={verifyPurpose}
           onVerified={finishVerification}
           onBack={() => {
             // There is no unverified account to "go back" to filling out —

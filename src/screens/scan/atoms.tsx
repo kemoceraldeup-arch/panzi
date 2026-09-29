@@ -10,7 +10,19 @@
 // quietly turn a guess into a fact.
 
 import React, { useState } from 'react';
-import { Image, StyleSheet, TextInput, TouchableOpacity, View, ViewStyle } from 'react-native';
+import {
+  Image,
+  LayoutRectangle,
+  Modal,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  View,
+  ViewStyle,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Text from '../../components/Text';
 import { ChipTone, ProvenanceChip, ScanBox } from '../../services/scan';
@@ -158,6 +170,138 @@ export function ItemThumb({
   /** Renders nothing at all rather than a plain empty tile when there is no
    *  photo and no onPressAdd — for a row that will never have one (typed in
    *  by hand), not for a loading skeleton, which wants the space held. */
+  hideIfEmpty,
+  /** When given, tapping a tile that shows a picture opens it full screen,
+   *  captioned with this — the item's name. Ignored when onPressAdd is set,
+   *  since the tap already means "change the picture" there. */
+  previewTitle,
+}: {
+  size?: number;
+  tone?: 'good' | 'warn' | 'neutral';
+  photo?: Capture | null;
+  box?: ScanBox | null;
+  ownPhotoUri?: string | null;
+  onPressAdd?: () => void;
+  hideIfEmpty?: boolean;
+  previewTitle?: string;
+}) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const thumb = (
+    <ItemThumbTile
+      size={size}
+      tone={tone}
+      photo={photo}
+      box={box}
+      ownPhotoUri={ownPhotoUri}
+      onPressAdd={onPressAdd}
+      hideIfEmpty={hideIfEmpty}
+    />
+  );
+
+  // Only when the tile is actually showing a picture — matches the crop's own
+  // conditions below, so an empty tile never opens a preview.
+  const previewable = !!ownPhotoUri || !!(photo?.uri && photo.width && photo.height && box);
+  if (previewTitle === undefined || onPressAdd || !previewable) return thumb;
+
+  return (
+    <>
+      <TouchableOpacity
+        onPress={() => setPreviewOpen(true)}
+        activeOpacity={0.8}
+        hitSlop={HIT_SLOP}
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`View photo of ${previewTitle}`}
+      >
+        {thumb}
+      </TouchableOpacity>
+      <ItemPhotoPreview
+        visible={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title={previewTitle}
+        uri={ownPhotoUri || photo!.uri}
+        // An item's own picture is the item already — nothing to point at.
+        highlight={ownPhotoUri ? null : { photo: photo!, box: box! }}
+      />
+    </>
+  );
+}
+
+/**
+ * The scanned photo full screen, with the one item the user tapped outlined.
+ *
+ * The whole shot rather than just the crop: the crop is what the thumbnail
+ * already shows, and the question someone tapping it is asking is usually
+ * "which one did it mean?" — answered by seeing the item in place. The outline
+ * is positioned against the image's contain-fit rectangle, measured from the
+ * container rather than the window so it lands right under a translucent
+ * status bar and Android's navigation bar alike.
+ */
+function ItemPhotoPreview({
+  visible,
+  onClose,
+  title,
+  uri,
+  highlight,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title: string;
+  uri: string;
+  highlight: { photo: Capture; box: ScanBox } | null;
+}) {
+  const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  const [frame, setFrame] = useState<LayoutRectangle | null>(null);
+
+  let outline: ViewStyle | null = null;
+  const { photo, box } = highlight ?? {};
+  if (frame && photo && box && photo.width && photo.height && box.width > 0 && box.height > 0) {
+    const scale = Math.min(frame.width / photo.width, frame.height / photo.height);
+    const offsetX = (frame.width - photo.width * scale) / 2;
+    const offsetY = (frame.height - photo.height * scale) / 2;
+    outline = {
+      left: offsetX + box.x * photo.width * scale,
+      top: offsetY + box.y * photo.height * scale,
+      width: box.width * photo.width * scale,
+      height: box.height * photo.height * scale,
+    };
+  }
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose} statusBarTranslucent>
+      <StatusBar barStyle="light-content" />
+      <Pressable style={styles.previewBackdrop} onPress={onClose}>
+        <View style={StyleSheet.absoluteFill} onLayout={(e) => setFrame(e.nativeEvent.layout)}>
+          <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+          {outline && <View pointerEvents="none" style={[styles.previewOutline, outline]} />}
+        </View>
+        <View pointerEvents="none" style={[styles.previewCaption, { bottom: insets.bottom + space.xl }]}>
+          <Text style={styles.previewCaptionText} numberOfLines={2}>
+            {title}
+          </Text>
+        </View>
+        <TouchableOpacity
+          onPress={onClose}
+          hitSlop={HIT_SLOP}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Close preview"
+          style={[styles.previewClose, { top: insets.top + space.md }]}
+        >
+          <Ionicons name="close" size={22} color="#fff" />
+        </TouchableOpacity>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function ItemThumbTile({
+  size = 34,
+  tone = 'good',
+  photo,
+  box,
+  ownPhotoUri,
+  onPressAdd,
   hideIfEmpty,
 }: {
   size?: number;
@@ -539,7 +683,9 @@ export function MeasureControl({
         )}
         {typing ? (
           <TextInput
-            style={styles.stepValue}
+            // Tinted while it has the cursor, so the number being typed is
+            // clearly the live field rather than a label.
+            style={[styles.stepValue, styles.stepValueTyping]}
             value={draft}
             onChangeText={(text) => setDraft(clampToCeiling(text, typedCeiling))}
             onFocus={onFocusInput}
@@ -548,7 +694,8 @@ export function MeasureControl({
             maxLength={MAX_AMOUNT_DIGITS + 1}
             selectTextOnFocus
             autoFocus
-            selectionColor={colors.primaryDark}
+            selectionColor={colors.accent}
+            cursorColor={colors.accent}
             accessibilityLabel="How much do you have"
             // Explicit, not just relying on the iOS default: this row is
             // already tight with the unit pill and Done button beside it,
@@ -780,6 +927,45 @@ export function MacroPill({
 }
 
 const useStyles = makeStyles((colors) => ({
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+  },
+  // Sits on the always-dark backdrop whatever the theme, so fixed colours
+  // rather than palette tokens that would flip in dark mode.
+  previewOutline: {
+    position: 'absolute',
+    borderWidth: 3,
+    borderColor: '#FFD166',
+    borderRadius: 10,
+  },
+  previewCaption: {
+    position: 'absolute',
+    left: space.lg,
+    right: space.lg,
+    alignItems: 'center',
+  },
+  previewCaptionText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: type.bodyLarge.fontSize,
+    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  previewClose: {
+    position: 'absolute',
+    right: space.lg,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   eyebrow: {
     fontWeight: '800',
     fontSize: type.micro.fontSize,
@@ -1094,6 +1280,13 @@ const useStyles = makeStyles((colors) => ({
     color: colors.primaryDarker,
     textAlign: 'center',
     padding: space.none,
+  },
+  stepValueTyping: {
+    backgroundColor: colors.primaryLighter,
+    borderWidth: 2,
+    borderColor: colors.primaryDark,
+    borderRadius: 10,
+    paddingVertical: space.xs2,
   },
   // The quick-amount grid — a stack of exact 3-item rows (see chunk() and
   // quickRow below), not a wrapping flex row approximating one with

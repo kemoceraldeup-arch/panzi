@@ -392,11 +392,23 @@ export async function addPantryItem(
   refreshKey(KEY);
 }
 
+/**
+ * Puts deleted rows back exactly as they were — same id, same date provenance,
+ * same picture — for an Undo. Writing them as fresh items would lose the id
+ * anything else still points at, and every field addPantryItem doesn't take.
+ */
+export async function restorePantryItems(items: PantryItem[]) {
+  if (items.length === 0) return;
+  await apiFetch('/api/pantry/add', { items });
+  refreshKey(KEY);
+}
+
 export type NewPantryItem = {
   name: string;
   quantity: string;
   category: string;
-  location: string;
+  /** null when nobody picked where it's kept — never filled in for them. */
+  location: string | null;
   expiryDate: string | null;
   // Optional so the hand-typed path and the older callers don't have to invent
   // a provenance they don't have. Absent means "no claim about where the date

@@ -21,7 +21,10 @@ import { getDaysLeft, USE_SOON_DAYS } from '../utils/freshness';
 import { attentionCount, currentAttention } from '../services/notifications';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
 import PulsingMascot from '../components/PulsingMascot';
+import VoiceIcon from '../components/chat/VoiceIcon';
 import FloatingChatBubble from '../components/home/FloatingChatBubble';
+import RemovalChart from '../components/home/RemovalChart';
+import { RemovalReason, subscribeToRemovalHistory } from '../services/removals';
 import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
 import { useCollapseOnScroll } from '../navigation/scrollCollapse';
 import { fonts, type } from '../theme/typography';
@@ -174,8 +177,12 @@ const categoryCache = new Map<string, CategoryCount[]>();
 // the one they still remember taking.
 const UNFINISHED_CACHE = new Map<string, ScanRecord | null>();
 
+const removalCache = new Map<string, Record<RemovalReason, number>>();
+
 type Props = {
   onOpenChat: () => void;
+  /** The ask bar's microphone: open the chat already listening. */
+  onOpenChatVoice: () => void;
   /** Reopens a past scan that still has rows missing a date. */
   onFinishScan: (scan: ScanRecord) => void;
   /** Opens the pantry already filtered to one category, or all of it. */
@@ -207,6 +214,7 @@ type Props = {
 
 export default function HomeScreen({
   onOpenChat,
+  onOpenChatVoice,
   onFinishScan,
   onViewCategory,
   onOpenNotifications,
@@ -253,6 +261,11 @@ export default function HomeScreen({
   const [categories, setCategories] = useState<CategoryCount[]>(
     () => (uid ? categoryCache.get(uid) ?? [] : [])
   );
+  // null until the history has been read once, so the chart doesn't flash its
+  // "nothing removed yet" state at someone who has removed plenty.
+  const [removals, setRemovals] = useState<Record<RemovalReason, number> | null>(
+    () => (uid ? removalCache.get(uid) ?? null : null)
+  );
 
   // Live rather than fetched once: renaming yourself on the Profile tab has to
   // change the greeting here, and this screen stays mounted the whole time the
@@ -297,6 +310,22 @@ export default function HomeScreen({
       () => {
         // Same reasoning as the profile listener: keep the last known count
         // rather than replacing the header with an error.
+      }
+    );
+  }, [uid]);
+
+  // What has left the shelves, and why. Removing an item anywhere refreshes
+  // this key (see services/removals), which is what moves the chart without a
+  // reload.
+  useEffect(() => {
+    if (!uid) return;
+    return subscribeToRemovalHistory(
+      (history) => {
+        removalCache.set(uid, history.counts);
+        setRemovals(history.counts);
+      },
+      () => {
+        // Keep the last chart rather than replacing it with an error.
       }
     );
   }, [uid]);
@@ -442,6 +471,15 @@ export default function HomeScreen({
           <TouchableOpacity style={styles.askInput} onPress={onOpenChat} activeOpacity={0.8}>
             <Text style={styles.askPlaceholder}>Ask Panzi what to cook...</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.askMic}
+            onPress={onOpenChatVoice}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="Ask Panzi by voice"
+          >
+            <VoiceIcon size={20} color={colors.textDark} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.askSend} onPress={onOpenChat}>
             <Text style={styles.askSendArrow}>›</Text>
           </TouchableOpacity>
@@ -578,6 +616,10 @@ export default function HomeScreen({
             </View>
           </View>
         )}
+
+        {/* Looking back rather than at what's on the shelf now, so it sits
+            last — below everything the user might act on today. */}
+        {removals && <RemovalChart counts={removals} />}
           </>
         )}
       </ScrollView>
@@ -992,6 +1034,16 @@ const useStyles = makeStyles((colors) => ({
   askPlaceholder: {
     fontSize: type.bodySmall.fontSize,
     color: colors.textSecondary,
+  },
+  // A well like the field beside it, so the green arrow stays the one
+  // filled button in the bar.
+  askMic: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   askSend: {
     width: 34,

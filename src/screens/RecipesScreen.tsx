@@ -1179,7 +1179,9 @@ const useStyles = makeStyles((colors) => ({
     width: 44,
     height: 44,
     borderRadius: 999,
-    backgroundColor: colors.primaryDark,
+    // inkFill, not primaryDark: primaryDark is an ink colour that turns light
+    // green in dark mode, and white on it was unreadable there.
+    backgroundColor: colors.inkFill,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: colors.shadow,

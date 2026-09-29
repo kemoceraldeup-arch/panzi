@@ -31,8 +31,16 @@
 # Usage: right-click this file -> Run with PowerShell, or from a terminal:
 #   powershell -ExecutionPolicy Bypass -File present.ps1
 #
+# The app is served in production mode (--no-dev --minify) by default: in
+# Expo Go, development mode runs every tap and re-render through extra
+# checks and is several times slower, which reads as the app lagging. Pass
+# -Dev for development mode (red error screens, warnings) while debugging:
+#   powershell -ExecutionPolicy Bypass -File present.ps1 -Dev
+#
 # Leave the window open for the whole presentation - closing it stops the
 # dev servers and both tunnels.
+
+param([switch]$Dev)
 
 $ErrorActionPreference = "Stop"
 
@@ -65,7 +73,7 @@ function Start-CloudflareTunnel($port, $label) {
     if (Test-Path $log) { Remove-Item $log }
     if (Test-Path $errLog) { Remove-Item $errLog }
     $proc = Start-Process -FilePath $cloudflared `
-        -ArgumentList "tunnel --url http://localhost:$port" `
+        -ArgumentList "tunnel --url http://127.0.0.1:$port" `
         -PassThru -WindowStyle Minimized -RedirectStandardOutput $log -RedirectStandardError $errLog
 
     $url = $null
@@ -104,7 +112,7 @@ $apiReady = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 1
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$apiPort/health" -UseBasicParsing -TimeoutSec 2
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$apiPort/health" -UseBasicParsing -TimeoutSec 2
         if ($resp.StatusCode -eq 200) { $apiReady = $true; break }
     } catch {}
 }
@@ -135,7 +143,9 @@ $expoErrLog = Join-Path $env:TEMP "expo-present.err.log"
 # bundle Metro serves points the app at the backend's public tunnel instead.
 $env:EXPO_PACKAGER_PROXY_URL = $metroTunnel.Url
 $env:EXPO_PUBLIC_API_URL = $apiTunnel.Url
-$expoProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx expo start --port $metroPort" `
+$expoMode = if ($Dev) { "" } else { " --no-dev --minify" }
+Write-Host ("Serving the app in " + $(if ($Dev) { "development" } else { "production (fast)" }) + " mode.") -ForegroundColor Cyan
+$expoProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx expo start --port $metroPort$expoMode" `
     -WorkingDirectory $projectDir `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $expoLog -RedirectStandardError $expoErrLog
 $allProcs += $expoProc
@@ -145,7 +155,7 @@ $ready = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 1
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$metroPort/status" -UseBasicParsing -TimeoutSec 2
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$metroPort/status" -UseBasicParsing -TimeoutSec 2
         if ($resp.StatusCode -eq 200) { $ready = $true; break }
     } catch {}
 }

@@ -201,7 +201,13 @@ export default function ScanModal({
   // aborted mid-flight, so its answer is dropped on arrival instead.
   const readId = useRef(0);
 
-  const [editingId, setEditingId] = useState<string | null>(null);
+  // Manual mode opens with its blank row's card already expanded, so "Add
+  // item" lands on the typing form itself rather than on a one-row list the
+  // user then has to tap into. The keyboard still waits for the slide-in to
+  // finish — see autoFocusBlank below.
+  const [editingId, setEditingId] = useState<string | null>(() =>
+    startMode === 'manual' ? candidates[0]?.id ?? null : null
+  );
   const [freshnessId, setFreshnessId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorCause, setErrorCause] = useState<ScanErrorCause>('unrecognised');
@@ -879,6 +885,9 @@ export default function ScanModal({
                 setPhase('freshness');
               }}
               onAddByHand={addByHand}
+              // Focusing only once the modal has finished opening — a focus
+              // during the slide-in is swallowed by the transition.
+              autoFocusBlank={modalShown}
               onScanAttached={scanAttachedPhoto}
               onSubmit={submit}
             />

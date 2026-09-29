@@ -176,6 +176,52 @@ const pantryItemSchema = new Schema(
 pantryItemSchema.index({ userId: 1, expiryDate: 1 });
 
 // ---------------------------------------------------------------------------
+// pantry_removals
+// ---------------------------------------------------------------------------
+
+/** Why an item left the shelves. The order is the order the app offers them. */
+export const REMOVAL_REASONS = [
+  'consumed',
+  'spoiled',
+  'expired',
+  'leftover',
+  'over-purchased',
+  'other',
+] as const;
+
+// One row per item taken off the shelves, written in the same request that
+// deletes it. A snapshot rather than a reference: the pantry item is gone by
+// the time anyone reads this, so everything the history screen and the waste
+// chart need is copied across at the moment of removal.
+//
+// `itemId` is kept so an undo (cook mode puts used-up items back) can find the
+// rows it has to take away again — a restored item was never really removed,
+// and leaving its row behind would count food as eaten that is still on the
+// shelf. `expiryDate` and `addedAt` are kept for the research side: how long
+// an item sat, and whether it was past its date when it went, are the two
+// questions the removal reason alone cannot answer.
+const pantryRemovalSchema = new Schema(
+  {
+    _id: { type: String, required: true },
+    userId: { type: String, required: true, index: true },
+    itemId: { type: String, required: true },
+    name: { type: String, required: true },
+    quantity: { type: String, default: '' },
+    category: { type: String, default: '' },
+    location: { type: String, default: null },
+    expiryDate: { type: String, default: null }, // 'YYYY-MM-DD', real or estimated
+    addedAt: { type: Date, default: null },
+    reason: { type: String, enum: REMOVAL_REASONS, required: true },
+    removedAt: { type: Date, required: true },
+  },
+  { timestamps: true, collection: 'pantry_removals' }
+);
+
+// History is listed newest-first; undo looks rows up by the item they came from.
+pantryRemovalSchema.index({ userId: 1, removedAt: -1 });
+pantryRemovalSchema.index({ userId: 1, itemId: 1 });
+
+// ---------------------------------------------------------------------------
 // saved_recipes
 // ---------------------------------------------------------------------------
 
@@ -321,6 +367,13 @@ const chatConversationSchema = new Schema(
     _id: { type: String, required: true },
     userId: { type: String, required: true, index: true },
     title: { type: String, required: true },
+    // Set once the user renames it themselves, so the first message no longer
+    // gets to title it — a name someone typed on purpose outranks the default.
+    titleLocked: { type: Boolean, default: false },
+    pinned: { type: Boolean, default: false },
+    // Kept, just out of the main list — the drawer shows these in their own
+    // collapsed section, where they can be brought back.
+    archived: { type: Boolean, default: false },
   },
   { timestamps: true, collection: 'chat_conversations' }
 );
@@ -362,6 +415,8 @@ chatMessageSchema.index({ conversationId: 1, createdAt: -1 });
 export const User = mongoose.models.User ?? mongoose.model('User', userSchema);
 export const PantryItem =
   mongoose.models.PantryItem ?? mongoose.model('PantryItem', pantryItemSchema);
+export const PantryRemoval =
+  mongoose.models.PantryRemoval ?? mongoose.model('PantryRemoval', pantryRemovalSchema);
 export const SavedRecipe =
   mongoose.models.SavedRecipe ?? mongoose.model('SavedRecipe', savedRecipeSchema);
 export const Scan = mongoose.models.Scan ?? mongoose.model('Scan', scanSchema);

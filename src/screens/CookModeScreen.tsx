@@ -14,14 +14,14 @@
 // (Recipe.minutes, Recipe.servings) and are shown as given, including the
 // app's own "0 means the model didn't give a believable figure" convention.
 //
-// This replaces an earlier version of this screen that opened on an
-// ingredients-first page and, on finishing, offered to clear the recipe's
-// matched items from the pantry. Neither has an equivalent in the new design
-// (which starts directly on step one and ends on stats + Rate this cook /
-// Back to recipe) and both are dropped rather than grafted on.
+// Opening cook mode is also what takes the recipe's ingredients out of the
+// pantry — every "Start cooking" (recipe page, recipe cards, chat, saved
+// recipes) lands here, so this is the one place that covers them all. The
+// change is shown the moment the screen is up, with an Undo, since a recipe
+// started by mistake shouldn't cost the user their eggs.
 
-import React, { useEffect, useState } from 'react';
-import { Modal, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, Modal, View } from 'react-native';
 import {
   SafeAreaProvider,
   initialWindowMetrics,
@@ -32,6 +32,13 @@ import { CookCompleteStat } from './cook/CookCompleteSheet';
 import { cookTokens } from './cook/cookTokens';
 import { auth } from '../config/firebaseClient';
 import { PantryItem } from '../services/pantry';
+import {
+  DeductionPlan,
+  applyDeduction,
+  describeDeduction,
+  planDeduction,
+  undoDeduction,
+} from '../services/cookDeduction';
 import { Recipe, fetchDishPhoto } from '../services/recipes';
 import { rateRecipe } from '../services/recipeRatings';
 import { dishPhoto } from '../theme/dishPhotos';
@@ -39,9 +46,8 @@ import { useTheme } from '../theme/ThemeProvider';
 
 type Props = {
   recipe: Recipe | null;
-  /** Accepted for call-site compatibility with the screens that open cook
-   *  mode (RecipesScreen, MainTabs) — unused now that finishing a cook no
-   *  longer offers to clear matched pantry items. */
+  /** The pantry as it stands, which the recipe's ingredients are taken out
+   *  of when cooking starts. */
   items: PantryItem[];
   onClose: () => void;
 };
@@ -83,7 +89,7 @@ function statsFor(recipe: Recipe): [CookCompleteStat, CookCompleteStat, CookComp
   ];
 }
 
-export default function CookModeScreen({ recipe, onClose }: Props) {
+export default function CookModeScreen({ recipe, items, onClose }: Props) {
   // CookStepScreen indexes steps[0] unconditionally — a real assumption for a
   // screen built to a fixed 5-step example, but not a safe one for a Recipe
   // the model could in principle return with no steps at all. Closing
@@ -93,12 +99,86 @@ export default function CookModeScreen({ recipe, onClose }: Props) {
   const hasSteps = !!recipe && recipe.steps.length > 0;
   const { scheme } = useTheme();
 
+  // Once per cook: keyed on the recipe object, so the pantry refreshing
+  // underneath (which it does, straight after this writes) can't take the
+  // same ingredients twice.
+  const deductedFor = useRef<Recipe | null>(null);
+  // The summary waits for both the write and the modal's slide-up — an Alert
+  // raised while the modal is still presenting can be dropped on iOS.
+  const pending = useRef<{ plan: DeductionPlan | null; error: boolean } | null>(null);
+  const shown = useRef(false);
+
+  useEffect(() => {
+    if (!hasSteps || !recipe) {
+      deductedFor.current = null;
+      pending.current = null;
+      shown.current = false;
+      return;
+    }
+    if (deductedFor.current === recipe) return;
+    deductedFor.current = recipe;
+
+    const plan = planDeduction(recipe, items);
+    if (plan.changes.length === 0 && plan.skipped.length === 0) return;
+    if (plan.changes.length === 0) {
+      pending.current = { plan, error: false };
+      if (shown.current) showSummary();
+      return;
+    }
+    applyDeduction(plan)
+      .then(() => {
+        pending.current = { plan, error: false };
+      })
+      .catch(() => {
+        pending.current = { plan: null, error: true };
+      })
+      .finally(() => {
+        if (shown.current) showSummary();
+      });
+    // items is read at the moment cooking starts, on purpose — see deductedFor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasSteps, recipe]);
+
+  function showSummary() {
+    const next = pending.current;
+    if (!next) return;
+    pending.current = null;
+    if (next.error || !next.plan) {
+      Alert.alert(
+        "Couldn't update your pantry",
+        'The ingredients for this recipe were not taken out. Check your connection and adjust the amounts in your pantry by hand.',
+      );
+      return;
+    }
+    const plan = next.plan;
+    if (plan.changes.length === 0) {
+      Alert.alert('Nothing taken from your pantry', describeDeduction(plan));
+      return;
+    }
+    Alert.alert('Taken from your pantry', describeDeduction(plan), [
+      {
+        text: 'Undo',
+        style: 'destructive',
+        onPress: () => {
+          undoDeduction(plan).catch(() =>
+            Alert.alert("Couldn't undo", 'Your pantry could not be put back. Check your connection and try again.'),
+          );
+        },
+      },
+      { text: 'OK', style: 'default' },
+    ]);
+  }
+
   return (
     <Modal
       visible={hasSteps}
       animationType="slide"
       presentationStyle="fullScreen"
       onRequestClose={onClose}
+      onShow={() => {
+        shown.current = true;
+        showSummary();
+      }}
     >
       {/* iOS/Android both paint the Modal's native surface white for the
           first frame of the slide-up transition, before any React content

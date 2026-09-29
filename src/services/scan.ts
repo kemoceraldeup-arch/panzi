@@ -20,7 +20,6 @@ import { RipenessStage, DEFAULT_SHELF_LIFE_DAYS, ripenessChipText } from '../uti
 import { dateInDays, getDaysLeft, formatCalendarDate } from '../utils/freshness';
 import { formatEstimateDate } from '../utils/dateLabel';
 import { ItemQuantity, defaultQuantity, formatAmount, formatQuantityString } from './quantity';
-import { classifyFood, defaultLocationFor } from './foodClass';
 
 export type { DateSource };
 
@@ -132,6 +131,11 @@ export type ScanCandidate = {
   /** Loose produce that couldn't be judged, and why. */
   ripenessBlocked: string | null;
   ripenessSource: 'estimated' | 'user' | null;
+  /** What the scanner saw that made it read a pack as part used — "Jar about
+   *  half full". Set only when the amount was lowered from a full pack, so
+   *  the card asks the user to check a guess rather than presenting it as a
+   *  reading. Optional: typed rows and older saved scans never carry one. */
+  fillNote?: string | null;
 
   /** Once the user has confirmed or corrected a row it stops being questioned. */
   editedByUser: boolean;
@@ -192,7 +196,7 @@ export type ScanCandidate = {
  */
 export function needsALook(c: ScanCandidate): boolean {
   if (c.editedByUser) return false;
-  return c.nameUnsure || !c.expiryDate || !!c.ripenessBlocked;
+  return c.nameUnsure || !c.expiryDate || !!c.ripenessBlocked || !!c.fillNote;
 }
 
 export function splitByAttention(candidates: ScanCandidate[]): {
@@ -287,6 +291,7 @@ export function attentionChips(c: ScanCandidate): string[] {
   const chips: string[] = [];
   if (c.nameUnsure) chips.push('Name unclear · tap to fix');
   if (c.ripenessBlocked) chips.push(c.ripenessBlocked);
+  if (c.fillNote) chips.push(`${c.fillNote} · check amount`);
   return chips;
 }
 
@@ -349,18 +354,20 @@ export function markConfirmed(c: ScanCandidate): ScanCandidate {
  * and the page told them was fine.
  */
 export function blankCandidate(): ScanCandidate {
-  const category = 'Snacks';
   return {
     id: `manual-${Date.now()}`,
     name: '',
     quantity: defaultQuantity(),
     unit: '',
     size: null,
-    category,
-    // STORE IN is pre-filled with the sensible default for the category
-    // rather than left null, so it's already sensible the moment the user
-    // does opt into an estimate — not because one is shown by default here.
-    location: defaultLocationFor(classifyFood(category)),
+    // Both left for the user to pick. This used to start every typed item as
+    // Snacks, stored in the Cabinet — a guess that looked like an answer, so
+    // cheese and chicken went into the pantry filed under Snacks whenever
+    // nobody noticed. Typing a known food still fills its real category in
+    // (see setName in ScanReviewScreen); the estimate treats a blank storage
+    // spot as the cabinet without writing that onto the item.
+    category: '',
+    location: null,
     expiryDate: null,
     dateSource: null,
     // Untouched — a hand-typed row gets no date read for it at all, so there
@@ -423,12 +430,14 @@ export function candidateToItem(
    * item out of the shelf photo long after the scan is closed.
    */
   scanPhoto?: ItemPhoto | null
-): Omit<PantryItem, 'id' | 'addedAt'> & { location: string } {
+): Omit<PantryItem, 'id' | 'addedAt'> {
   return {
     name: c.name,
     quantity: formatQuantity(c),
     category: c.category,
-    location: c.location || 'Other',
+    // Left empty when nothing was picked. This used to write 'Other', which
+    // filed every item without a storage spot under a place nobody chose.
+    location: c.location?.trim() || null,
     expiryDate: c.expiryDate,
     // The picture follows the item onto the shelf. A row that showed the packet
     // during review and a blank tile forever after would read as the app having

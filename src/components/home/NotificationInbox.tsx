@@ -23,6 +23,7 @@ import {
   Animated,
   Dimensions,
   Easing,
+  LayoutAnimation,
   Modal,
   ScrollView,
   StyleSheet,
@@ -115,20 +116,58 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
   const screen = Dimensions.get('window');
 
   // Grows out of the bell: a short drop and a fade, fast enough to feel
-  // attached to the tap rather than animated at the user.
+  // attached to the tap rather than animated at the user. Closing runs the
+  // same thing backwards — fading and lifting back into the bell — and the
+  // Modal stays mounted until that has finished, since hiding it straight
+  // away would cut the panel off mid-fade.
   const reveal = useRef(new Animated.Value(0)).current;
+  const [mounted, setMounted] = useState(visible);
+  // True from the tap that closes the panel until it has faded. The panel
+  // stops taking touches straight away, so a second tap mid-fade lands on
+  // nothing rather than a row that is on its way out.
+  const [closing, setClosing] = useState(false);
+
+  // The fade starts on the tap itself, not after the parent has re-rendered
+  // with visible=false — that round trip through the whole tab tree is what
+  // made the X feel like it hesitated. Ease-out, so the panel is visibly
+  // moving from the first frame; an ease-in spends its first half barely
+  // changing, which reads as the same delay again.
+  const fadeOut = useCallback(() => {
+    setClosing(true);
+    Animated.timing(reveal, {
+      toValue: 0,
+      duration: 150,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setMounted(false);
+        setClosing(false);
+      }
+    });
+  }, [reveal]);
+
+  const close = useCallback(() => {
+    if (closing) return;
+    fadeOut();
+    onClose();
+  }, [closing, fadeOut, onClose]);
 
   useEffect(() => {
-    if (!visible) {
-      reveal.setValue(0);
+    if (visible) {
+      setMounted(true);
+      setClosing(false);
+      Animated.timing(reveal, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
       return;
     }
-    Animated.timing(reveal, {
-      toValue: 1,
-      duration: 160,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
+    // Closed from outside (not through close() above) — still fade.
+    if (mounted && !closing) fadeOut();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, reveal]);
 
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -152,13 +191,16 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
   }, [visible, items, refresh]);
 
   async function dismiss(at: number) {
-    // Dropped from the list immediately; the write follows. A delete that waits
-    // on storage feels like a tap that missed.
+    // Dropped from the list as soon as its row has faded (LogRow runs that);
+    // the write follows. A delete that waits on storage feels like a tap that
+    // missed. The rows below slide up into the gap rather than jumping.
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setLog((current) => current.filter((entry) => entry.at !== at));
     await dismissLogEntry(uid, at);
   }
 
   async function clearAll() {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setLog([]);
     await clearNotificationLog(uid);
   }
@@ -197,12 +239,18 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
     : space.xl;
 
   return (
-    <Modal visible={visible} animationType="none" transparent onRequestClose={onClose}>
+    <Modal visible={mounted} animationType="none" transparent onRequestClose={close}>
       {/* Tapping anywhere off the panel closes it, which is what makes this a
-          menu rather than a screen. */}
-      <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose} />
+          menu rather than a screen. Fades with the panel. */}
+      <Animated.View
+        style={[StyleSheet.absoluteFill, { opacity: reveal }]}
+        pointerEvents={closing ? 'none' : 'auto'}
+      >
+        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={close} />
+      </Animated.View>
 
       <Animated.View
+        pointerEvents={closing ? 'none' : 'auto'}
         style={[
           styles.panel,
           {
@@ -213,6 +261,7 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
             opacity: reveal,
             transform: [
               { translateY: reveal.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) },
+              { scale: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
             ],
           },
         ]}
@@ -226,7 +275,7 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
               {next ? `Next ${nextLabel(next.at)}` : 'No reminder scheduled'}
             </Text>
           </View>
-          <TouchableOpacity onPress={onClose} hitSlop={HIT_SLOP}>
+          <TouchableOpacity onPress={close} hitSlop={HIT_SLOP}>
             <Ionicons name="close" size={18} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -298,33 +347,79 @@ export default function NotificationInbox({ visible, anchor, uid, items, onClose
         ) : (
           <View style={styles.card}>
             {log.map((entry, i) => (
-              <View key={entry.at} style={[styles.logRow, i > 0 && styles.divided]}>
-                <View style={styles.logBody}>
-                  <Text style={styles.logTitle} numberOfLines={2}>
-                    {entry.title}
-                  </Text>
-                  {!!entry.body && (
-                    <Text style={styles.logDetail} numberOfLines={2}>
-                      {entry.body}
-                    </Text>
-                  )}
-                  <Text style={styles.logWhen}>{whenLabel(entry.at)}</Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => dismiss(entry.at)}
-                  hitSlop={HIT_SLOP}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Remove ${entry.title}`}
-                >
-                  <Ionicons name="close" size={16} color={colors.chevron} />
-                </TouchableOpacity>
-              </View>
+              <LogRow
+                key={entry.at}
+                entry={entry}
+                divided={i > 0}
+                onDismiss={() => dismiss(entry.at)}
+              />
             ))}
           </View>
         )}
         </ScrollView>
       </Animated.View>
     </Modal>
+  );
+}
+
+/** One sent reminder. Its X fades and slides the row out before it leaves
+ *  the list, rather than the row vanishing under the finger. */
+function LogRow({
+  entry,
+  divided,
+  onDismiss,
+}: {
+  entry: LogEntry;
+  divided: boolean;
+  onDismiss: () => void;
+}) {
+  const styles = useStyles();
+  const colors = useColors();
+  const fade = useRef(new Animated.Value(1)).current;
+  const leaving = useRef(false);
+
+  function remove() {
+    if (leaving.current) return;
+    leaving.current = true;
+    Animated.timing(fade, {
+      toValue: 0,
+      duration: 150,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(onDismiss);
+  }
+
+  return (
+    <Animated.View
+      style={[
+        styles.logRow,
+        divided && styles.divided,
+        {
+          opacity: fade,
+          transform: [{ translateX: fade.interpolate({ inputRange: [0, 1], outputRange: [24, 0] }) }],
+        },
+      ]}
+    >
+      <View style={styles.logBody}>
+        <Text style={styles.logTitle} numberOfLines={2}>
+          {entry.title}
+        </Text>
+        {!!entry.body && (
+          <Text style={styles.logDetail} numberOfLines={2}>
+            {entry.body}
+          </Text>
+        )}
+        <Text style={styles.logWhen}>{whenLabel(entry.at)}</Text>
+      </View>
+      <TouchableOpacity
+        onPress={remove}
+        hitSlop={HIT_SLOP}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${entry.title}`}
+      >
+        <Ionicons name="close" size={16} color={colors.chevron} />
+      </TouchableOpacity>
+    </Animated.View>
   );
 }
 

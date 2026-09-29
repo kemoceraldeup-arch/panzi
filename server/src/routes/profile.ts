@@ -18,6 +18,7 @@ import {
   EmailVerification,
   Feedback,
   PantryItem,
+  PantryRemoval,
   SavedRecipe,
   Scan,
   User,
@@ -246,9 +247,10 @@ profileRouter.get(
   '/export',
   withDb(async (req, res) => {
     const uid = req.uid!;
-    const [user, pantryItems, savedRecipes, scans, conversations, messages] = await Promise.all([
+    const [user, pantryItems, pantryHistory, savedRecipes, scans, conversations, messages] = await Promise.all([
       User.findById(uid).lean(),
       PantryItem.find({ userId: uid }).lean(),
+      PantryRemoval.find({ userId: uid }).sort({ removedAt: -1 }).lean(),
       SavedRecipe.find({ userId: uid }).lean(),
       Scan.find({ userId: uid }).lean(),
       ChatConversation.find({ userId: uid }).lean(),
@@ -259,6 +261,7 @@ profileRouter.get(
       exportedAt: new Date().toISOString(),
       account: user ?? null,
       pantryItems,
+      pantryHistory,
       savedRecipes,
       scans,
       chatConversations: conversations,
@@ -309,6 +312,7 @@ profileRouter.post(
 
     await Promise.all([
       PantryItem.deleteMany({ userId: uid }),
+      PantryRemoval.deleteMany({ userId: uid }),
       SavedRecipe.deleteMany({ userId: uid }),
       Scan.deleteMany({ userId: uid }),
       ChatConversation.deleteMany({ userId: uid }),

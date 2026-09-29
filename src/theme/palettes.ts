@@ -101,6 +101,11 @@ const light = {
   onCameraPressed: 'rgba(251,246,235,0.24)',
   cameraScrim: 'rgba(23,23,15,0.55)',
   textOnCamera: '#E4E9DC',
+  /** A label floating over the camera or a photo ("Turn any labels toward
+   *  me"). Cream with dark green in light mode; black with white in dark,
+   *  so it matches the rest of the page instead of glowing over it. */
+  cameraPill: 'rgba(251,246,235,0.92)',
+  cameraPillText: '#1B3D14',
   photoRoll: '#3A4234',
   cameraDark: ['#2C3327', '#1B2018', '#12150F'] as [string, string, string],
   captureDark: ['#242A20', '#15180F'] as [string, string],
@@ -190,6 +195,16 @@ const light = {
    * `primaryLighter` in light mode — nothing changes there.
    */
   plusKeySurface: '#E6F4D8',
+
+  /**
+   * Home's "Where your food went" bars: eaten vs wasted. Not `primary` and
+   * `accent` — that pair is 2.7 ΔE apart for a deuteranope in dark mode, i.e.
+   * the same colour. These were stepped until the palette validator passed
+   * against each scheme's `card` (light: every check; dark: CVD 7.3, legal
+   * only because every bar also carries its reason as a text label).
+   */
+  chartEaten: '#4FA83A',
+  chartWasted: '#B8481A',
 };
 
 export type Palette = typeof light;
@@ -287,6 +302,8 @@ const dark: Palette = {
   onCameraPressed: 'rgba(251,246,235,0.24)',
   cameraScrim: 'rgba(23,23,15,0.55)',
   textOnCamera: '#E4E9DC',
+  cameraPill: 'rgba(0,0,0,0.78)',
+  cameraPillText: '#FFFFFF',
   photoRoll: '#3A4234',
   cameraDark: ['#2C3327', '#1B2018', '#12150F'] as [string, string, string],
   captureDark: ['#242A20', '#15180F'] as [string, string],
@@ -352,6 +369,9 @@ const dark: Palette = {
   // `surface` background, with the existing primaryDarker glyph still at
   // 5:1+ on top of it.
   plusKeySurface: '#4F6E3A',
+
+  chartEaten: '#5AAC32',
+  chartWasted: '#C8521C',
 };
 
 export const palettes: Record<Scheme, Palette> = { light, dark };

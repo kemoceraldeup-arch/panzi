@@ -38,6 +38,7 @@ import {
   getCachedLockout,
   isEmailVerified,
   sendVerificationCode,
+  VerificationPurpose,
 } from '../services/emailVerification';
 import { ApiError } from '../config/api';
 import { makeStyles } from '../theme/makeStyles';
@@ -46,6 +47,33 @@ import { fonts, type } from '../theme/typography';
 
 const CODE_LENGTH = 6;
 const RESEND_COOLDOWN_S = 30;
+// How long a send may take before the screen stops waiting and says so. The
+// email itself usually lands within seconds; a request still open after this
+// is a dead connection, not a slow inbox.
+const SEND_TIMEOUT_MS = 20_000;
+
+type SendStatus = 'sending' | 'sent' | 'failed';
+
+/** sendVerificationCode, but never left hanging — rejects after
+ *  SEND_TIMEOUT_MS so the screen can show an error instead of waiting on a
+ *  request that will never answer. */
+function sendWithTimeout(purpose: VerificationPurpose) {
+  return Promise.race([
+    sendVerificationCode(purpose),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error('Sending the code is taking too long. Check your connection and try again.')),
+        SEND_TIMEOUT_MS
+      )
+    ),
+  ]);
+}
+
+function sendErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.message) return err.message;
+  if (err instanceof Error && err.message) return err.message;
+  return "We couldn't send the code. Check your connection and try again.";
+}
 
 /** "Today at 1:50 AM" — the exact phrasing the result screen's spec example
  *  uses. Always "Today" rather than a real date: this screen only ever
@@ -80,11 +108,14 @@ type Props = {
    *  just typed, and re-deriving it from auth.currentUser here would just be
    *  the same string read a second, slower way. */
   email: string;
+  /** 'signup' proves a new account's address; 'login' is the code every
+   *  email sign-in asks for. Changes the wording and which code is checked. */
+  purpose?: VerificationPurpose;
   onVerified: () => void;
   onBack: () => void;
 };
 
-export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) {
+export default function VerifyEmailScreen({ email, purpose = 'signup', onVerified, onBack }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const inputRef = useRef<TextInput>(null);
@@ -93,6 +124,17 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
   const [checking, setChecking] = useState(false);
   const [resending, setResending] = useState(false);
   const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_S);
+  // Whether the code actually went out. The screen used to say "We sent a
+  // code" whatever happened, and a failed send was only logged — the user was
+  // left waiting on an email that was never coming.
+  const [sendStatus, setSendStatus] = useState<SendStatus>('sending');
+  const [sendError, setSendError] = useState<string | null>(null);
+  // The hidden input's focus, which is what the drawn caret follows.
+  const [inputFocused, setInputFocused] = useState(false);
+  const caretOpacity = useRef(new Animated.Value(1)).current;
+  // Server messages for a wrong or expired code ("That code has expired —
+  // send a new one.") say more than a generic line.
+  const [wrongCodeMessage, setWrongCodeMessage] = useState<string | null>(null);
   // Set once the server confirms the code — from here on the screen shows
   // VerificationResultScreen's success skin instead of the form. There is no
   // matching error state that navigates away: a wrong code stays right here
@@ -138,17 +180,7 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
         setLockedUntilMs(cached);
         return;
       }
-      void sendVerificationCode().catch((err) => {
-        if (err instanceof ApiError && err.code === 'locked') {
-          setLockedUntilMs(err.details.lockedUntilMs as number);
-          return;
-        }
-        // Silent otherwise: a failed auto-send still leaves the resend
-        // button live, and surfacing an alert the instant this screen opens
-        // (before the user has done anything) reads as the app being
-        // broken rather than helpful.
-        console.warn('Initial verification send failed', err);
-      });
+      void sendCode();
     });
     // Focus the hidden input immediately — the keyboard should already be up
     // when this screen finishes entering, since typing the code is the only
@@ -170,10 +202,59 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
+  // The drawn caret's blink, running only while the input has focus.
+  useEffect(() => {
+    if (!inputFocused) {
+      caretOpacity.setValue(0);
+      return;
+    }
+    caretOpacity.setValue(1);
+    const blink = Animated.loop(
+      Animated.sequence([
+        Animated.timing(caretOpacity, { toValue: 0, duration: 450, delay: 350, useNativeDriver: true }),
+        Animated.timing(caretOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
+      ])
+    );
+    blink.start();
+    return () => blink.stop();
+  }, [inputFocused, caretOpacity]);
+
+  /**
+   * Sends a code and says plainly how it went. Used for the automatic first
+   * send and for every resend. A failure lifts the cooldown, since no code
+   * went out that the user should wait for.
+   */
+  async function sendCode(): Promise<boolean> {
+    setSendStatus('sending');
+    setSendError(null);
+    try {
+      await sendWithTimeout(purpose);
+      setSendStatus('sent');
+      setCooldown(RESEND_COOLDOWN_S);
+      return true;
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'locked') {
+        setLockedUntilMs(err.details.lockedUntilMs as number);
+        setSendStatus('failed');
+        return false;
+      }
+      // 'too-soon': a code from moments ago is still valid and on its way.
+      if (err instanceof ApiError && err.code === 'too-soon') {
+        setSendStatus('sent');
+        setSendError(err.message);
+        return false;
+      }
+      setSendStatus('failed');
+      setSendError(sendErrorMessage(err));
+      setCooldown(0);
+      return false;
+    }
+  }
+
   async function handleSubmit(value: string) {
     setChecking(true);
     try {
-      await confirmVerificationCode(value);
+      await confirmVerificationCode(value, purpose);
       // Firebase's own emailVerified is what the rest of the app trusts —
       // this reload is what makes THIS client's copy of that field catch up
       // with the write confirmVerificationCode just made server-side. Done
@@ -195,6 +276,7 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
         return;
       }
       triggerWrongCodeHaptic();
+      setWrongCodeMessage(err instanceof ApiError && err.message ? err.message : null);
       setWrongCode(true);
       setCode('');
       shakeCodeRow();
@@ -235,19 +317,9 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
     if (resending) return;
     if (cooldown > 0) return;
     setResending(true);
-    try {
-      await sendVerificationCode();
-      setCooldown(RESEND_COOLDOWN_S);
+    if (await sendCode()) {
       setCode('');
       inputRef.current?.focus();
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'locked') {
-        setLockedUntilMs(err.details.lockedUntilMs as number);
-        setResending(false);
-        return;
-      }
-      const message = err instanceof ApiError ? err.message : 'Could not send a new code.';
-      Alert.alert('Could not resend', message);
     }
     setResending(false);
   }
@@ -261,7 +333,9 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
   async function handleResendFromLockout() {
     setResending(true);
     try {
-      await sendVerificationCode();
+      await sendVerificationCode(purpose);
+      setSendStatus('sent');
+      setSendError(null);
       setLockedUntilMs(null);
       setCooldown(RESEND_COOLDOWN_S);
       setCode('');
@@ -344,11 +418,45 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
 
             <View style={styles.hero}>
               <Mascot pose="face" size={92} style={styles.mascot} />
-              <Text style={styles.title}>Check your email</Text>
+              <Text style={styles.title}>{purpose === 'login' ? "Confirm it's you" : 'Check your email'}</Text>
               <Text style={styles.subtitle}>
-                We sent a 6-digit code to{'\n'}
+                {sendStatus === 'sending'
+                  ? 'Sending a 6-digit code to'
+                  : purpose === 'login'
+                    ? 'Enter the 6-digit sign-in code sent to'
+                    : 'Enter the 6-digit code sent to'}
+                {'\n'}
                 <Text style={styles.emailText}>{email}</Text>
               </Text>
+            </View>
+
+            {/* What happened to the email, in words — sent, still sending, or
+                failed with the reason and a way to try again. */}
+            <View
+              style={[
+                styles.sendStatus,
+                sendStatus === 'sent' && styles.sendStatusSent,
+                sendStatus === 'failed' && styles.sendStatusFailed,
+              ]}
+              accessibilityLiveRegion="polite"
+            >
+              {sendStatus === 'sending' && <ActivityIndicator size="small" color={colors.primaryActive} />}
+              <Text style={[styles.sendStatusText, sendStatus === 'failed' && styles.sendStatusTextFailed]}>
+                {sendStatus === 'sending'
+                  ? 'Sending code…'
+                  : sendStatus === 'sent'
+                    ? sendError ?? "Verification code sent to your email. Check your spam folder if you don't see it."
+                    : sendError ?? "We couldn't send the code."}
+              </Text>
+              {sendStatus === 'failed' && !lockedUntilMs && (
+                <TouchableOpacity
+                  onPress={() => void sendCode()}
+                  hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.sendRetry}>Try again</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Tapping anywhere on the row focuses the hidden input — the
@@ -384,6 +492,7 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
                   // rebuilt here since the real caret lives in the hidden
                   // input, off-screen.
                   const isNext = i === code.length;
+                  const showCaret = isNext && inputFocused && !checking && !wrongCode;
                   return (
                     <View
                       key={i}
@@ -397,6 +506,9 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
                       <Text style={[styles.codeDigit, wrongCode && styles.codeDigitWrong]}>
                         {digit}
                       </Text>
+                      {/* A blinking caret in the box that takes the next
+                          digit — the real one is in the hidden input. */}
+                      {showCaret && <Animated.View style={[styles.caret, { opacity: caretOpacity }]} />}
                     </View>
                   );
                 })}
@@ -417,13 +529,15 @@ export default function VerifyEmailScreen({ email, onVerified, onBack }: Props) 
               maxLength={CODE_LENGTH}
               style={styles.hiddenInput}
               autoFocus={false}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
               caretHidden
               accessibilityLabel="6-digit verification code"
             />
 
             <View style={styles.errorSpacer}>
               {wrongCode && (
-                <Text style={styles.wrongCodeText}>That code isn't right — try again.</Text>
+                <Text style={styles.wrongCodeText}>{wrongCodeMessage ?? "That code isn't right — try again."}</Text>
               )}
             </View>
 
@@ -542,6 +656,49 @@ const useStyles = makeStyles((colors) => ({
   },
   codeBoxNext: {
     borderColor: colors.primaryActive,
+    borderWidth: 2,
+  },
+  caret: {
+    position: 'absolute',
+    width: 2,
+    height: 26,
+    borderRadius: 1,
+    backgroundColor: colors.primaryActive,
+  },
+  sendStatus: {
+    marginTop: 18,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: colors.card,
+  },
+  sendStatusSent: {
+    backgroundColor: colors.primaryLighter,
+  },
+  sendStatusFailed: {
+    backgroundColor: colors.accentSoft,
+  },
+  sendStatusText: {
+    flexShrink: 1,
+    fontSize: 13.5,
+    lineHeight: 19,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    textAlign: 'center',
+  },
+  sendStatusTextFailed: {
+    color: colors.error,
+  },
+  sendRetry: {
+    fontWeight: '800',
+    fontSize: 13.5,
+    color: colors.primaryActive,
+    textDecorationLine: 'underline',
   },
   // The 2-second flash on a wrong code — see wrongCode's own note above.
   // Overrides codeBoxFilled/codeBoxNext by sitting after them in the array

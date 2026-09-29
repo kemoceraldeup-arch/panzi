@@ -553,6 +553,76 @@ export function onNotificationTap(handler: (route: NotificationRoute) => void): 
   return () => sub.remove();
 }
 
+// ── Chat replies ────────────────────────────────────────────────────────
+//
+// Send Panzi a question, leave the app while it thinks, and get told when the
+// answer is in. Local, fired from the app itself the moment the reply lands —
+// so it only goes out while the app is still running in the background, and
+// only when the app isn't on screen (a reply you're already looking at needs
+// no banner).
+
+/** A different tag from the reminders', so cancelling those never takes a
+ *  chat notification with it, and a tap on one is routed to the chat. */
+const CHAT_TAG = 'panzi-chat-reply';
+const SNIPPET = 140;
+
+/**
+ * Asked on the first message sent, once, and only if the user has never been
+ * asked — the same "at the moment it matters" rule as the reminders, and
+ * sending Panzi a question is the moment a reply notification makes sense.
+ * Someone who already said no isn't asked again.
+ */
+export async function askForChatReplyPermission(): Promise<void> {
+  const existing = await Notifications.getPermissionsAsync();
+  if (existing.granted || existing.status !== 'undetermined' || !existing.canAskAgain) return;
+  await Notifications.requestPermissionsAsync();
+}
+
+export async function notifyChatReply(reply: {
+  conversationId: string;
+  conversationTitle: string;
+  /** The reply's words, or null for a recipe card. */
+  text: string | null;
+  recipeTitle: string | null;
+}): Promise<void> {
+  if (!(await hasPermission())) return;
+  const words = reply.text?.replace(/\s+/g, ' ').trim() ?? '';
+  const body = reply.recipeTitle
+    ? `Here’s a recipe: ${reply.recipeTitle}`
+    : words.length > SNIPPET
+      ? `${words.slice(0, SNIPPET).trimEnd()}…`
+      : words || 'Your answer is ready.';
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: 'Panzi replied',
+      body,
+      data: {
+        tag: CHAT_TAG,
+        conversationId: reply.conversationId,
+        conversationTitle: reply.conversationTitle,
+      },
+    },
+    trigger: null,
+  });
+}
+
+/** A tapped reply notification: which chat to open. Returns an unsubscribe. */
+export function onChatReplyTap(
+  handler: (conversation: { id: string; title: string }) => void
+): () => void {
+  const route = (response: Notifications.NotificationResponse) => {
+    const data = response.notification.request.content.data as {
+      tag?: string;
+      conversationId?: string;
+      conversationTitle?: string;
+    };
+    if (data?.tag !== CHAT_TAG || !data.conversationId) return;
+    handler({ id: data.conversationId, title: data.conversationTitle || 'Chat' });
+  };
+  const sub = Notifications.addNotificationResponseReceivedListener(route);
+  return () => sub.remove();
+}
+
 /** Everything off, without touching the stored preference. */
 export async function cancelAll(): Promise<void> {
   await cancelOurs();
