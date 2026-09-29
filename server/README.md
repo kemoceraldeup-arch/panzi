@@ -1,6 +1,8 @@
 # Panzi API
 
-One backend for two clients: the Expo app and, later, the admin panel.
+One backend for two clients: the Expo app and the admin console. The console's
+website lives in `C:\Users\Kenne\Our admin website\Our admin website\admin` and
+its `start.bat` starts this server.
 
 It replaces both halves of the old Firebase backend — Firestore for data and
 Cloud Functions for the scanner. Firebase stays in the stack for logins only,
@@ -60,7 +62,17 @@ will not work: the app runs on the phone, where localhost means the phone.
 | POST   | `/api/scans/photo`         | user token | repoints a scan at its uploaded capture |
 | POST   | `/api/feedback`            | user token | what "Send feedback" writes |
 
-Still to build: `/api/chat`, `/api/admin/*`.
+`/api/admin/*` is the console's surface (dashboard, users, pantry, recipes,
+analytics, costs, logs, settings). Every admin route runs behind a rate limit,
+`requireAuth`, an audit row in `admin_audit`, and `requireAdmin`, which checks
+the `admin` claim against Firebase on each request. Model calls write one row
+each to `api_usage` (`src/usage.ts`), which is what the Costs screen reads.
+
+Analytics reads `pantry_removals`. `src/removalOutcome.ts` maps each app reason
+to eaten, wasted or unclassified. Run its test with `npm test`.
+
+To grant the first administrator: `npx tsx scripts/grant-admin.ts you@example.com`.
+To confirm Atlas, Firebase and Supabase accept the keys: `npm run check`.
 
 ## Data
 
