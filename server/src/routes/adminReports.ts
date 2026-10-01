@@ -19,7 +19,9 @@ import {
   Scan,
   User,
 } from '../models';
+import { auth } from '../firebase';
 import { outcomeOf } from '../removalOutcome';
+import { DELETION_SOURCES, describeAdminRequest, describeAiRequest, modelName } from './adminLogText';
 import { costOf, formatCost } from '../usage';
 import { badRequest, isValidId, relativeTime, withDb } from './helpers';
 
@@ -68,8 +70,20 @@ adminReportsRouter.get(
   withDb(async (req, res) => {
     const options = browseOptions(req.query);
     const level = req.query.level ?? 'All';
-    if (!options || !['All', 'INFO', 'WARN', 'ERROR', 'DEBUG'].includes(String(level))) return badRequest(res, 'Choose valid log filters.');
+    const kind = req.query.kind ?? 'all';
+    if (!options || !['All', 'INFO', 'WARN', 'ERROR', 'DEBUG'].includes(String(level)) || !['all', 'ai', 'admin', 'account'].includes(String(kind))) {
+      return badRequest(res, 'Choose valid log filters.');
+    }
     const window = dateWindow(options);
+
+    // Search reaches people by name as well as by the raw text below: the
+    // screen shows names, so a name is what someone will type.
+    const named = options.q
+      ? await User.find({ name: { $regex: literalSearch(options.q), $options: 'i' } }).select({ _id: 1 }).limit(50).lean()
+      : [];
+    const namedIds = named.map((row: any) => String(row._id));
+    const source = ({ ai: 'usage', admin: 'audit', account: 'deletion' } as Record<string, string>)[String(kind)];
+
     const result = await ApiUsage.aggregate([
       { $match: { createdAt: window } },
       { $addFields: {
@@ -83,7 +97,7 @@ adminReportsRouter.get(
           source: 'audit',
           level: { $cond: [{ $gte: ['$status', 500] }, 'ERROR', { $cond: [{ $gte: ['$status', 400] }, 'WARN', 'INFO'] }] },
           searchText: { $concat: [
-            { $cond: [{ $in: ['$status', [401, 403]] }, 'admin.denied', { $cond: [{ $eq: ['$method', 'GET'] }, 'admin.read', 'admin.write'] }] },
+            { $cond: [{ $in: ['$status', [401, 403]] }, 'admin.denied denied', { $cond: [{ $eq: ['$method', 'GET'] }, 'admin.read viewed', 'admin.write updated'] }] },
             ' ', { $ifNull: ['$path', ''] }, ' ', { $ifNull: ['$actorId', ''] }, ' ', { $ifNull: ['$targetUserId', ''] },
           ] },
         } },
@@ -94,107 +108,82 @@ adminReportsRouter.get(
           source: 'deletion',
           // Never an error: a person exercising erasure is the system working.
           level: 'INFO',
-          searchText: { $concat: ['account.deleted ', { $ifNull: ['$uid', ''] }, ' ', { $ifNull: ['$requestedVia', ''] }] },
+          searchText: { $concat: ['account.deleted deleted ', { $ifNull: ['$uid', ''] }, ' ', { $ifNull: ['$requestedVia', ''] }] },
         } },
       ] } },
+      ...(source ? [{ $match: { source } }] : []),
       ...(level === 'All' ? [] : [{ $match: { level } }]),
-      ...(options.q ? [{ $match: { searchText: { $regex: literalSearch(options.q), $options: 'i' } } }] : []),
+      ...(options.q ? [{ $match: { $or: [
+        { searchText: { $regex: literalSearch(options.q), $options: 'i' } },
+        ...(namedIds.length ? [{ userId: { $in: namedIds } }, { actorId: { $in: namedIds } }, { targetUserId: { $in: namedIds } }] : []),
+      ] } }] : []),
       { $sort: { createdAt: -1, source: 1, _id: -1 } },
       { $facet: { total: [{ $count: 'count' }], rows: [{ $skip: (options.page - 1) * PAGE_SIZE }, { $limit: PAGE_SIZE }] } },
     ]);
     const pageRows: any[] = result[0]?.rows ?? [];
-    const usage = pageRows.filter(row => row.source === 'usage');
-    const audit = pageRows.filter(row => row.source === 'audit');
-    const deletions = pageRows.filter(row => row.source === 'deletion');
 
-    const events: { id: string; at: Date; level: string; event: string; detail: string }[] = [];
+    const nameOf = await logNames(pageRows, req.uid);
 
-    for (const row of usage as any[]) {
-      const tokens = {
-        inputTokens: row.inputTokens ?? 0,
-        cacheReadTokens: row.cacheReadTokens ?? 0,
-        cacheWriteTokens: row.cacheWriteTokens ?? 0,
-        outputTokens: row.outputTokens ?? 0,
-      };
-      const total =
-        tokens.inputTokens +
-        tokens.cacheReadTokens +
-        tokens.cacheWriteTokens +
-        tokens.outputTokens;
-
-      events.push({
-        id: `${row.source}:${row._id}`,
-        at: row.createdAt,
-        // A call slower than ten seconds is worth spotting without reading the
-        // numbers. Everything else is routine.
-        level: row.ok === false ? 'ERROR' : row.durationMs > 10000 ? 'WARN' : 'INFO',
-        event: `api.${row.route}`,
-        detail: [
-          `${total.toLocaleString()} tokens`,
-          formatCost(costOf(row.model, tokens)),
-          `${(row.durationMs / 1000).toFixed(1)}s`,
-          row.model,
-          `user ${row.userId}`,
-        ].join(' · '),
-      });
-    }
-
-    for (const row of audit as any[]) {
-      events.push({
-        id: `${row.source}:${row._id}`,
-        at: row.createdAt,
-        level: row.status >= 500 ? 'ERROR' : row.status >= 400 ? 'WARN' : 'INFO',
-        // Named for what the row actually is. Everything used to read
-        // 'admin.read', which was wrong for a suspension and — now that denied
-        // requests are recorded too — wrong in the one case worth spotting from
-        // across the screen.
-        event:
-          row.status === 401 || row.status === 403
-            ? 'admin.denied'
-            : row.method === 'GET'
-              ? 'admin.read'
-              : 'admin.write',
-        detail: [
-          `${row.method} ${row.path}`,
-          `actor ${row.actorId}`,
-          String(row.status),
-          `${row.durationMs}ms`,
-          row.targetUserId ? `user ${String(row.targetUserId).slice(0, 8)}` : null,
-        ]
-          .filter(Boolean)
-          .join(' · '),
-      });
-    }
-
-    for (const row of deletions as any[]) {
+    const logs = pageRows.map((row) => {
+      const id = `${row.source}:${row._id}`;
+      if (row.source === 'usage') {
+        const tokens = {
+          inputTokens: row.inputTokens ?? 0,
+          cacheReadTokens: row.cacheReadTokens ?? 0,
+          cacheWriteTokens: row.cacheWriteTokens ?? 0,
+          outputTokens: row.outputTokens ?? 0,
+        };
+        const total = tokens.inputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens + tokens.outputTokens;
+        const cost = costOf(row.model, tokens);
+        return {
+          id,
+          time: new Date(row.createdAt).toISOString(),
+          level: row.level,
+          kind: 'ai',
+          event: `api.${row.route}`,
+          title: describeAiRequest(row.route, row.ok !== false),
+          who: nameOf(row.userId),
+          userId: row.userId === 'deleted' ? null : row.userId,
+          detail: [
+            modelName(row.model),
+            `took ${(row.durationMs / 1000).toFixed(1)}s${row.durationMs > 10000 ? ' (slow)' : ''}`,
+            cost === null ? 'cost not priced' : `cost ${formatCost(cost)}`,
+            `${total.toLocaleString()} tokens`,
+          ].join(' · '),
+        };
+      }
+      if (row.source === 'audit') {
+        const target = row.targetUserId ? String(row.targetUserId) : null;
+        return {
+          id,
+          time: new Date(row.createdAt).toISOString(),
+          level: row.level,
+          kind: 'admin',
+          event: row.status === 401 || row.status === 403 ? 'admin.denied' : row.method === 'GET' ? 'admin.read' : 'admin.write',
+          title: describeAdminRequest(row.method, row.path, row.status, target ? nameOf(target, false) : null),
+          who: nameOf(row.actorId),
+          userId: target,
+          // The raw request stays available, one line down and small, for
+          // whoever is debugging rather than reading.
+          detail: `${row.method} ${row.path} · ${statusWord(row.status)} · ${row.durationMs}ms`,
+        };
+      }
       // `requestedAt` is when the person asked; `createdAt` is when the row was
       // written. They are normally the same second, and the asking is the fact
-      // that matters, so it is the one shown.
-      events.push({
-        id: `${row.source}:${row._id}`,
-        at: row.requestedAt ?? row.createdAt,
+      // that matters, so it is the one shown. No name: keeping one would undo
+      // the deletion this row is evidence of.
+      return {
+        id,
+        time: new Date(row.requestedAt ?? row.createdAt).toISOString(),
         level: 'INFO',
+        kind: 'account',
         event: 'account.deleted',
-        detail: [
-          `uid ${String(row.uid).slice(0, 8)}`,
-          `via ${row.requestedVia ?? 'unknown'}`,
-          // Said plainly, because it is the reason this row is allowed to
-          // outlive the account it names.
-          'data removed, record kept',
-        ].join(' · '),
-      });
-    }
-
-    const logs = events
-      .filter((event) => event.at)
-      .sort((a, b) => pageRows.findIndex(row => `${row.source}:${row._id}` === a.id) - pageRows.findIndex(row => `${row.source}:${row._id}` === b.id))
-      .map((event) => ({
-        id: event.id,
-        time: new Date(event.at).toISOString(),
-        level: event.level,
-        event: event.event,
-        detail: event.detail,
-      }));
+        title: 'An account was deleted',
+        who: 'Deleted account',
+        userId: null,
+        detail: `Requested ${DELETION_SOURCES[row.requestedVia] ?? `via ${row.requestedVia ?? 'unknown'}`} · their data was removed, only this record is kept · account ${String(row.uid).slice(0, 8)}`,
+      };
+    });
 
     res.json({
       logs,
@@ -211,6 +200,50 @@ adminReportsRouter.get(
     });
   })
 );
+
+function statusWord(status: number): string {
+  if (status === 304) return '304 unchanged';
+  if (status < 300) return `${status} OK`;
+  if (status === 401 || status === 403) return `${status} denied`;
+  if (status >= 500) return `${status} server error`;
+  return `${status} rejected`;
+}
+
+/**
+ * Names for everyone on one page of the log: app users from their profile,
+ * administrators from Firebase (an admin often has no app profile), and "You"
+ * for whoever is reading. Falls back to a short id rather than failing the
+ * page when Firebase cannot be read.
+ */
+async function logNames(rows: any[], viewer: string | undefined) {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    for (const id of [row.userId, row.actorId, row.targetUserId]) if (id && id !== 'deleted') ids.add(String(id));
+  }
+  const names = new Map<string, string>();
+  const profiles = await User.find({ _id: { $in: [...ids] } }).select({ name: 1 }).lean();
+  for (const row of profiles as any[]) if (row.name) names.set(String(row._id), row.name);
+
+  const missing = [...ids].filter((id) => !names.has(id));
+  if (missing.length && process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    try {
+      const found = await auth.getUsers(missing.slice(0, 100).map((uid) => ({ uid })));
+      for (const record of found.users) {
+        const name = record.displayName || record.email;
+        if (name) names.set(record.uid, name);
+      }
+    } catch (err: any) {
+      console.warn('logs: could not read admin names from Firebase', { message: err?.message });
+    }
+  }
+
+  return (id: string | null | undefined, youForViewer = true): string => {
+    if (!id) return 'Unknown';
+    if (id === 'deleted') return 'Deleted account';
+    if (youForViewer && id === viewer) return 'You';
+    return names.get(id) ?? `Account ${id.slice(0, 6)}`;
+  };
+}
 
 // -------------------------------------------------------------- /analytics
 
@@ -387,19 +420,7 @@ adminReportsRouter.get(
       };
     });
 
-    const feedback = feedbackRows.map((row: any) => ({
-      id: String(row._id),
-      user: nameOf(String(row.userId)),
-      userId: String(row.userId),
-      // Stored beside the uid precisely so a reply is possible. Most accounts
-      // are anonymous, so most of these are null and that is the honest answer.
-      email: row.email || null,
-      review: reviewState(row.review),
-      message: String(row.message ?? ''),
-      platform: row.platform || '—',
-      appVersion: row.appVersion || '—',
-      at: relativeTime(row.createdAt),
-    }));
+    const feedback = feedbackRows.map((row: any) => feedbackRow(row, nameOf));
 
     res.json({
       scans,
@@ -409,6 +430,59 @@ adminReportsRouter.get(
         scans.length === 0 && feedback.length === 0
           ? 'No review items match this filter. Try another status or refresh after new app activity.'
           : null,
+    });
+  })
+);
+
+function feedbackRow(row: any, nameOf: (uid: string) => string) {
+  return {
+    id: String(row._id),
+    user: nameOf(String(row.userId)),
+    userId: String(row.userId),
+    // Stored beside the uid precisely so a reply is possible. Most accounts
+    // are anonymous, so most of these are null and that is the honest answer.
+    email: row.email || null,
+    review: reviewState(row.review),
+    message: String(row.message ?? ''),
+    platform: row.platform || '—',
+    appVersion: row.appVersion || '—',
+    at: relativeTime(row.createdAt),
+    sentAt: new Date(row.createdAt).toISOString(),
+  };
+}
+
+// --------------------------------------------------------------- /feedback
+
+/**
+ * What people wrote from Help & feedback, newest first, with the status an
+ * administrator gave each message. Status changes go through
+ * PATCH /review/feedback/:id, which keeps a revision so two admins cannot
+ * overwrite each other's note.
+ */
+adminReportsRouter.get(
+  '/feedback',
+  withDb(async (req, res) => {
+    const options = browseOptions(req.query);
+    const status = req.query.status ?? 'open';
+    if (!options || typeof status !== 'string' || !REVIEW_FILTERS.includes(status as ReviewFilter)) {
+      return badRequest(res, 'Choose a valid feedback filter.');
+    }
+    const search = options.q ? new RegExp(literalSearch(options.q), 'i') : null;
+    const [result, open] = await Promise.all([
+      reviewPage('feedback', status as ReviewFilter, options.page, dateWindow(options), search ? { $or: [{ message: search }, { email: search }] } : undefined),
+      // The count on the Open tab, whatever tab is showing.
+      reviewPage('feedback', 'open', 1),
+    ]);
+    const named = await User.find({ _id: { $in: [...new Set(result.rows.map((row: any) => String(row.userId)))] } })
+      .select({ name: 1 })
+      .lean();
+    const nameById = new Map(named.map((row: any) => [String(row._id), row.name]));
+    const nameOf = (uid: string) => nameById.get(uid) || `Account ${uid.slice(0, 6)}`;
+
+    res.json({
+      feedback: result.rows.map((row: any) => feedbackRow(row, nameOf)),
+      open: open.total,
+      pagination: { page: options.page, pageSize: REVIEW_PAGE_SIZE, total: result.total, asOf: options.asOf.toISOString() },
     });
   })
 );

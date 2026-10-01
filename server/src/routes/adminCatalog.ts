@@ -7,7 +7,7 @@
 // requireAdmin, the rate limit and the audit record.
 
 import { Router } from 'express';
-import { ApiUsage, PantryItem, RecipeRating, SavedRecipe } from '../models';
+import { ApiUsage, PantryItem, RecipeRating, SavedRecipe, User } from '../models';
 import { provenanceBucket } from './admin';
 import { costOf, formatCost, perScanCost } from '../usage';
 import { withDb } from './helpers';
@@ -439,6 +439,16 @@ adminCatalogRouter.get(
     const scanCost = perScanCost(byRoute);
     const recipeRoute = byRoute.get('recipes');
 
+    // Most expensive first — the panel is "Top accounts by spend" — then named,
+    // so the row can be read and opened rather than matched up by uid.
+    const topUsers = [...byUser.entries()]
+      .sort(([, a], [, b]) => b.cost - a.cost || b.calls - a.calls)
+      .slice(0, 8);
+    const named = await User.find({ _id: { $in: topUsers.map(([userId]) => userId) } })
+      .select({ name: 1 })
+      .lean();
+    const nameById = new Map(named.map((row: any) => [String(row._id), row.name as string | null]));
+
     const allTokens = rows.reduce((sum, row) => sum + totalTokens(row), 0);
     const cacheTokens = rows.reduce((sum, row) => sum + (row.cacheReadTokens ?? 0), 0);
 
@@ -486,14 +496,12 @@ adminCatalogRouter.get(
           pct: spend === 0 ? 0 : Math.round((entry.cost / spend) * 100),
         }))
         .sort((a, b) => b.pct - a.pct),
-      users: [...byUser.entries()]
-        .map(([userId, entry]) => ({
-          userId,
-          calls: entry.calls,
-          cost: formatCost(entry.cost),
-        }))
-        .sort((a, b) => b.calls - a.calls)
-        .slice(0, 8),
+      users: topUsers.map(([userId, entry]) => ({
+        userId,
+        name: nameById.get(userId) || null,
+        calls: entry.calls,
+        cost: formatCost(entry.cost),
+      })),
       note:
         rows.length === 0
           ? 'No model calls recorded yet. This fills the next time someone scans, cooks or chats.'
