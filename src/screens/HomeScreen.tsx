@@ -24,7 +24,8 @@ import PulsingMascot from '../components/PulsingMascot';
 import VoiceIcon from '../components/chat/VoiceIcon';
 import FloatingChatBubble from '../components/home/FloatingChatBubble';
 import RemovalChart from '../components/home/RemovalChart';
-import { RemovalReason, subscribeToRemovalHistory } from '../services/removals';
+import PantryHistoryScreen from './PantryHistoryScreen';
+import { RemovalHistory, subscribeToRemovalHistory } from '../services/removals';
 import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
 import { useCollapseOnScroll } from '../navigation/scrollCollapse';
 import { fonts, type } from '../theme/typography';
@@ -177,7 +178,7 @@ const categoryCache = new Map<string, CategoryCount[]>();
 // the one they still remember taking.
 const UNFINISHED_CACHE = new Map<string, ScanRecord | null>();
 
-const removalCache = new Map<string, Record<RemovalReason, number>>();
+const removalCache = new Map<string, RemovalHistory>();
 
 type Props = {
   onOpenChat: () => void;
@@ -263,9 +264,10 @@ export default function HomeScreen({
   );
   // null until the history has been read once, so the chart doesn't flash its
   // "nothing removed yet" state at someone who has removed plenty.
-  const [removals, setRemovals] = useState<Record<RemovalReason, number> | null>(
+  const [removals, setRemovals] = useState<RemovalHistory | null>(
     () => (uid ? removalCache.get(uid) ?? null : null)
   );
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Live rather than fetched once: renaming yourself on the Profile tab has to
   // change the greeting here, and this screen stays mounted the whole time the
@@ -321,8 +323,8 @@ export default function HomeScreen({
     if (!uid) return;
     return subscribeToRemovalHistory(
       (history) => {
-        removalCache.set(uid, history.counts);
-        setRemovals(history.counts);
+        removalCache.set(uid, history);
+        setRemovals(history);
       },
       () => {
         // Keep the last chart rather than replacing it with an error.
@@ -619,10 +621,15 @@ export default function HomeScreen({
 
         {/* Looking back rather than at what's on the shelf now, so it sits
             last — below everything the user might act on today. */}
-        {removals && <RemovalChart counts={removals} />}
+        {removals && <RemovalChart counts={removals.counts} onViewMore={() => setHistoryOpen(true)} />}
           </>
         )}
       </ScrollView>
+      <PantryHistoryScreen
+        visible={historyOpen}
+        history={removals}
+        onClose={() => setHistoryOpen(false)}
+      />
       {/* Floats over the screen rather than living in the scroll flow, fixed
           bottom-right above the tab bar. Mounted only on an empty pantry —
           the moment status.total leaves 0 this unmounts on its own, no

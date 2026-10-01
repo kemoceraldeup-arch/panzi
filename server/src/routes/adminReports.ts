@@ -309,12 +309,12 @@ adminReportsRouter.get(
         {
           label: 'Items consumed',
           value: saved.length.toLocaleString(),
-          note: 'eaten, cooked, or finished as leftovers',
+          note: 'eaten or cooked with',
         },
         {
           label: 'Items wasted',
           value: wasted.length.toLocaleString(),
-          note: 'spoiled, expired, or over-purchased',
+          note: 'spoiled or expired',
         },
         {
           label: 'Waste rate',
@@ -355,7 +355,7 @@ adminReportsRouter.get(
           ? 'No removals recorded yet. This fills the first time someone removes a pantry item in the app and picks a reason.'
           : rows.length > withReason
             ? `${rows.length - withReason} removal(s) were marked "other". These are excluded from consumed, wasted, and waste-rate figures.`
-            : 'Outcomes come from the reason picked in the app. Each recorded pantry entry counts once, regardless of its quantity.',
+            : 'Outcomes come from the reason picked in the app. Each removal counts once, whatever the amount.',
     });
   })
 );

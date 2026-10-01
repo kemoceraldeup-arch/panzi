@@ -186,24 +186,23 @@ pantryItemSchema.index({ userId: 1, expiryDate: 1 });
 // ---------------------------------------------------------------------------
 
 /** Why an item left the shelves. The order is the order the app offers them. */
-export const REMOVAL_REASONS = [
-  'consumed',
-  'spoiled',
-  'expired',
-  'leftover',
-  'over-purchased',
-  'other',
-] as const;
+export const REMOVAL_REASONS = ['consumed', 'spoiled', 'expired', 'other'] as const;
 
-// One row per item taken off the shelves, written in the same request that
-// deletes it. A snapshot rather than a reference: the pantry item is gone by
-// the time anyone reads this, so everything the history screen and the waste
-// chart need is copied across at the moment of removal.
+export type RemovalReason = (typeof REMOVAL_REASONS)[number];
+
+// One row per removal, written in the same request that shrinks or deletes
+// the item. `quantity` is the amount that left in this removal, not what the
+// item held: taking 2 of 5 eggs writes "2 eggs" here and leaves the item at 3.
 //
-// `itemId` is kept so an undo (cook mode puts used-up items back) can find the
-// rows it has to take away again — a restored item was never really removed,
-// and leaving its row behind would count food as eaten that is still on the
-// shelf. `expiryDate` and `addedAt` are kept for the research side: how long
+// A snapshot of one removal rather than a reference: after a partial removal
+// the item may still be on the shelf (with less of it), and after a full one
+// it is gone, so everything the history screen and the waste chart need is
+// copied across at the moment of removal.
+//
+// An undo (cook mode puts used-up items back) deletes by this row's own id —
+// the ids the remove call handed back — so it takes away exactly the rows it
+// made and nothing else. `itemId` records which pantry item the row came from.
+// `expiryDate` and `addedAt` are kept for the research side: how long
 // an item sat, and whether it was past its date when it went, are the two
 // questions the removal reason alone cannot answer.
 const pantryRemovalSchema = new Schema(
@@ -218,12 +217,15 @@ const pantryRemovalSchema = new Schema(
     expiryDate: { type: String, default: null }, // 'YYYY-MM-DD', real or estimated
     addedAt: { type: Date, default: null },
     reason: { type: String, enum: REMOVAL_REASONS, required: true },
+    // Only for 'other': what the user typed, at most 80 characters.
+    note: { type: String, default: null },
     removedAt: { type: Date, required: true },
   },
   { timestamps: true, collection: 'pantry_removals' }
 );
 
-// History is listed newest-first; undo looks rows up by the item they came from.
+// History is listed newest-first; the {userId, itemId} index serves per-item
+// history lookups.
 pantryRemovalSchema.index({ userId: 1, removedAt: -1 });
 pantryRemovalSchema.index({ userId: 1, itemId: 1 });
 

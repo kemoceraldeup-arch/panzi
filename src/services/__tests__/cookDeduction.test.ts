@@ -10,11 +10,13 @@ jest.mock('../pantry', () => ({
   updatePantryItem: jest.fn(),
 }));
 jest.mock('../removals', () => ({
-  removePantryItems: jest.fn(),
+  removeFromPantry: jest.fn(),
   undoRemovals: jest.fn(),
 }));
 
-import { parseRecipeAmount, planDeduction } from '../cookDeduction';
+import { applyDeduction, parseRecipeAmount, planDeduction, undoDeduction } from '../cookDeduction';
+import { restorePantryItems, updatePantryItem } from '../pantry';
+import { removeFromPantry, undoRemovals } from '../removals';
 import type { PantryItem } from '../pantry';
 import type { Recipe, RecipeIngredient } from '../recipes';
 
@@ -49,19 +51,19 @@ describe('parseRecipeAmount', () => {
 describe('planDeduction', () => {
   it('takes 2 eggs from 5, leaving 3', () => {
     const plan = planDeduction(recipe([{ name: 'eggs', amount: '2' }]), [item('a', 'Eggs', '5 eggs')]);
-    expect(plan.changes).toEqual([expect.objectContaining({ before: '5 eggs', after: '3 eggs' })]);
+    expect(plan.changes).toEqual([expect.objectContaining({ before: '5 eggs', after: '3 eggs', removed: '2 eggs' })]);
   });
 
-  it('removes an item the recipe uses up', () => {
+  it('removes an item the recipe uses up, recording all of it', () => {
     const plan = planDeduction(recipe([{ name: 'large eggs', amount: '3 pcs' }]), [item('a', 'Egg', '2 eggs')]);
-    expect(plan.changes).toEqual([expect.objectContaining({ after: null })]);
+    expect(plan.changes).toEqual([expect.objectContaining({ after: null, removed: '2 eggs' })]);
   });
 
   it('converts between g and kg', () => {
     const plan = planDeduction(recipe([{ name: 'ground pork', amount: '250 g' }]), [
       item('a', 'Ground pork', '1 kg'),
     ]);
-    expect(plan.changes[0].after).toBe('750 g');
+    expect(plan.changes[0]).toEqual(expect.objectContaining({ after: '750 g', removed: '250 g' }));
   });
 
   it('matches a pantry name inside the ingredient name', () => {
@@ -102,5 +104,37 @@ describe('planDeduction', () => {
     );
     expect(plan.changes).toEqual([]);
     expect(plan.skipped).toEqual([]);
+  });
+});
+
+describe('applyDeduction and undoDeduction', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('sends every change through one Consumed removal and returns its ids', async () => {
+    (removeFromPantry as jest.Mock).mockResolvedValue(['r1', 'r2']);
+    const plan = planDeduction(recipe([{ name: 'eggs', amount: '2' }, { name: 'rice', amount: '1 kg' }]), [
+      item('a', 'Eggs', '5 eggs'),
+      item('b', 'Rice', '1 kg'),
+    ]);
+    const ids = await applyDeduction(plan);
+    expect(removeFromPantry).toHaveBeenCalledWith(
+      [
+        { id: 'a', removed: '2 eggs', remaining: '3 eggs' },
+        { id: 'b', removed: '1 kg', remaining: null },
+      ],
+      'consumed'
+    );
+    expect(updatePantryItem).not.toHaveBeenCalled();
+    expect(ids).toEqual(['r1', 'r2']);
+  });
+
+  it("undo restores amounts, re-adds used-up items, and drops only this cook's rows", async () => {
+    const eggs = item('a', 'Eggs', '5 eggs');
+    const rice = item('b', 'Rice', '1 kg');
+    const plan = planDeduction(recipe([{ name: 'eggs', amount: '2' }, { name: 'rice', amount: '1 kg' }]), [eggs, rice]);
+    await undoDeduction(plan, ['r1', 'r2']);
+    expect(updatePantryItem).toHaveBeenCalledWith('a', { quantity: '5 eggs' });
+    expect(restorePantryItems).toHaveBeenCalledWith([rice]);
+    expect(undoRemovals).toHaveBeenCalledWith(['r1', 'r2']);
   });
 });

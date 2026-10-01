@@ -420,7 +420,7 @@ adminRouter.get(
       PantryRemoval.find({ userId })
         .sort({ removedAt: -1 })
         .limit(ACTIVITY_LIMIT)
-        .select({ name: 1, reason: 1, removedAt: 1 })
+        .select({ name: 1, reason: 1, note: 1, removedAt: 1 })
         .lean(),
       Feedback.find({ userId }).sort({ createdAt: -1 }).limit(ACTIVITY_LIMIT).lean(),
       ApiUsage.find({ userId })
@@ -472,6 +472,7 @@ adminRouter.get(
         id: String(row._id),
         name: row.name,
         reason: row.reason,
+        note: row.note ?? null,
         outcome: outcomeOf(row.reason),
         at: relativeTime(row.removedAt),
       })),

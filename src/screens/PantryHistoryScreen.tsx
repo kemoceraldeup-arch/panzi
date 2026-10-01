@@ -1,7 +1,7 @@
 // src/screens/PantryHistoryScreen.tsx
 //
-// Profile > Pantry history: everything that has left the shelves, newest
-// first, grouped by day. Each row says what it was, how much, when it went and
+// Pantry history, opened from Profile or from View More under Home's chart: everything that has left the shelves, newest
+// first, grouped by day. Each row says what it was, how much went, when it went and
 // why — the same records Home's "Where your food went" chart counts.
 //
 // Read-only on purpose. The history is what happened; editing a reason after
@@ -24,6 +24,7 @@ import {
   RemovalReason,
   RemovalRecord,
   isWaste,
+  reasonLabel,
 } from '../services/removals';
 import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
@@ -106,7 +107,7 @@ function Body({ history, onClose }: Omit<Props, 'visible'>) {
               ? 'Loading…'
               : total === 0
                 ? 'Nothing removed yet'
-                : `${total} item${total === 1 ? '' : 's'} removed`}
+                : `${total} removal${total === 1 ? '' : 's'}`}
           </Text>
         </View>
         <TouchableOpacity
@@ -186,13 +187,14 @@ function HistoryRow({ record, divided }: { record: RemovalRecord; divided: boole
   const styles = useStyles();
   const colors = useColors();
   const waste = isWaste(record.reason);
+  const label = reasonLabel(record);
   const meta = [record.quantity.trim(), timeLabel(record.removedAt)].filter(Boolean).join(' · ');
 
   return (
     <View
       style={[styles.row, divided && styles.rowDivided]}
       accessible
-      accessibilityLabel={`${record.name}, ${meta}, ${REMOVAL_LABELS[record.reason]}`}
+      accessibilityLabel={`${record.name}, ${meta}, ${label}`}
     >
       <View style={styles.rowText}>
         <Text style={styles.rowName} numberOfLines={1}>
@@ -208,8 +210,11 @@ function HistoryRow({ record, divided }: { record: RemovalRecord; divided: boole
           size={12}
           color={waste ? colors.accentDeep : colors.primaryDark}
         />
-        <Text style={[styles.reasonText, waste ? styles.reasonTextWaste : styles.reasonTextEaten]}>
-          {REMOVAL_LABELS[record.reason]}
+        <Text
+          style={[styles.reasonText, waste ? styles.reasonTextWaste : styles.reasonTextEaten]}
+          numberOfLines={1}
+        >
+          {label}
         </Text>
       </View>
     </View>
@@ -333,6 +338,7 @@ const useStyles = makeStyles((colors) => ({
     paddingHorizontal: space.sm2,
     borderRadius: 999,
     flexShrink: 0,
+    maxWidth: '50%',
   },
   reasonEaten: {
     backgroundColor: colors.primaryLighter,
@@ -341,6 +347,7 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: colors.accentSoft,
   },
   reasonText: {
+    flexShrink: 1,
     fontWeight: '800',
     fontSize: type.caption.fontSize,
   },

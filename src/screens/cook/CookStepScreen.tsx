@@ -61,6 +61,10 @@ export type CookStepScreenProps = {
   completeBody: string;
   onClose: () => void;
   onRate: (stars: number) => void;
+  /** Finish pressed on the last step — the recipe was cooked. */
+  onComplete?: () => void;
+  /** The complete sheet is up. */
+  onCompleteShown?: () => void;
 };
 
 const HIT_SLOP = { top: 10, bottom: 10, left: 10, right: 10 };
@@ -74,6 +78,8 @@ export default function CookStepScreen({
   completeBody,
   onClose,
   onRate,
+  onComplete,
+  onCompleteShown,
 }: CookStepScreenProps) {
   useKeepAwake();
   const insets = useSafeAreaInsets();
@@ -110,6 +116,7 @@ export default function CookStepScreen({
   function handleNext() {
     if (isLast) {
       setCompleted(true);
+      onComplete?.();
       return;
     }
     setStepIndex((i) => Math.min(total - 1, i + 1));
@@ -183,6 +190,7 @@ export default function CookStepScreen({
 
       <CookCompleteSheet
         visible={completed}
+        onShow={onCompleteShown}
         title={completeTitle}
         body={completeBody}
         stats={stats}

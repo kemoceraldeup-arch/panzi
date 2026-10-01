@@ -54,7 +54,8 @@ import {
 } from '../services/pantry';
 import EditItemSheet from './EditItemSheet';
 import RemovalReasonSheet from '../components/pantry/RemovalReasonSheet';
-import { RemovalReason, removePantryItems } from '../services/removals';
+import { RemovalReason, removeFromPantry } from '../services/removals';
+import { RemovalLine } from '../services/removalAmount';
 import { backfillItemPhotos } from '../services/scans';
 import { UserProfile } from '../services/profile';
 import { checkItemConflicts, ItemConflict } from '../services/dietCheck';
@@ -178,8 +179,13 @@ export default function ListScreen({
   // whole selection from the action bar.
   const [movingIds, setMovingIds] = useState<string[] | null>(null);
 
-  // Which items a Delete is asking the reason for — same shape as movingIds.
-  const [removingIds, setRemovingIds] = useState<string[] | null>(null);
+  // What the removal sheet is open for: which items, and whether it was
+  // Delete (asks why) or Use up (Consumed, no reason step).
+  const [removing, setRemoving] = useState<{ ids: string[]; mode: 'remove' | 'useUp' } | null>(null);
+  const removingItems = useMemo(
+    () => (removing ? items.filter((i) => removing.ids.includes(i.id)) : []),
+    [removing, items]
+  );
 
   // The row whose edit sheet is open. Held as an id rather than the item, so
   // the sheet keeps showing live values if the listener pushes an update while
@@ -350,45 +356,36 @@ export default function ListScreen({
     setSelected(visible.map((i) => i.id));
   }
 
-  /** `reason` null means added by mistake: deleted, nothing recorded. */
-  async function removeItems(ids: string[], reason: RemovalReason | null, verb: string) {
-    try {
-      if (reason) await removePantryItems(ids, reason);
-      else await deletePantryItems(ids);
-    } catch (err: any) {
-      Alert.alert(`Could not ${verb}`, err.message);
-    }
-  }
-
-  function finishRemoving(reason: RemovalReason | null) {
-    const ids = removingIds ?? [];
-    setRemovingIds(null);
+  function closeRemoval() {
+    setRemoving(null);
     setOpenSwipeId(null);
     exitSelection();
-    void removeItems(ids, reason, 'remove those');
   }
 
-  // Delete asks why (see RemovalReasonSheet). Use up already says why — it was
-  // eaten — so it keeps its plain confirm and records Consumed.
-  function confirmRemove(ids: string[], mode: 'delete' | 'useUp') {
-    if (mode === 'delete') {
-      setRemovingIds(ids);
-      return;
+  async function saveRemoval(lines: RemovalLine[], reason: RemovalReason, note: string | null) {
+    closeRemoval();
+    try {
+      await removeFromPantry(lines, reason, note);
+    } catch (err: any) {
+      Alert.alert('Could not remove those', err.message);
     }
-    const count = ids.length;
-    const what = count === 1 ? 'this item' : `${count} items`;
-    Alert.alert('Mark as used up?', `Take ${what} off your shelves.`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Use up',
-        style: 'destructive',
-        onPress: async () => {
-          await removeItems(ids, 'consumed', 'use those up');
-          setOpenSwipeId(null);
-          exitSelection();
-        },
-      },
-    ]);
+  }
+
+  /** Added by mistake: deleted, nothing recorded. */
+  async function discardRemoval() {
+    const ids = removing?.ids ?? [];
+    closeRemoval();
+    try {
+      await deletePantryItems(ids);
+    } catch (err: any) {
+      Alert.alert('Could not delete those', err.message);
+    }
+  }
+
+  // Both ask how much (see RemovalReasonSheet). Delete then asks why; Use up
+  // already says why — it was eaten — and saves as Consumed.
+  function confirmRemove(ids: string[], mode: 'delete' | 'useUp') {
+    setRemoving({ ids, mode: mode === 'delete' ? 'remove' : 'useUp' });
   }
 
   async function applyMove(location: string) {
@@ -759,10 +756,11 @@ export default function ListScreen({
       </Modal>
 
       <RemovalReasonSheet
-        count={removingIds?.length ?? 0}
-        onPick={(reason) => finishRemoving(reason)}
-        onDiscard={() => finishRemoving(null)}
-        onClose={() => setRemovingIds(null)}
+        items={removingItems}
+        mode={removing?.mode ?? 'remove'}
+        onSave={saveRemoval}
+        onDiscard={discardRemoval}
+        onClose={() => setRemoving(null)}
       />
 
       {/* Edit — every field of one item, opened by tapping its row */}

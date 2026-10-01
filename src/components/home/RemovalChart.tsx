@@ -5,18 +5,19 @@
 // left the kitchen was actually eaten — and the bars underneath say where the
 // rest went.
 //
-// Horizontal bars rather than a pie: six reasons with labels long enough
-// ("Over-purchased") to need their own column, and comparing lengths along a
+// Horizontal bars rather than a pie: four reasons, each label in its own
+// column, and comparing lengths along a
 // shared baseline is the thing people read accurately. Rows stay in a fixed
 // order rather than sorting by count, so "Spoiled" is in the same place every
 // time the user checks whether it is shrinking.
 //
-// Two colours, not six: eaten or wasted is the distinction that matters, and
+// Two colours, not four: eaten or wasted is the distinction that matters, and
 // each row already says its reason in words. Colours are the chart tokens in
 // palettes.ts, validated for colour-blind separation in both schemes.
 
 import React from 'react';
-import { View } from 'react-native';
+import { TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import Text from '../Text';
 import {
   REMOVAL_LABELS,
@@ -31,9 +32,11 @@ import { space } from '../../theme/spacing';
 
 type Props = {
   counts: Record<RemovalReason, number>;
+  /** Opens Pantry History, where each removal is listed. */
+  onViewMore: () => void;
 };
 
-export default function RemovalChart({ counts }: Props) {
+export default function RemovalChart({ counts, onViewMore }: Props) {
   const styles = useStyles();
   const colors = useColors();
 
@@ -57,54 +60,66 @@ export default function RemovalChart({ counts }: Props) {
   const eatenPct = Math.round((eaten / total) * 100);
 
   return (
-    <View
-      style={styles.card}
-      accessible
-      accessibilityLabel={
-        `Where your food went. ${eatenPct} percent eaten. ` +
-        REMOVAL_REASONS.map((r) => `${REMOVAL_LABELS[r]}: ${counts[r]}`).join(', ')
-      }
-    >
-      <Text style={styles.eyebrow}>Where your food went</Text>
-      <View style={styles.headlineRow}>
-        <Text style={styles.headline}>{eatenPct}%</Text>
-        <Text style={styles.headlineLabel}>eaten</Text>
-      </View>
-      <Text style={styles.summary}>
-        {eaten} of {total} item{total === 1 ? '' : 's'} removed got eaten · {wasted} wasted
-      </Text>
+    <View style={styles.card}>
+      <View
+        accessible
+        accessibilityLabel={
+          `Where your food went. ${eatenPct} percent eaten. ` +
+          REMOVAL_REASONS.map((r) => `${REMOVAL_LABELS[r]}: ${counts[r]}`).join(', ')
+        }
+      >
+        <Text style={styles.eyebrow}>Where your food went</Text>
+        <View style={styles.headlineRow}>
+          <Text style={styles.headline}>{eatenPct}%</Text>
+          <Text style={styles.headlineLabel}>eaten</Text>
+        </View>
+        <Text style={styles.summary}>
+          {eaten} of {total} removal{total === 1 ? '' : 's'} eaten · {wasted} wasted
+        </Text>
 
-      <View style={styles.bars}>
-        {REMOVAL_REASONS.map((reason) => {
-          const n = counts[reason];
-          return (
-            <View key={reason} style={styles.barRow}>
-              <Text style={styles.barLabel} numberOfLines={1}>
-                {REMOVAL_LABELS[reason]}
-              </Text>
-              <View style={styles.track}>
-                {n > 0 && (
-                  <View
-                    style={[
-                      styles.bar,
-                      {
-                        width: `${(n / max) * 100}%`,
-                        backgroundColor: isWaste(reason) ? colors.chartWasted : colors.chartEaten,
-                      },
-                    ]}
-                  />
-                )}
+        <View style={styles.bars}>
+          {REMOVAL_REASONS.map((reason) => {
+            const n = counts[reason];
+            return (
+              <View key={reason} style={styles.barRow}>
+                <Text style={styles.barLabel} numberOfLines={1}>
+                  {REMOVAL_LABELS[reason]}
+                </Text>
+                <View style={styles.track}>
+                  {n > 0 && (
+                    <View
+                      style={[
+                        styles.bar,
+                        {
+                          width: `${(n / max) * 100}%`,
+                          backgroundColor: isWaste(reason) ? colors.chartWasted : colors.chartEaten,
+                        },
+                      ]}
+                    />
+                  )}
+                </View>
+                <Text style={[styles.barValue, n === 0 && styles.barValueZero]}>{n}</Text>
               </View>
-              <Text style={[styles.barValue, n === 0 && styles.barValueZero]}>{n}</Text>
-            </View>
-          );
-        })}
+            );
+          })}
+        </View>
+
+        <View style={styles.legend}>
+          <LegendKey color={colors.chartEaten} label="Eaten" />
+          <LegendKey color={colors.chartWasted} label="Wasted" />
+        </View>
       </View>
 
-      <View style={styles.legend}>
-        <LegendKey color={colors.chartEaten} label="Eaten" />
-        <LegendKey color={colors.chartWasted} label="Wasted" />
-      </View>
+      <TouchableOpacity
+        style={styles.viewMore}
+        onPress={onViewMore}
+        hitSlop={HIT_SLOP}
+        accessibilityRole="button"
+        accessibilityLabel="View more in Pantry history"
+      >
+        <Text style={styles.viewMoreText}>View More</Text>
+        <Ionicons name="chevron-forward" size={14} color={colors.primaryDark} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -118,6 +133,8 @@ function LegendKey({ color, label }: { color: string; label: string }) {
     </View>
   );
 }
+
+const HIT_SLOP = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const LABEL_WIDTH = 104;
 
@@ -222,5 +239,18 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '600',
     fontSize: type.caption.fontSize,
     color: colors.textSecondary,
+  },
+  viewMore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: space.xs,
+    marginTop: space.md,
+    paddingVertical: space.sm,
+  },
+  viewMoreText: {
+    fontWeight: '700',
+    fontSize: type.label.fontSize,
+    color: colors.primaryDark,
   },
 }));

@@ -32,6 +32,7 @@ import {
   Measure,
   MEASURE_EXAMPLES,
   MEASURE_LABELS,
+  MAX_AMOUNT_DIGITS,
   MEASURES,
   VOLUME_UNITS_LIST,
   WEIGHT_UNITS_LIST,
@@ -43,6 +44,8 @@ import {
   minFor,
   presetUnit,
   quickAmounts,
+  sanitizeDecimalInput,
+  typedQuantity,
   step,
   summaryLine,
   toBaseAmount,
@@ -414,41 +417,6 @@ function chunk<T>(items: T[], size: number): T[][] {
   return rows;
 }
 
-// No real amount needs more than this many digits before the decimal point
-// — maxFor's largest ceiling is 500,000 (500 kg/L in base units), six
-// digits — so seven is already generous headroom, not a tight limit someone
-// typing a normal amount would ever brush against. What it does stop is a
-// runaway string of digits (from a stuck key, a paste, or a duplicated
-// onChangeText firing) turning into something Number() renders as
-// scientific notation once it's simply too long to be a real quantity.
-const MAX_AMOUNT_DIGITS = 7;
-
-/**
- * Keeps what a person can actually type in this field to something that
- * could plausibly be a real amount — digits and at most one decimal point,
- * capped in length — filtered on every keystroke rather than only at
- * commit. Committing alone was not enough: Number() on an unbounded string
- * of digits happily returns a valid, finite number in the 1e+36 range, which
- * then sails straight through commitTyped's floor/ceiling clamp (that clamp
- * bounds the *value*, not how many digits produced it) and back out through
- * displayAmount as "9.666164664646464e+36 kg" — a real bug this app hit.
- * Filtering the keystrokes themselves is what stops the string from ever
- * reaching that size in the first place.
- */
-function sanitizeDecimalInput(text: string): string {
-  // Only one decimal point survives — a second one is dropped rather than
-  // rejected outright, so "1.2.3" typed quickly becomes "1.23" instead of
-  // silently refusing every keystroke after the first period.
-  const firstDot = text.indexOf('.');
-  const withoutExtraDots =
-    firstDot === -1
-      ? text.replace(/[^0-9]/g, '')
-      : text.slice(0, firstDot + 1).replace(/[^0-9]/g, '') +
-        '.' +
-        text.slice(firstDot + 1).replace(/[^0-9]/g, '');
-  return withoutExtraDots.slice(0, MAX_AMOUNT_DIGITS + 1); // +1 allows for the decimal point itself.
-}
-
 /**
  * sanitizeDecimalInput plus the measure's own ceiling, for the keystroke
  * path. The length cap above only bounds how many digits the field holds,
@@ -495,6 +463,10 @@ export function MeasureControl({
   onChange,
   onPickMeasure,
   onFocusInput,
+  max,
+  fixedMeasure,
+  label,
+  applyWhileTyping,
 }: {
   quantity: ItemQuantity;
   unit: string;
@@ -512,6 +484,19 @@ export function MeasureControl({
    *  into view above it. Optional: a screen with nothing to scroll (this
    *  control already fills it) can leave it out. */
   onFocusInput?: () => void;
+  /** A ceiling below maxFor, in base units — the removal sheet caps at what
+   *  the item holds. */
+  max?: number;
+  /** Hides the measure pill: the removal sheet counts in the item's own
+   *  measure and switching it would make the amount meaningless. */
+  fixedMeasure?: boolean;
+  /** The eyebrow over the stepper. Defaults to "How many". */
+  label?: string;
+  /** Also reports each usable typed value through onChange as it is typed,
+   *  so a caller with a button that does not blur the field (the removal
+   *  sheet's Next) never records a stale amount. Done and blur still commit
+   *  as before. */
+  applyWhileTyping?: boolean;
 }) {
   const styles = useStyles();
   const colors = useColors();
@@ -550,7 +535,8 @@ export function MeasureControl({
   }
 
   function nudge(direction: 1 | -1) {
-    onChange(step(quantity, direction));
+    const next = step(quantity, direction);
+    onChange(max === undefined ? next : { ...next, amount: Math.min(max, next.amount) });
   }
 
   /**
@@ -570,25 +556,18 @@ export function MeasureControl({
   // would let them type 500000 kg before anything objected, so the ceiling is
   // converted into the same unit the field is being typed in. Pieces and
   // packs aren't split, so their ceiling is already in the right unit.
+  const ceilingBase = Math.min(maxFor(quantity.measure), max ?? Infinity);
   const typedCeiling = isSplit
-    ? maxFor(quantity.measure) / toBaseAmount(1, currentUnit!)
-    : maxFor(quantity.measure);
+    ? ceilingBase / toBaseAmount(1, currentUnit!)
+    : ceilingBase;
 
   function commitTyped(text: string) {
-    const n = Number(sanitizeDecimalInput(text));
     setTyping(false);
-    // Number('') is 0, and a blank or all-punctuation field ("", ".", "-")
-    // must not silently commit as a valid amount — it just cancels back to
-    // whatever the field already held.
-    if (!Number.isFinite(n) || n <= 0) return;
-    const floor = minFor(quantity.measure, quantity.splittable);
-    const ceiling = maxFor(quantity.measure);
-    if (!isSplit) {
-      onChange({ ...quantity, amount: Math.min(ceiling, Math.max(floor, n)) });
-      return;
-    }
-    const baseAmount = toBaseAmount(n, currentUnit!);
-    onChange({ ...quantity, amount: Math.min(ceiling, Math.max(floor, baseAmount)) });
+    // A blank or all-punctuation field ("", ".", "-") must not silently
+    // commit as a valid amount — it just cancels back to whatever the field
+    // already held.
+    const next = typedQuantity(text, quantity, ceilingBase);
+    if (next) onChange(next);
   }
 
   // What the field shows while NOT being edited — formatAmount's full,
@@ -619,28 +598,30 @@ export function MeasureControl({
           overlapped). Full card width, so nothing downstream of this row
           has to fit beside it either. */}
       <View style={styles.howManyLabelRow}>
-        <Eyebrow>How many</Eyebrow>
-        <TouchableOpacity
-          style={styles.measurePill}
-          onPress={() => setTypePanelOpen((v) => !v)}
-          activeOpacity={0.7}
-          accessibilityRole="button"
-          accessibilityLabel={`Measure: ${MEASURE_LABELS[quantity.measure]}`}
-        >
-          <Text style={styles.measurePillText}>{MEASURE_LABELS[quantity.measure].toUpperCase()}</Text>
-          <Ionicons
-            name={typePanelOpen ? 'chevron-up' : 'chevron-down'}
-            size={12}
-            color={colors.mutedBody}
-          />
-        </TouchableOpacity>
+        <Eyebrow>{label ?? 'How many'}</Eyebrow>
+        {!fixedMeasure && (
+          <TouchableOpacity
+            style={styles.measurePill}
+            onPress={() => setTypePanelOpen((v) => !v)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={`Measure: ${MEASURE_LABELS[quantity.measure]}`}
+          >
+            <Text style={styles.measurePillText}>{MEASURE_LABELS[quantity.measure].toUpperCase()}</Text>
+            <Ionicons
+              name={typePanelOpen ? 'chevron-up' : 'chevron-down'}
+              size={12}
+              color={colors.mutedBody}
+            />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* The panel opens in normal flow — the card grows to fit it, nothing
           overlays or clips. 2x2 grid of the four measures, each with its
           own two-word example, so picking one is a single tap from
           anywhere the pill can be reached. */}
-      {typePanelOpen && (
+      {!fixedMeasure && typePanelOpen && (
         <View style={styles.measurePanel}>
           {MEASURES.map((measure) => {
             const selected = measure === quantity.measure;
@@ -687,7 +668,14 @@ export function MeasureControl({
             // clearly the live field rather than a label.
             style={[styles.stepValue, styles.stepValueTyping]}
             value={draft}
-            onChangeText={(text) => setDraft(clampToCeiling(text, typedCeiling))}
+            onChangeText={(text) => {
+              const clamped = clampToCeiling(text, typedCeiling);
+              setDraft(clamped);
+              if (applyWhileTyping) {
+                const next = typedQuantity(clamped, quantity, ceilingBase);
+                if (next) onChange(next);
+              }
+            }}
             onFocus={onFocusInput}
             onBlur={() => commitTyped(draft)}
             keyboardType="decimal-pad"
@@ -696,7 +684,7 @@ export function MeasureControl({
             autoFocus
             selectionColor={colors.accent}
             cursorColor={colors.accent}
-            accessibilityLabel="How much do you have"
+            accessibilityLabel={label ?? 'How much do you have'}
             // Explicit, not just relying on the iOS default: this row is
             // already tight with the unit pill and Done button beside it,
             // and a native clear-button glyph competing for that same
@@ -789,7 +777,10 @@ export function MeasureControl({
             two rows of three. Each row is its own flex row of three equal
             flex:1 pills, so every column is always the same width and the
             last pill in a row never stretches to fill it alone. */}
-        {chunk(quickAmounts(quantity.measure, unit), 3).map((row, i) => (
+        {chunk(
+          quickAmounts(quantity.measure, unit).filter((p) => max === undefined || p.amount <= max),
+          3
+        ).map((row, i) => (
           <View key={i} style={styles.quickRow}>
             {row.map((preset) => {
               const selected = preset.amount === quantity.amount;
@@ -825,7 +816,7 @@ export function MeasureControl({
         ))}
       </View>
 
-      {quantity.measure === 'pieces' && quantity.splittable && (
+      {quantity.measure === 'pieces' && quantity.splittable && (max === undefined || quantity.amount + 0.5 <= max) && (
         <TouchableOpacity
           style={styles.halfPill}
           onPress={() => onChange({ ...quantity, amount: quantity.amount + 0.5 })}

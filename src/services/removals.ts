@@ -1,9 +1,9 @@
 // src/services/removals.ts
 //
 // What left the shelves, and why. Every time food is taken out of the pantry
-// for real — eaten, binned, given away — the server copies the item into a
-// history row alongside the reason before deleting it. The Profile tab lists
-// those rows; Home charts them by reason.
+// for real — eaten, binned, given away — the server writes a history row with
+// how much went and why, then shrinks the item or deletes it. The Profile tab
+// lists those rows; Home charts them by reason.
 //
 // Not every delete is a removal. Taking back a scan with Undo, or deleting
 // something added by mistake, goes through deletePantryItems in pantry.ts and
@@ -13,24 +13,19 @@
 import { apiFetch } from '../config/api';
 import { refreshKey, subscribeToKey } from './live';
 import { refreshPantry } from './pantry';
+import type { RemovalLine } from './removalAmount';
 
-export const REMOVAL_REASONS = [
-  'consumed',
-  'spoiled',
-  'expired',
-  'leftover',
-  'over-purchased',
-  'other',
-] as const;
+export const REMOVAL_REASONS = ['consumed', 'spoiled', 'expired', 'other'] as const;
 
 export type RemovalReason = (typeof REMOVAL_REASONS)[number];
+
+/** The longest note kept with an Other removal (the server trims to this too). */
+export const NOTE_MAX = 80;
 
 export const REMOVAL_LABELS: Record<RemovalReason, string> = {
   consumed: 'Consumed',
   spoiled: 'Spoiled',
   expired: 'Expired',
-  leftover: 'Leftover',
-  'over-purchased': 'Over-purchased',
   other: 'Other',
 };
 
@@ -40,9 +35,7 @@ export const REMOVAL_HINTS: Record<RemovalReason, string> = {
   consumed: 'Eaten or cooked with',
   spoiled: 'Went bad before its date',
   expired: 'Past its date, thrown out',
-  leftover: 'Cooked but not finished',
-  'over-purchased': 'Bought more than we could use',
-  other: 'Given away, or something else',
+  other: 'Given away, or something else — say what',
 };
 
 /** Only 'consumed' is food that got eaten. Everything else counts as waste. */
@@ -50,16 +43,26 @@ export function isWaste(reason: RemovalReason): boolean {
   return reason !== 'consumed';
 }
 
+/** "Other · Gave to neighbour" when the user said why; the plain label otherwise. */
+export function reasonLabel(record: { reason: RemovalReason; note: string | null }): string {
+  return record.reason === 'other' && record.note
+    ? `${REMOVAL_LABELS.other} · ${record.note}`
+    : REMOVAL_LABELS[record.reason];
+}
+
 export type RemovalRecord = {
   id: string;
   itemId: string;
   name: string;
+  /** How much left in this removal — not what the item held before. */
   quantity: string;
   category: string;
   location: string | null;
   expiryDate: string | null;
   addedAt: number | null;
   reason: RemovalReason;
+  /** What the user typed for Other; null otherwise. */
+  note: string | null;
   /** ms epoch */
   removedAt: number;
 };
@@ -73,7 +76,7 @@ export type RemovalHistory = {
 
 export const EMPTY_HISTORY: RemovalHistory = {
   records: [],
-  counts: { consumed: 0, spoiled: 0, expired: 0, leftover: 0, 'over-purchased': 0, other: 0 },
+  counts: { consumed: 0, spoiled: 0, expired: 0, other: 0 },
 };
 
 const KEY = 'pantry-history';
@@ -98,6 +101,7 @@ function toRecord(raw: any): RemovalRecord | null {
     expiryDate: typeof raw.expiryDate === 'string' ? raw.expiryDate : null,
     addedAt: typeof raw.addedAt === 'number' ? raw.addedAt : null,
     reason: raw.reason,
+    note: typeof raw.note === 'string' && raw.note ? raw.note : null,
     removedAt: raw.removedAt,
   };
 }
@@ -126,22 +130,31 @@ export function subscribeToRemovalHistory(
 }
 
 /**
- * Takes items off the shelves and records why. Refreshes both the pantry and
- * the history, which is what moves Home's chart the moment a row is removed.
+ * Takes food off the shelves — all of an item or part of it — and records why.
+ * Each line says how much went and what is left (removalAmount.ts works both
+ * out). Refreshes the pantry and the history, which is what moves Home's
+ * chart the moment something is removed. Returns one removal id per row
+ * written, for undo.
  */
-export async function removePantryItems(itemIds: string[], reason: RemovalReason) {
-  if (itemIds.length === 0) return;
-  await apiFetch('/api/pantry/remove', { ids: itemIds, reason });
+export async function removeFromPantry(
+  lines: RemovalLine[],
+  reason: RemovalReason,
+  note: string | null = null
+): Promise<string[]> {
+  if (lines.length === 0) return [];
+  const body = await apiFetch<{ removalIds?: unknown }>('/api/pantry/remove', { items: lines, reason, note });
   refreshPantry();
   refreshKey(KEY);
+  return Array.isArray(body.removalIds) ? body.removalIds.filter((id): id is string => typeof id === 'string') : [];
 }
 
 /**
- * Drops the history rows for items that are being put back. Call alongside
- * restorePantryItems — an item back on the shelf was never really removed.
+ * Drops the history rows a removal wrote, by the ids removeFromPantry
+ * returned. Call alongside putting the food back — food back on the shelf
+ * was never really removed.
  */
-export async function undoRemovals(itemIds: string[]) {
-  if (itemIds.length === 0) return;
-  await apiFetch('/api/pantry/history/undo', { itemIds });
+export async function undoRemovals(removalIds: string[]) {
+  if (removalIds.length === 0) return;
+  await apiFetch('/api/pantry/history/undo', { removalIds });
   refreshKey(KEY);
 }

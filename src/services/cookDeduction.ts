@@ -1,8 +1,9 @@
 // src/services/cookDeduction.ts
 //
-// "Start cooking" takes the recipe's ingredients out of the pantry: 5 eggs on
-// the shelf and a recipe calling for 2 leaves 3, and an item the recipe uses
-// up entirely is removed.
+// Finishing a recipe in cook mode takes its ingredients out of the pantry: 5
+// eggs on the shelf and a recipe calling for 2 leaves 3, and an item the
+// recipe uses up entirely is removed. Every change is recorded in History as
+// Consumed, with how much the recipe took.
 //
 // Everything here is a plan first and a write second. planDeduction works out
 // every change without touching anything, so cook mode can show exactly what
@@ -17,8 +18,9 @@
 
 import { Recipe } from './recipes';
 import { PantryItem, restorePantryItems, updatePantryItem } from './pantry';
-import { removePantryItems, undoRemovals } from './removals';
-import { ItemQuantity, formatQuantityString, parseQuantityString } from './quantity';
+import { removeFromPantry, undoRemovals } from './removals';
+import { settleAmount } from './removalAmount';
+import { ItemQuantity, formatQuantityString, parseQuantityString, singularWord as singular, unitWordOf } from './quantity';
 
 // ─── Units ────────────────────────────────────────────────────────────────
 
@@ -79,15 +81,6 @@ export function parseRecipeAmount(text: string): { value: number; unit: string }
 
 // ─── Names ────────────────────────────────────────────────────────────────
 
-function singular(word: string): string {
-  if (word.endsWith('ies') && word.length > 4) return `${word.slice(0, -3)}y`;
-  if (word.endsWith('oes')) return word.slice(0, -2);
-  if (word.endsWith('ves')) return `${word.slice(0, -3)}f`;
-  if (word.endsWith('ses') || word.endsWith('ches') || word.endsWith('shes')) return word.slice(0, -2);
-  if (word.endsWith('s') && !word.endsWith('ss') && word.length > 3) return word.slice(0, -1);
-  return word;
-}
-
 function tokens(name: string): string[] {
   return name
     .toLowerCase()
@@ -123,6 +116,8 @@ export type DeductionChange = {
   before: string;
   /** null when the recipe uses it all and the item is removed. */
   after: string | null;
+  /** What the recipe took, in the item's own measure — the History row's amount. */
+  removed: string;
 };
 
 export type DeductionPlan = {
@@ -133,12 +128,6 @@ export type DeductionPlan = {
 };
 
 type Working = { item: PantryItem; quantity: ItemQuantity; unitWord: string };
-
-/** The unit noun after a pantry quantity's number — "egg" in "5 eggs". */
-function pantryUnitWord(quantity: string): string {
-  const m = quantity.trim().match(/^[\d.¼½¾]+\s*(.*)$/);
-  return m ? singular(m[1].trim().toLowerCase()) : '';
-}
 
 /** How much of `w`'s own measure an ingredient amount comes to, or a reason
  *  it can't be expressed in that measure. */
@@ -229,7 +218,7 @@ export function planDeduction(recipe: Recipe, pantry: PantryItem[]): DeductionPl
       }
       const w =
         working.get(item.id) ??
-        { item, quantity: parseQuantityString(item.quantity), unitWord: pantryUnitWord(item.quantity) };
+        { item, quantity: parseQuantityString(item.quantity), unitWord: unitWordOf(item.quantity) };
       const needed: number | string = remaining ?? amountInPantryMeasure(w, amount, ingredient.name);
       if (typeof needed === 'string') {
         reason = needed;
@@ -249,37 +238,45 @@ export function planDeduction(recipe: Recipe, pantry: PantryItem[]): DeductionPl
   for (const w of working.values()) {
     const left = settle(w.quantity);
     const after = left ? formatQuantityString(left, w.unitWord) : null;
-    if (after !== w.item.quantity) changes.push({ item: w.item, before: w.item.quantity, after });
+    if (after === w.item.quantity) continue;
+    const start = parseQuantityString(w.item.quantity);
+    const removed =
+      after === null
+        ? w.item.quantity
+        : formatQuantityString(
+            { ...start, amount: settleAmount(start.measure, start.amount - left!.amount) },
+            w.unitWord,
+          );
+    changes.push({ item: w.item, before: w.item.quantity, after, removed });
   }
   return { changes, skipped };
 }
 
 // ─── Writes ───────────────────────────────────────────────────────────────
 
-export async function applyDeduction(plan: DeductionPlan): Promise<void> {
-  const removed = plan.changes.filter((c) => c.after === null).map((c) => c.item.id);
-  await Promise.all([
-    // Cooked with, so it goes into the history as eaten.
-    removePantryItems(removed, 'consumed'),
-    ...plan.changes
-      .filter((c): c is DeductionChange & { after: string } => c.after !== null)
-      .map((c) => updatePantryItem(c.item.id, { quantity: c.after })),
-  ]);
+/** Takes every change out in one removal, recorded as Consumed — cooked with.
+ *  Returns the removal ids, which undoDeduction needs. */
+export async function applyDeduction(plan: DeductionPlan): Promise<string[]> {
+  return removeFromPantry(
+    plan.changes.map((c) => ({ id: c.item.id, removed: c.removed, remaining: c.after })),
+    'consumed',
+  );
 }
 
-/** Puts every change back: amounts restored, removed rows re-added whole. */
-export async function undoDeduction(plan: DeductionPlan): Promise<void> {
+/** Puts every change back: amounts restored, removed rows re-added whole, and
+ *  only this cook's History rows dropped. */
+export async function undoDeduction(plan: DeductionPlan, removalIds: string[]): Promise<void> {
   const restored = plan.changes.filter((c) => c.after === null).map((c) => c.item);
   await Promise.all([
     restorePantryItems(restored),
-    undoRemovals(restored.map((item) => item.id)),
+    undoRemovals(removalIds),
     ...plan.changes
       .filter((c) => c.after !== null)
       .map((c) => updatePantryItem(c.item.id, { quantity: c.before })),
   ]);
 }
 
-/** One line per change, for the summary shown when cooking starts. */
+/** One line per change, for the summary shown when cooking is finished. */
 export function describeDeduction(plan: DeductionPlan): string {
   const lines = plan.changes.map((c) =>
     c.after === null ? `• ${c.item.name}: used up, removed` : `• ${c.item.name}: ${c.before} → ${c.after}`,

@@ -10,9 +10,9 @@
 // be forgotten halfway down a function, and a mismatched owner comes back as
 // "nothing matched" instead of a document somebody else's client can see.
 
-import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { PantryItem, PantryRemoval, REMOVAL_REASONS } from '../models';
+import { parseRemoveBody, parseUndoBody, planRemovalWrites, undoFilter } from '../pantryRemove';
 import { badRequest, isValidId, withDb } from './helpers';
 
 export const pantryRouter = Router();
@@ -185,51 +185,43 @@ pantryRouter.post(
 );
 
 /**
- * Takes items off the shelves and writes down why, in one request.
+ * Takes food off the shelves — all of an item or part of it — and writes down
+ * how much and why, in one request.
  *
  * Separate from '/delete' on purpose. '/delete' is for taking back something
  * that should never have been there — a scan's Undo, an item added by mistake
  * — and logging those as "removed" would count food nobody ate or wasted.
  * This is the route for food actually leaving the kitchen.
  *
- * The history rows are written before the items are deleted, so a failure in
+ * The history rows are written before the items change, so a failure in
  * between leaves food on the shelf with a history row the user can see, rather
- * than food gone with no record of where it went.
+ * than food gone with no record of where it went. The phone sends both
+ * amounts; see pantryRemove.ts for why this side does no arithmetic.
  */
 pantryRouter.post(
   '/remove',
   withDb(async (req, res) => {
-    const { ids, reason } = (req.body ?? {}) as { ids?: string[]; reason?: string };
-    if (!Array.isArray(ids) || ids.length === 0) return badRequest(res, 'No ids were sent.');
-    if (!ids.every(isValidId)) return badRequest(res, 'An id was not usable.');
-    if (!REMOVAL_REASONS.includes(reason as (typeof REMOVAL_REASONS)[number])) {
-      return badRequest(res, 'That is not a removal reason.');
-    }
+    const request = parseRemoveBody(req.body);
+    if (typeof request === 'string') return badRequest(res, request);
 
-    const items = await PantryItem.find({ _id: { $in: ids }, userId: req.uid }).lean();
-    if (items.length === 0) {
-      res.json({ ok: true, removed: 0 });
-      return;
-    }
+    const owned = await PantryItem.find({
+      _id: { $in: request.lines.map((l) => l.id) },
+      userId: req.uid,
+    }).lean();
+    const writes = planRemovalWrites(request, owned, req.uid!, new Date());
 
-    const removedAt = new Date();
-    await PantryRemoval.insertMany(
-      items.map((item: any) => ({
-        _id: randomUUID(),
-        userId: req.uid,
-        itemId: item._id,
-        name: item.name,
-        quantity: item.quantity ?? '',
-        category: item.category ?? '',
-        location: item.location ?? null,
-        expiryDate: item.expiryDate ?? item.estimatedUseBy ?? null,
-        addedAt: item.createdAt ?? null,
-        reason,
-        removedAt,
-      }))
-    );
-    await PantryItem.deleteMany({ _id: { $in: items.map((i: any) => i._id) }, userId: req.uid });
-    res.json({ ok: true, removed: items.length });
+    if (writes.rows.length > 0) await PantryRemoval.insertMany(writes.rows);
+    if (writes.updates.length > 0) {
+      await PantryItem.bulkWrite(
+        writes.updates.map((u) => ({
+          updateOne: { filter: { _id: u.id, userId: req.uid }, update: { $set: { quantity: u.quantity } } },
+        }))
+      );
+    }
+    if (writes.deletes.length > 0) {
+      await PantryItem.deleteMany({ _id: { $in: writes.deletes }, userId: req.uid });
+    }
+    res.json({ ok: true, removalIds: writes.rows.map((r) => r._id) });
   })
 );
 
@@ -265,6 +257,7 @@ pantryRouter.get(
         expiryDate: row.expiryDate ?? null,
         addedAt: row.addedAt ? new Date(row.addedAt).getTime() : null,
         reason: row.reason,
+        note: row.note ?? null,
         removedAt: new Date(row.removedAt).getTime(),
       })),
       counts,
@@ -272,20 +265,19 @@ pantryRouter.get(
   })
 );
 
-// The other half of an undo that puts removed items back on the shelves.
-// Keyed by item id rather than history id because the caller is holding the
-// items it is restoring, not the rows '/remove' wrote for them.
+// The other half of an undo that puts food back on the shelves. Keyed by the
+// ids '/remove' returned rather than by item, so undoing a cook leaves an
+// earlier removal of the same item where it is.
 pantryRouter.post(
   '/history/undo',
   withDb(async (req, res) => {
-    const { itemIds } = (req.body ?? {}) as { itemIds?: string[] };
-    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+    const removalIds = parseUndoBody(req.body);
+    if (typeof removalIds === 'string') return badRequest(res, removalIds);
+    if (removalIds.length === 0) {
       res.json({ ok: true, deleted: 0 });
       return;
     }
-    if (!itemIds.every(isValidId)) return badRequest(res, 'An id was not usable.');
-
-    const result = await PantryRemoval.deleteMany({ itemId: { $in: itemIds }, userId: req.uid });
+    const result = await PantryRemoval.deleteMany(undoFilter(req.uid!, removalIds));
     res.json({ ok: true, deleted: result.deletedCount ?? 0 });
   })
 );
