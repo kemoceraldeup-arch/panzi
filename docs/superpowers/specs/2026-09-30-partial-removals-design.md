@@ -1,6 +1,6 @@
 # Partial removals, four reasons, and cooking takes from the pantry at the finish
 
-Date: 2026-09-30. Status: design approved in chat; spec awaiting review.
+Date: 2026-09-30. Status: spec approved 2026-10-01.
 
 ## Goal
 
