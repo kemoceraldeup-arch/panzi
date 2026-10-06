@@ -72,8 +72,7 @@ library was rejected for theming limits, maintenance lag behind React Native
 | File | Purpose |
 |---|---|
 | `src/components/tour/steps.ts` | The two tours as data: `{ id, target?, title, body }[]`, exported as `MAIN_TOUR` and `FOLLOWUP_TOUR`. Copy changes touch only this file. |
-| `src/components/tour/TourTarget.tsx` | `<TourTarget id="tab.scan">{child}</TourTarget>`. Wraps its child in a non-collapsable `View` and registers a measure function under `id` with the provider while mounted; unregisters on unmount. |
-| `src/components/tour/TourProvider.tsx` | Context: `register(id, measure)`, `unregister(id)`, `start(tourIds)`, `isRunning`. Holds the active tour and step, handles Next/Skip/finish, marks tours seen, and renders `TourOverlay` above all app content including the tab bar. |
+| `src/components/tour/TourProvider.tsx` | Context plus two hooks. `useTourTarget(id, existingRef?)` returns a ref to put on a control's own element and registers it while mounted. It's a hook, not a wrapper component, because a wrapping `View` would break TabBar's `onLayout`-based active pill. `useTourHome(state)` is Home's report of which layout is showing. The provider holds the active tour and step, handles Next/Skip/finish, marks tours seen, and renders `TourOverlay` (a transparent `Modal`) above all app content including the tab bar. |
 | `src/components/tour/TourOverlay.tsx` | Presentational. Full-screen touch-blocking layer; an SVG with a dim fill and a rounded-rect hole (target rect + padding); the bubble placed below the hole if it fits, otherwise above, clamped inside the safe area; fade between steps. |
 | `src/services/tour.ts` | Pure and storage logic: `hasSeenTour(uid, tour)`, `markTourSeen(uid, tour)`, `resetTours(uid)`; `visibleSteps(steps, mountedTargetIds)`; `placeBubble(targetRect, bubbleSize, screen, insets)`. |
 
@@ -116,12 +115,12 @@ input) skips to the next step rather than spotlighting stale coordinates.
 
 ### Measuring
 
-Targets are measured with `measureInWindow` when their step is shown, after
-the layout settles (`InteractionManager.runAfterInteractions`, then a frame).
-The overlay re-measures on orientation and size change. Home's scroll
-position at tour start is the top of the page, and the tour blocks
-scrolling, so the follow-up targets (the first cards under the greeting) are
-on screen.
+Before a tour starts, Home scrolls to the top and re-expands the tab bar
+(`resetTabScroll`). After the layout settles
+(`InteractionManager.runAfterInteractions`, then 450 ms, enough for a
+closing sheet's slide-out), every registered target is measured once with
+`measureInWindow`. The app is portrait-only, and the tour blocks scrolling
+and taps, so those rects hold for the whole tour.
 
 ### Persistence
 
