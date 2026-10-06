@@ -320,7 +320,7 @@ export default function HomeScreen({
     scrollRef.current?.scrollTo({ y: 0, animated: false });
     resetTabScroll();
   }, []);
-  const tourReady = status !== null && hadPantry !== null && !historyOpen;
+  const tourReady = status !== null && hadPantry !== null && removals !== null && !historyOpen;
   const tourHome = useMemo<TourHome | null>(
     () => (tourReady ? { layout: welcome ? 'welcome' : 'full', scrollToTop } : null),
     [tourReady, welcome, scrollToTop]

@@ -21,7 +21,9 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { InteractionManager, View, useWindowDimensions } from 'react-native';
+import { View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../../navigation/TabBar';
 import { useAuth } from '../../auth/AuthProvider';
 import {
   HomeLayout,
@@ -51,10 +53,10 @@ type Ctx = {
 
 const TourContext = createContext<Ctx | null>(null);
 
-// Long enough for a closing sheet's slide-out and a tab switch to finish. The
-// tour is a Modal, and on iOS a Modal presenting while another is dismissing
-// shows as a blank sheet; targets also have to stop moving before they're
-// measured.
+// Long enough for the tab switch (~260 ms), the tab bar re-expanding (220 ms)
+// and a closing sheet's slide-out to finish. The tour is a Modal, and on iOS a
+// Modal presenting while another is dismissing shows as a blank sheet; targets
+// also have to stop moving before they're measured.
 const SETTLE_MS = 450;
 // measureInWindow never answers for a view that unmounted mid-call.
 const MEASURE_TIMEOUT_MS = 500;
@@ -79,6 +81,8 @@ type Run = {
   steps: TourStep[];
   rects: Record<string, Rect | null>;
   index: number;
+  /** The Home layout the run started on. */
+  layout: HomeLayout;
 };
 
 type Props = {
@@ -92,6 +96,7 @@ type Props = {
 export function TourProvider({ blocked, replayNonce, children }: Props) {
   const { uid } = useAuth();
   const screen = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const targets = useRef(new Map<string, RefObject<View | null>>());
   const [home, setHome] = useState<TourHome | null>(null);
   const [seen, setSeen] = useState<Record<TourId, boolean> | null>(null);
@@ -138,6 +143,12 @@ export function TourProvider({ blocked, replayNonce, children }: Props) {
     if (blocked && run) setRun(null);
   }, [blocked, run]);
 
+  // Home changed layout mid-run (welcome <-> full): its targets moved or went.
+  // Stop without marking seen, so the tour restarts on the settled layout.
+  useEffect(() => {
+    if (run && (!home || home.layout !== run.layout)) setRun(null);
+  }, [home, run]);
+
   // Start a tour once everything lines up. Any change to the inputs while it's
   // settling cancels it; the effect then re-runs and decides again.
   useEffect(() => {
@@ -148,37 +159,42 @@ export function TourProvider({ blocked, replayNonce, children }: Props) {
     home.scrollToTop();
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const task = InteractionManager.runAfterInteractions(() => {
-      timer = setTimeout(async () => {
-        if (cancelled || blockedRef.current) return;
-        const ids = [...targets.current.keys()];
-        const measured = await Promise.all(
-          ids.map((id) => measure(targets.current.get(id) as RefObject<View | null>))
-        );
-        if (cancelled || blockedRef.current) return;
-        const rects: Record<string, Rect | null> = {};
-        ids.forEach((id, i) => {
-          rects[id] = measured[i];
-        });
-        const steps = visibleSteps(
-          due.flatMap((tour) => TOURS[tour]),
-          rects,
-          screen
-        );
-        setForced(false);
-        if (steps.length === 0) {
-          finish(due);
-          return;
+    timer = setTimeout(async () => {
+      if (cancelled || blockedRef.current) return;
+      const ids = [...targets.current.keys()];
+      const measured = await Promise.all(
+        ids.map((id) => measure(targets.current.get(id) as RefObject<View | null>))
+      );
+      if (cancelled || blockedRef.current) return;
+      const rects: Record<string, Rect | null> = {};
+      ids.forEach((id, i) => {
+        rects[id] = measured[i];
+      });
+      // Home's cards must clear the floating tab bar and the raised Scan button.
+      const clearOfTabBar =
+        screen.height - (TAB_BAR_CONTENT_HEIGHT + SCAN_BUTTON_LIFT + Math.max(insets.bottom, 10));
+      const steps = visibleSteps(
+        due.flatMap((tour) => TOURS[tour]),
+        rects,
+        screen,
+        {
+          'home.firstScan': clearOfTabBar,
+          'home.ask': clearOfTabBar,
+          'home.pantryCard': clearOfTabBar,
         }
-        setRun({ tours: due, steps, rects, index: 0 });
-      }, SETTLE_MS);
-    });
+      );
+      setForced(false);
+      if (steps.length === 0) {
+        finish(due);
+        return;
+      }
+      setRun({ tours: due, steps, rects, index: 0, layout: home.layout });
+    }, SETTLE_MS);
     return () => {
       cancelled = true;
-      task.cancel();
       if (timer) clearTimeout(timer);
     };
-  }, [uid, home, seen, blocked, run, forced, screen, finish]);
+  }, [uid, home, seen, blocked, run, forced, screen, insets.bottom, finish]);
 
   const ctx = useMemo<Ctx>(
     () => ({
@@ -198,7 +214,7 @@ export function TourProvider({ blocked, replayNonce, children }: Props) {
   // A target that unmounted after it was measured (it shouldn't — the tour
   // blocks every tap) is skipped rather than lit at stale coordinates.
   useEffect(() => {
-    if (!run || !step?.target || targets.current.has(step.target)) return;
+    if (!run || !step?.target || targets.current.get(step.target)?.current) return;
     if (run.index + 1 < run.steps.length) setRun({ ...run, index: run.index + 1 });
     else finish(run.tours);
   }, [run, step, finish]);

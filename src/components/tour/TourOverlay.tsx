@@ -38,9 +38,11 @@ export default function TourOverlay({ step, rect, index, total, onNext, onSkip }
   const screen = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // The bubble's height depends on its copy, so it's measured, then placed.
-  // Kept across steps: the next step lays out at the previous height for one
-  // frame and settles, which reads as the bubble gliding rather than blinking.
-  const [bubbleHeight, setBubbleHeight] = useState<number | null>(null);
+  // Tagged with the step it was measured for: a new step starts unmeasured, so
+  // the bubble stays hidden until it's measured rather than showing for a
+  // frame at the previous step's height, where a taller one could cover the hole.
+  const [measured, setMeasured] = useState<{ id: string; height: number } | null>(null);
+  const bubbleHeight = measured && measured.id === step.id ? measured.height : null;
 
   const bubbleWidth = screen.width - SCREEN_MARGIN * 2;
   const hole = rect ? holeFor(rect) : null;
@@ -74,7 +76,8 @@ export default function TourOverlay({ step, rect, index, total, onNext, onSkip }
         )}
 
         <View
-          onLayout={(e) => setBubbleHeight(e.nativeEvent.layout.height)}
+          key={step.id}
+          onLayout={(e) => setMeasured({ id: step.id, height: e.nativeEvent.layout.height })}
           style={[
             styles.bubble,
             {

@@ -99,6 +99,26 @@ describe('visibleSteps', () => {
     const rects = { a: { x: -0.5, y: 800, width: 390.5, height: 44.5 } };
     expect(visibleSteps(steps.slice(0, 2), rects, screen).map((s) => s.id)).toEqual(['hello', 'a']);
   });
+
+  describe('bottomLimits', () => {
+    const two = steps.slice(0, 2);
+    const limits = { a: 700 };
+
+    it('drops a target that ends below its limit', () => {
+      const rects = { a: { x: 10, y: 680, width: 40, height: 40 } }; // ends at 720
+      expect(visibleSteps(two, rects, screen, limits).map((s) => s.id)).toEqual(['hello']);
+    });
+
+    it('keeps the same target when it has no limit', () => {
+      const rects = { a: { x: 10, y: 680, width: 40, height: 40 } };
+      expect(visibleSteps(two, rects, screen).map((s) => s.id)).toEqual(['hello', 'a']);
+    });
+
+    it('keeps a target that ends exactly at its limit', () => {
+      const rects = { a: { x: 10, y: 660, width: 40, height: 40 } }; // ends at 700
+      expect(visibleSteps(two, rects, screen, limits).map((s) => s.id)).toEqual(['hello', 'a']);
+    });
+  });
 });
 
 describe('holeFor', () => {

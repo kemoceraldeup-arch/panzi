@@ -74,15 +74,16 @@ library was rejected for theming limits, maintenance lag behind React Native
 | `src/components/tour/steps.ts` | The two tours as data: `{ id, target?, title, body }[]`, exported as `MAIN_TOUR` and `FOLLOWUP_TOUR`. Copy changes touch only this file. |
 | `src/components/tour/TourProvider.tsx` | Context plus two hooks. `useTourTarget(id, existingRef?)` returns a ref to put on a control's own element and registers it while mounted. It's a hook, not a wrapper component, because a wrapping `View` would break TabBar's `onLayout`-based active pill. `useTourHome(state)` is Home's report of which layout is showing. The provider holds the active tour and step, handles Next/Skip/finish, marks tours seen, and renders `TourOverlay` (a transparent `Modal`) above all app content including the tab bar. |
 | `src/components/tour/TourOverlay.tsx` | Presentational. Full-screen touch-blocking layer; an SVG with a dim fill and a rounded-rect hole (target rect + padding); the bubble placed below the hole if it fits, otherwise above, clamped inside the safe area; fade between steps. |
-| `src/services/tour.ts` | Pure and storage logic: `hasSeenTour(uid, tour)`, `markTourSeen(uid, tour)`, `resetTours(uid)`; `visibleSteps(steps, mountedTargetIds)`; `placeBubble(targetRect, bubbleSize, screen, insets)`. |
+| `src/services/tour.ts` | Pure and storage logic: `hasSeenTour(uid, tour)`, `markTourSeen(uid, tour)` (replay is the provider's `forced` flag, set by `replayNonce`, not a storage reset); `visibleSteps(steps, rects, screen, bottomLimits?)`, where `bottomLimits` is an optional per-target lowest bottom edge; `placeBubble(targetRect, bubbleSize, screen, insets)`. |
 
 ### Wiring
 
 - `MainTabs.tsx` wraps its content (tabs and tab bar) in `TourProvider`.
-- `TabBar.tsx` wraps the Scan, Pantry, Recipes and Profile buttons in
-  `TourTarget`.
-- `HomeScreen.tsx` wraps the bell, "Scan your first item", Ask Panzi and the
-  pantry card in `TourTarget`, and decides when to start.
+- `TabBar.tsx` registers the Scan, Pantry, Recipes and Profile buttons via
+  `useTourTarget` (a ref on the existing element).
+- `HomeScreen.tsx` registers the bell, "Scan your first item", Ask Panzi and
+  the pantry card via `useTourTarget` (a ref on the existing element), and
+  reports its layout with `useTourHome`.
 - `HelpSheet.tsx` gains the replay row and an `onReplayTour` prop.
   `ProfileScreen.tsx` (where HelpSheet is mounted) closes the sheet and calls
   its own `onReplayTour` prop. `MainTabs.tsx` supplies that prop: it switches
@@ -100,6 +101,9 @@ Home calls `start` once all of these hold:
    to the camera; the tour waits until they are back on Home.
 3. The account hasn't seen that tour on this phone.
 
+If Home's layout changes while a tour is running (welcome to full or back),
+the run stops without being marked seen and restarts on the settled layout.
+
 The main tour is due first. The follow-up is due only after the main tour is
 seen and when Home is showing its full layout. If both are due at once (for
 example, a reinstall on an account that already has food), they run back to
@@ -110,15 +114,17 @@ back as one sequence.
 When a step's `target` isn't registered (not mounted) or measures as
 zero-size or off-screen, that step is dropped. `visibleSteps` makes this
 decision at the moment the tour starts, so the counter is right from step 1.
-A target that disappears mid-tour (it shouldn't, since the tour blocks
+The `home.*` targets other than the bell (first scan, Ask Panzi, pantry
+card) must also end above the tab bar and raised Scan button, or the step is
+dropped. A target that disappears mid-tour (it shouldn't, since the tour blocks
 input) skips to the next step rather than spotlighting stale coordinates.
 
 ### Measuring
 
 Before a tour starts, Home scrolls to the top and re-expands the tab bar
-(`resetTabScroll`). After the layout settles
-(`InteractionManager.runAfterInteractions`, then 450 ms, enough for a
-closing sheet's slide-out), every registered target is measured once with
+(`resetTabScroll`). After a fixed 450 ms settle
+(enough for the tab switch, the tab bar re-expanding and a closing sheet's
+slide-out), every registered target is measured once with
 `measureInWindow`. The app is portrait-only, and the tour blocks scrolling
 and taps, so those rects hold for the whole tour.
 

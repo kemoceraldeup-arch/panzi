@@ -89,13 +89,23 @@ function onScreen(rect: Rect | null | undefined, screen: Size): rect is Rect {
  * has no size, or sits off screen is dropped rather than spotlighting
  * nothing — so "Scan your first item" quietly disappears for someone who
  * already has food, and the counter only counts what is shown.
+ * `bottomLimits` is a per-target lowest bottom edge (y + height, window
+ * coordinates): a target with one must end at or above it, so a Home card
+ * sitting under the tab bar doesn't pass for visible.
  */
 export function visibleSteps(
   steps: TourStep[],
   rects: Record<string, Rect | null>,
-  screen: Size
+  screen: Size,
+  bottomLimits: Record<string, number> = {}
 ): TourStep[] {
-  return steps.filter((step) => step.target === null || onScreen(rects[step.target], screen));
+  return steps.filter((step) => {
+    if (step.target === null) return true;
+    const rect = rects[step.target];
+    if (!onScreen(rect, screen)) return false;
+    const limit = bottomLimits[step.target];
+    return limit === undefined || rect.y + rect.height <= limit + EDGE_TOLERANCE;
+  });
 }
 
 /** The cut-out around a target: padded, a circle for round-ish buttons (the
