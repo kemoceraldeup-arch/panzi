@@ -113,6 +113,8 @@ type Props = {
    *  Home opens the same one. */
   onOpenReminders: () => void;
   onSignOut: () => void;
+  /** Help's "Show the app tour again" — MainTabs switches to Home and runs it. */
+  onReplayTour: () => void;
 };
 
 export default function ProfileScreen({
@@ -121,6 +123,7 @@ export default function ProfileScreen({
   onOpenSaved,
   onOpenReminders,
   onSignOut,
+  onReplayTour,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
@@ -609,6 +612,7 @@ export default function ProfileScreen({
         email={email}
         appVersion={APP_VERSION}
         onClose={() => setHelp(false)}
+        onReplayTour={onReplayTour}
       />
 
       <PrivacySheet visible={privacy} onClose={() => setPrivacy(false)} />

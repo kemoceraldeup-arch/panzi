@@ -66,9 +66,11 @@ type Props = {
   email: string | null;
   appVersion: string;
   onClose: () => void;
+  /** Closes the sheet and runs the app tour again over Home. */
+  onReplayTour: () => void;
 };
 
-export default function HelpSheet({ visible, uid, email, appVersion, onClose }: Props) {
+export default function HelpSheet({ visible, uid, email, appVersion, onClose, onReplayTour }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -135,6 +137,22 @@ export default function HelpSheet({ visible, uid, email, appVersion, onClose }: 
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            <View style={[styles.card, styles.tourCard]}>
+              <TouchableOpacity
+                style={styles.faqRow}
+                onPress={() => {
+                  close();
+                  onReplayTour();
+                }}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+              >
+                <Ionicons name="compass-outline" size={18} color={colors.primaryDark} />
+                <Text style={styles.faqQuestion}>Show the app tour again</Text>
+                <Ionicons name="chevron-forward" size={16} color={colors.chevron} />
+              </TouchableOpacity>
+            </View>
+
             <Text style={styles.eyebrow}>COMMON QUESTIONS</Text>
             <View style={styles.card}>
               {FAQS.map((faq, i) => {
@@ -282,6 +300,9 @@ const useStyles = makeStyles((colors) => ({
     borderWidth: 1,
     borderColor: colors.backgroundAlt,
     paddingHorizontal: space.lg,
+  },
+  tourCard: {
+    marginBottom: space.xxl,
   },
   divided: {
     borderTopWidth: 1,

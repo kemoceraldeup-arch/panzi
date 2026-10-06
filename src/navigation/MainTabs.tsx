@@ -486,6 +486,10 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
             onOpenSaved={() => setSavedOpen(true)}
             onOpenReminders={() => setReminderSheet(true)}
             onSignOut={onSignOut}
+            onReplayTour={() => {
+              handleChange('home');
+              setTourReplay((n) => n + 1);
+            }}
           />
         </TabLayer>
       </View>
