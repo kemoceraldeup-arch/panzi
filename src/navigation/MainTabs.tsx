@@ -12,6 +12,7 @@ import ScanModal from '../screens/scan/ScanModal';
 import Toast from '../components/Toast';
 import TabBar, { TabKey, SCAN_BUTTON_LIFT } from './TabBar';
 import TabLayer from './TabLayer';
+import { TourProvider } from '../components/tour/TourProvider';
 import { resetTabScroll } from './scrollCollapse';
 import { useAuth } from '../auth/AuthProvider';
 import { PantryItem, deletePantryItems, subscribeToPantryItems } from '../services/pantry';
@@ -127,6 +128,8 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
   const [selecting, setSelecting] = useState(false);
   // The last batch written, while its Undo toast is still up.
   const [batch, setBatch] = useState<Batch | null>(null);
+  // Bumped by Help's "Show the app tour again" (see ProfileScreen).
+  const [tourReplay, setTourReplay] = useState(0);
   const { uid } = useAuth();
 
   // Watched here rather than inside ProfileScreen, because a listener that
@@ -406,11 +409,27 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
     }
   }
 
+  // The app tour only runs over Home with nothing else on top of it. The
+  // scanner, chat and every sheet are Modals the tour's own Modal must not
+  // race; "Scan my first shelf" opens the camera first, and the tour simply
+  // waits for it to close.
+  const tourBlocked =
+    active !== 'home' ||
+    selecting ||
+    scanOpen ||
+    chatOpen ||
+    savedOpen ||
+    openRecipe !== null ||
+    cooking !== null ||
+    inbox ||
+    reminderSheet;
+
   return (
     <SafeAreaView
       style={styles.container}
       edges={FULL_BLEED.includes(active) ? [] : ['top']}
     >
+      <TourProvider blocked={tourBlocked} replayNonce={tourReplay}>
       {/* Home, Recipes and Profile stay mounted permanently — TabLayer only
           fades/slides their opacity and position, it never unmounts them.
           Switching away and back used to unmount and remount HomeScreen,
@@ -587,6 +606,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
           bottomOffset={TOAST_OFFSET}
         />
       )}
+      </TourProvider>
     </SafeAreaView>
   );
 }

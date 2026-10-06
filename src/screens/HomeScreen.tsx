@@ -1,6 +1,6 @@
 // src/screens/HomeScreen.tsx
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -28,7 +28,8 @@ import PantryHistoryScreen from './PantryHistoryScreen';
 import { RemovalHistory, showRemovalChart, subscribeToRemovalHistory } from '../services/removals';
 import { hasHadPantry, rememberHadPantry, shouldRemember, showWelcome } from '../services/firstRun';
 import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
-import { useCollapseOnScroll } from '../navigation/scrollCollapse';
+import { resetTabScroll, useCollapseOnScroll } from '../navigation/scrollCollapse';
+import { TourHome, useTourHome, useTourTarget } from '../components/tour/TourProvider';
 import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
@@ -246,6 +247,13 @@ export default function HomeScreen({
   // Measured on press rather than on layout: the header scrolls, so where the
   // bell was when it rendered is not where it is when it is tapped.
   const bellRef = useRef<View>(null);
+  // Lit by the app tour (components/tour). The bell already has a ref for its
+  // panel's anchor; the tour shares it.
+  useTourTarget('home.bell', bellRef);
+  const firstScanTourRef = useTourTarget('home.firstScan');
+  const askTourRef = useTourTarget('home.ask');
+  const pantryCardTourRef = useTourTarget('home.pantryCard');
+  const scrollRef = useRef<ScrollView>(null);
 
   // What the bell's panel will actually list. Held separately from `status`
   // because the two count different things: the pantry card's "use soon" is a
@@ -304,6 +312,20 @@ export default function HomeScreen({
   }, [uid, remember, hadPantry]);
 
   const welcome = showWelcome(status?.total ?? null, hadPantry);
+
+  // What the app tour needs from Home: which face is showing, once it's
+  // final. Nothing while the pantry or the first-run answer is still loading,
+  // or while History is open over the page.
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    resetTabScroll();
+  }, []);
+  const tourReady = status !== null && hadPantry !== null && !historyOpen;
+  const tourHome = useMemo<TourHome | null>(
+    () => (tourReady ? { layout: welcome ? 'welcome' : 'full', scrollToTop } : null),
+    [tourReady, welcome, scrollToTop]
+  );
+  useTourHome(tourHome);
 
   // Live rather than fetched once: renaming yourself on the Profile tab has to
   // change the greeting here, and this screen stays mounted the whole time the
@@ -391,6 +413,7 @@ export default function HomeScreen({
   return (
     <View style={styles.container}>
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1 }}
         contentContainerStyle={[
           styles.content,
@@ -485,7 +508,7 @@ export default function HomeScreen({
             {/* The tab bar's scan button is a wordless circle. On the one screen
                 where the user has never scanned anything, the action needs to
                 say what it is. */}
-            <TouchableOpacity style={styles.firstRunPrimary} onPress={onScan} activeOpacity={0.85}>
+            <TouchableOpacity ref={firstScanTourRef} style={styles.firstRunPrimary} onPress={onScan} activeOpacity={0.85}>
               <Ionicons name="scan-outline" size={18} color={colors.onAccent} />
               <Text style={styles.firstRunPrimaryText}>Scan your first item</Text>
             </TouchableOpacity>
@@ -502,7 +525,7 @@ export default function HomeScreen({
             covered a strip of content and the scroll had to reserve a matching
             gap to compensate. In flow it obscures nothing, and it's still on
             screen without scrolling. */}
-        <View style={styles.askCard}>
+        <View ref={askTourRef} collapsable={false} style={styles.askCard}>
           {/* maxScale is capped by the card's 8pt padding — the ring grows
               size × (maxScale − 1) / 2 beyond the avatar, so 1.4 on 34pt
               reaches 6.8pt and stays inside the rounded corner. Raising one
@@ -530,6 +553,7 @@ export default function HomeScreen({
             user has to go and look. Always the first card, above the alerts
             that come and go, so it never shifts position from day to day. */}
         <TouchableOpacity
+          ref={pantryCardTourRef}
           style={styles.statusCard}
           onPress={onViewPantry}
           activeOpacity={0.85}
