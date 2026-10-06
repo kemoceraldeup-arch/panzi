@@ -105,6 +105,7 @@ export function TourProvider({ blocked, replayNonce, children }: Props) {
   useEffect(() => {
     setSeen(null);
     setRun(null);
+    setForced(false);
     if (!uid) return;
     let alive = true;
     Promise.all(TOUR_IDS.map((tour) => hasSeenTour(uid, tour))).then(([main, followup]) => {
@@ -131,6 +132,11 @@ export function TourProvider({ blocked, replayNonce, children }: Props) {
     },
     [uid]
   );
+
+  // Stop a running tour if Home is covered, without marking it seen, so it resumes when unblocked.
+  useEffect(() => {
+    if (blocked && run) setRun(null);
+  }, [blocked, run]);
 
   // Start a tour once everything lines up. Any change to the inputs while it's
   // settling cancels it; the effect then re-runs and decides again.
