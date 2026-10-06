@@ -8,7 +8,14 @@ jest.mock('../live', () => ({ refreshKey: jest.fn(), subscribeToKey: jest.fn() }
 jest.mock('../pantry', () => ({ refreshPantry: jest.fn() }));
 
 import { apiFetch } from '../../config/api';
-import { reasonLabel, removeFromPantry, undoRemovals } from '../removals';
+import {
+  EMPTY_HISTORY,
+  otherNote,
+  reasonLabel,
+  removeFromPantry,
+  showRemovalChart,
+  undoRemovals,
+} from '../removals';
 
 const mockFetch = apiFetch as jest.Mock;
 
@@ -40,4 +47,42 @@ it('labels Other with its note', () => {
   expect(reasonLabel({ reason: 'other', note: 'Gave to neighbour' })).toBe('Other · Gave to neighbour');
   expect(reasonLabel({ reason: 'other', note: null })).toBe('Other');
   expect(reasonLabel({ reason: 'spoiled', note: null })).toBe('Spoiled');
+});
+
+describe('otherNote', () => {
+  it('is the trimmed text, capped at 80 characters', () => {
+    expect(otherNote('  Gave to neighbour  ')).toBe('Gave to neighbour');
+    expect(otherNote('x'.repeat(100))).toBe('x'.repeat(80));
+  });
+
+  it('is null when nothing was typed', () => {
+    expect(otherNote('')).toBeNull();
+    expect(otherNote('    ')).toBeNull();
+  });
+});
+
+describe('showRemovalChart', () => {
+  const withRemovals = { ...EMPTY_HISTORY, counts: { ...EMPTY_HISTORY.counts, consumed: 2 } };
+
+  it('keeps the chart when the pantry has been emptied but History has removals', () => {
+    expect(showRemovalChart(0, withRemovals)).toBe(true);
+  });
+
+  it('shows the chart on a stocked pantry, even before anything was removed', () => {
+    expect(showRemovalChart(3, withRemovals)).toBe(true);
+    expect(showRemovalChart(3, EMPTY_HISTORY)).toBe(true);
+  });
+
+  it('keeps a brand-new empty pantry free of an empty chart', () => {
+    expect(showRemovalChart(0, EMPTY_HISTORY)).toBe(false);
+  });
+
+  it('waits for the history to load', () => {
+    expect(showRemovalChart(3, null)).toBe(false);
+    expect(showRemovalChart(null, null)).toBe(false);
+  });
+
+  it('shows the chart while the pantry count is still loading, as before', () => {
+    expect(showRemovalChart(null, withRemovals)).toBe(true);
+  });
 });

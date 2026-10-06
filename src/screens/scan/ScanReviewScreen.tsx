@@ -26,6 +26,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -49,6 +50,7 @@ import {
   attentionChips,
   describeQuantity,
   provenanceChip,
+  needsALook,
   splitByAttention,
 } from '../../services/scan';
 import {
@@ -63,6 +65,7 @@ import { toBaseUnitAmount } from '../../services/recognition';
 import { suggestFoods, lookupFood } from '../../data/foodCatalogue';
 import { Capture, AttentionChip, DateChip, Eyebrow, MeasureControl, HIT_SLOP, ItemThumb } from './atoms';
 import DateField from './DateField';
+import { keyboardDismissOnTap, markTextFieldTouch } from './keyboardTaps';
 import PackageStatusField from './PackageStatusField';
 import PickDateModal from './PickDateModal';
 import { classifyFood } from '../../services/foodClass';
@@ -177,8 +180,20 @@ export default function ScanReviewScreen({
   const [showAll, setShowAll] = useState(false);
   const [photoPreviewOpen, setPhotoPreviewOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  const dismissOnTap = useMemo(keyboardDismissOnTap, []);
 
-  const { needsLook, looksRight } = useMemo(() => splitByAttention(candidates), [candidates]);
+  // The open card's group as of the moment it opened — see splitByAttention's
+  // `pinned`. Re-taken only when a different card opens, so edits made while
+  // it is open can't move it to the other group underneath the user.
+  const [pin, setPin] = useState<{ id: string; needsLook: boolean } | null>(null);
+  const opened = editingId === null ? undefined : candidates.find((c) => c.id === editingId);
+  if ((pin?.id ?? null) !== (opened?.id ?? null)) {
+    setPin(opened ? { id: opened.id, needsLook: needsALook(opened) } : null);
+  }
+  const { needsLook, looksRight } = useMemo(
+    () => splitByAttention(candidates, pin),
+    [candidates, pin]
+  );
   const editing = editingId !== null;
   const visibleLooksRight = showAll ? looksRight : looksRight.slice(0, COLLAPSED_LOOKS_RIGHT);
 
@@ -314,6 +329,7 @@ export default function ScanReviewScreen({
 
       <ScrollView
         ref={scrollRef}
+        {...dismissOnTap}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
@@ -624,12 +640,17 @@ function EditCard({
   // border now only appears while the field genuinely has focus.
   const [nameFocused, setNameFocused] = useState(false);
   const [locationFocused, setLocationFocused] = useState(false);
+  // Set by a Confirm press with no storage spot; the error only shows while
+  // the spot is still blank, so picking one clears it without a reset.
+  const [confirmTried, setConfirmTried] = useState(false);
+  const locationMissing = !candidate.location?.trim();
   // onPickDate hands PackageStatusField a promise; the modal resolves it
   // through this ref rather than threading a resolver through props, since
   // the field only needs the final ISO date, not the modal's own open state.
   const pickDateResolveRef = useRef<((iso: string | null) => void) | null>(null);
   const quantitySectionRef = useRef<View>(null);
   const nameInputRef = useRef<TextInput>(null);
+  const locationInputRef = useRef<TextInput>(null);
 
   // A blank row exists to be typed into — put the cursor there as soon as
   // the page can take the focus. Keyed on the card, so it fires once per
@@ -749,6 +770,19 @@ function EditCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, candidate.name]);
 
+  // Every item needs somewhere to live before it can be confirmed — the
+  // estimate, the pantry's grouping and the move flow all read it. Opens the
+  // picker rather than only complaining, so the fix is one tap away.
+  function handleConfirm() {
+    Keyboard.dismiss();
+    if (locationMissing) {
+      setConfirmTried(true);
+      setLocationsOpen(true);
+      return;
+    }
+    onConfirm();
+  }
+
   function handleMeasurePicked(next: ItemQuantity) {
     measureTouched.current = true;
     if (uid && candidate.name.trim()) {
@@ -797,7 +831,15 @@ function EditCard({
       </View>
 
       <Eyebrow style={styles.fieldLabel}>Name</Eyebrow>
-      <View style={[styles.field, nameFocused && styles.fieldFocused]}>
+      {/* The whole box focuses the input, not just the text inside it — the
+          box's padding is otherwise a dead zone, and an empty field has no
+          text to hit at all. */}
+      <Pressable
+        style={[styles.field, nameFocused && styles.fieldFocused]}
+        onPress={() => nameInputRef.current?.focus()}
+        onTouchStart={markTextFieldTouch}
+        accessible={false}
+      >
         <TextInput
           ref={nameInputRef}
           style={styles.fieldInput}
@@ -825,7 +867,7 @@ function EditCard({
           cursorColor={colors.accent}
           returnKeyType="done"
         />
-      </View>
+      </Pressable>
       {suggestions.length > 0 && (
         <View style={styles.suggestionRow}>
           {suggestions.map((name) => {
@@ -964,6 +1006,7 @@ function EditCard({
       <View style={styles.storeInRow}>
         <StoreInField
           location={candidate.location}
+          invalid={confirmTried && locationMissing}
           onPress={() => setLocationsOpen((v) => !v)}
         />
       </View>
@@ -1000,8 +1043,14 @@ function EditCard({
         </View>
       )}
       {locationsOpen && candidate.location !== null && !FIXED_LOCATIONS.has(candidate.location) && (
-        <View style={[styles.field, locationFocused && styles.fieldFocused]}>
+        <Pressable
+          style={[styles.field, locationFocused && styles.fieldFocused]}
+          onPress={() => locationInputRef.current?.focus()}
+          onTouchStart={markTextFieldTouch}
+          accessible={false}
+        >
           <TextInput
+            ref={locationInputRef}
             style={styles.fieldInput}
             value={candidate.location}
             onChangeText={(location) => onPatch({ location, editedByUser: true })}
@@ -1014,7 +1063,7 @@ function EditCard({
             autoCapitalize="sentences"
             returnKeyType="done"
           />
-        </View>
+        </Pressable>
       )}
 
       {/* The category is otherwise silently guessed from the name (see
@@ -1059,7 +1108,7 @@ function EditCard({
       )}
 
       <View style={styles.editActions}>
-        <TouchableOpacity style={styles.confirmButton} onPress={onConfirm} activeOpacity={0.85}>
+        <TouchableOpacity style={styles.confirmButton} onPress={handleConfirm} activeOpacity={0.85}>
           <LinearGradient
             colors={[colors.primaryBright, colors.primaryMid]}
             start={{ x: 0.2, y: 0 }}
@@ -1079,18 +1128,28 @@ function EditCard({
 /** The "Store in" field's chevron row — always its own full-width row below
  *  How many (see EditCard above), so its top spacing comes from the
  *  surrounding storeInRow rather than from fieldLabel itself. */
-function StoreInField({ location, onPress }: { location: string | null; onPress: () => void }) {
+function StoreInField({
+  location,
+  invalid,
+  onPress,
+}: {
+  location: string | null;
+  /** Confirm was pressed with no spot picked — outline it and say why. */
+  invalid: boolean;
+  onPress: () => void;
+}) {
   const styles = useStyles();
   const colors = useColors();
   return (
     <>
       <Eyebrow style={styles.fieldLabel}>Store in</Eyebrow>
-      <TouchableOpacity style={styles.field} onPress={onPress} activeOpacity={0.7}>
+      <TouchableOpacity style={[styles.field, invalid && styles.fieldInvalid]} onPress={onPress} activeOpacity={0.7}>
         <Text style={[styles.fieldValue, !location && styles.fieldValueEmpty]} numberOfLines={1}>
           {location || 'Pick one'}
         </Text>
         <Ionicons name="chevron-down" size={14} color={colors.chevron} />
       </TouchableOpacity>
+      {invalid && <Text style={styles.fieldError}>Pick where you&apos;ll store it.</Text>}
     </>
   );
 }
@@ -1403,7 +1462,21 @@ const useStyles = makeStyles((colors) => ({
     borderColor: colors.primaryDark,
     backgroundColor: colors.primaryLighter,
   },
+  fieldInvalid: {
+    borderColor: colors.error,
+  },
+  fieldError: {
+    marginTop: space.xs,
+    fontWeight: '600',
+    fontSize: type.caption.fontSize,
+    color: colors.error,
+  },
+  // flex: 1 so the input spans the whole box. Left to size itself to its
+  // text inside the row-direction `field`, iOS measured it a hair narrower
+  // than the bold glyphs and scrolled the text, clipping the first letter —
+  // and only the word itself, not the rest of the box, took taps.
   fieldInput: {
+    flex: 1,
     fontFamily: 'Nunito_700Bold',
     fontSize: type.bodyLarge.fontSize,
     color: colors.primaryDarker,

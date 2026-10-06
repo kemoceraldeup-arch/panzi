@@ -187,14 +187,17 @@ function HistoryRow({ record, divided }: { record: RemovalRecord; divided: boole
   const styles = useStyles();
   const colors = useColors();
   const waste = isWaste(record.reason);
-  const label = reasonLabel(record);
+  // The pill only ever holds the reason. What someone typed for Other gets its
+  // own line under the name: squeezed into the pill after a "·" it read as a
+  // cut-off word ("Other · Ps") rather than as the user's own words.
+  const note = record.reason === 'other' ? record.note : null;
   const meta = [record.quantity.trim(), timeLabel(record.removedAt)].filter(Boolean).join(' · ');
 
   return (
     <View
       style={[styles.row, divided && styles.rowDivided]}
       accessible
-      accessibilityLabel={`${record.name}, ${meta}, ${label}`}
+      accessibilityLabel={`${record.name}, ${meta}, ${reasonLabel(record)}`}
     >
       <View style={styles.rowText}>
         <Text style={styles.rowName} numberOfLines={1}>
@@ -203,6 +206,11 @@ function HistoryRow({ record, divided }: { record: RemovalRecord; divided: boole
         <Text style={styles.rowMeta} numberOfLines={1}>
           {meta}
         </Text>
+        {note && (
+          <Text style={styles.rowNote} numberOfLines={2}>
+            Why: {note}
+          </Text>
+        )}
       </View>
       <View style={[styles.reason, waste ? styles.reasonWaste : styles.reasonEaten]}>
         <Ionicons
@@ -214,7 +222,7 @@ function HistoryRow({ record, divided }: { record: RemovalRecord; divided: boole
           style={[styles.reasonText, waste ? styles.reasonTextWaste : styles.reasonTextEaten]}
           numberOfLines={1}
         >
-          {label}
+          {REMOVAL_LABELS[record.reason]}
         </Text>
       </View>
     </View>
@@ -329,6 +337,13 @@ const useStyles = makeStyles((colors) => ({
     fontWeight: '600',
     fontSize: type.caption.fontSize,
     color: colors.textSecondary,
+  },
+  rowNote: {
+    fontWeight: '600',
+    fontSize: type.caption.fontSize,
+    lineHeight: 17,
+    color: colors.textSecondary,
+    marginTop: space.xs2,
   },
   reason: {
     flexDirection: 'row',

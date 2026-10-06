@@ -54,8 +54,12 @@ export function parseRemoveBody(body: unknown): RemoveRequest | string {
   }
 
   if (!REMOVAL_REASONS.includes(reason as RemovalReason)) return 'That is not a removal reason.';
-  const kept = reason === 'other' && typeof note === 'string' ? note.trim().slice(0, NOTE_MAX).trim() : '';
-  return { lines, reason: reason as RemovalReason, note: kept || null };
+  if (reason !== 'other') return { lines, reason: reason as RemovalReason, note: null };
+  // "Other" on its own says nothing about where the food went, so it only
+  // counts with the user's own words for it.
+  const kept = typeof note === 'string' ? note.trim().slice(0, NOTE_MAX).trim() : '';
+  if (!kept) return 'Say why it is going.';
+  return { lines, reason: 'other', note: kept };
 }
 
 export type RemovalWrites = {

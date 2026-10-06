@@ -620,6 +620,19 @@ export default function ScanModal({
     return true;
   }
 
+  /** The same refusal for a row with nowhere to be stored, opening the
+   *  offending card so its Store in picker is right there. */
+  function blockedByMissingLocation(): boolean {
+    const homeless = candidates.find((c) => !c.location?.trim());
+    if (!homeless) return false;
+    setEditingId(homeless.id);
+    Alert.alert(
+      `Where does ${homeless.name.trim()} go?`,
+      'Pick where you’ll store it before adding it to your pantry.'
+    );
+    return true;
+  }
+
   /**
    * Saves corrections made to a scan reopened from history.
    *
@@ -697,7 +710,7 @@ export default function ScanModal({
    * alternative is alarming someone about a success.
    */
   async function submit() {
-    if (saving || candidates.length === 0 || blockedByBlankRow()) return;
+    if (saving || candidates.length === 0 || blockedByBlankRow() || blockedByMissingLocation()) return;
 
     // Reopened from history: those rows already exist in the pantry, so this is
     // a write-back rather than a second insert. Nothing new is being added, so

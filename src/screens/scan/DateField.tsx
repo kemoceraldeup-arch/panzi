@@ -34,7 +34,7 @@
 // to paint completely before any classification runs.
 
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Keyboard, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateWheelSheet, { formatLongDate } from './DateWheelSheet';
 import Text from '../../components/Text';
@@ -313,7 +313,14 @@ export default function DateField({
           uppercase, so it doesn't read as another section label. */}
       <TouchableOpacity
         style={styles.unknownRow}
-        onPress={() => (unknown ? onChangeUnknown(false) : selectUnknown())}
+        // Lowers the keyboard as well: the page's ScrollView keeps it up
+        // through taps (keyboardShouldPersistTaps), so after typing a name
+        // it would otherwise stay over the estimate panel this just opened.
+        onPress={() => {
+          Keyboard.dismiss();
+          if (unknown) onChangeUnknown(false);
+          else selectUnknown();
+        }}
         activeOpacity={0.7}
         accessibilityRole="radio"
         accessibilityState={{ checked: unknown === true }}

@@ -72,6 +72,7 @@ import {
   ingredientCounts,
   isCookableFromPantry,
   usesPantryItems,
+  withPantryMatches,
   loadCachedRecipes,
   pantrySignature,
   saveCachedRecipes,
@@ -531,7 +532,10 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
   // matching recipes existed, the toggle just never had a reason to say so).
   const allCards = useMemo(() => {
     if (!featured) return [];
-    return [featured, ...(set?.alternates ?? [])].map((recipe) => {
+    // Pantry matches applied first, so "Chicken" on the shelf counts toward
+    // "chicken thighs" here exactly as it does on the detail screen.
+    return [featured, ...(set?.alternates ?? [])].map((suggested) => {
+      const recipe = withPantryMatches(suggested, items ?? []);
       const { have, total } = ingredientCounts(recipe);
       const cookable = isCookableFromPantry(recipe, items ?? []);
       const usesPantry = usesPantryItems(recipe, items ?? []);
@@ -1041,6 +1045,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
 
       <RecipeDetailScreen
         recipe={open}
+        items={items ?? []}
         saved={open ? savedKeys.has(savedKey(open)) : false}
         onToggleSave={() => open && toggleSave(open)}
         onStartCooking={() => {

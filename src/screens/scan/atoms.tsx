@@ -55,6 +55,7 @@ import { Palette } from '../../theme/palettes';
 import { useColors } from '../../theme/ThemeProvider';
 import { space } from '../../theme/spacing';
 import { type } from '../../theme/typography';
+import { markTextFieldTouch } from './keyboardTaps';
 
 /** The capture a crop is taken from. Pixel dimensions are needed to crop
  *  without distorting — the box is in fractions of each axis separately. */
@@ -678,6 +679,9 @@ export function MeasureControl({
             }}
             onFocus={onFocusInput}
             onBlur={() => commitTyped(draft)}
+            // A tap inside the amount being typed is not a tap away from it —
+            // see keyboardTaps.ts.
+            onTouchStart={markTextFieldTouch}
             keyboardType="decimal-pad"
             maxLength={MAX_AMOUNT_DIGITS + 1}
             selectTextOnFocus

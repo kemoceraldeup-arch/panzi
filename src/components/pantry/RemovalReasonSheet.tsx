@@ -30,6 +30,7 @@ import {
   REMOVAL_REASONS,
   RemovalReason,
   isWaste,
+  otherNote,
 } from '../../services/removals';
 import { fonts, type } from '../../theme/typography';
 import { makeStyles } from '../../theme/makeStyles';
@@ -42,7 +43,8 @@ export const REASON_ICONS: Record<RemovalReason, keyof typeof Ionicons.glyphMap>
   consumed: 'restaurant-outline',
   spoiled: 'warning-outline',
   expired: 'calendar-outline',
-  other: 'ellipsis-horizontal',
+  // Not three dots: beside a label those read as text that was cut off.
+  other: 'chatbubble-outline',
 };
 
 type Take = number | 'all';
@@ -71,6 +73,8 @@ export default function RemovalReasonSheet({ items, mode, onSave, onDiscard, onC
   const [units, setUnits] = useState<Record<string, DisplayUnit>>({});
   const [otherOpen, setOtherOpen] = useState(false);
   const [note, setNote] = useState('');
+  // What Other would save — null until something is typed, which keeps Save off.
+  const typedNote = otherNote(note);
   // Set by the first save so a double tap cannot send the removal twice.
   const submitting = useRef(false);
 
@@ -255,13 +259,24 @@ export default function RemovalReasonSheet({ items, mode, onSave, onDiscard, onC
                     maxLength={NOTE_MAX}
                     autoFocus
                     returnKeyType="done"
-                    onSubmitEditing={() => save('other', note.trim() || null)}
+                    onSubmitEditing={() => {
+                      if (typedNote) save('other', typedNote);
+                    }}
                     accessibilityLabel="Reason for removing"
                   />
+                  {/* "Other" alone says nothing about where the food went, so
+                      it needs the user's own words before it can be saved. */}
+                  {!typedNote && (
+                    <Text style={styles.noteHint}>Type a reason to save it as Other.</Text>
+                  )}
                   <TouchableOpacity
-                    style={styles.primary}
-                    onPress={() => save('other', note.trim() || null)}
+                    style={[styles.primary, !typedNote && styles.primaryDisabled]}
+                    onPress={() => {
+                      if (typedNote) save('other', typedNote);
+                    }}
+                    disabled={!typedNote}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: !typedNote }}
                   >
                     <Text style={styles.primaryText}>Save</Text>
                   </TouchableOpacity>
@@ -373,6 +388,9 @@ const useStyles = makeStyles((colors) => ({
     fontSize: type.body.fontSize,
     color: colors.surface,
   },
+  primaryDisabled: {
+    opacity: 0.4,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -428,6 +446,12 @@ const useStyles = makeStyles((colors) => ({
     paddingHorizontal: space.lg,
     fontSize: type.body.fontSize,
     color: colors.primaryDarker,
+  },
+  noteHint: {
+    fontWeight: '600',
+    fontSize: type.caption.fontSize,
+    color: colors.textSecondary,
+    marginTop: space.sm,
   },
   discard: {
     alignSelf: 'center',

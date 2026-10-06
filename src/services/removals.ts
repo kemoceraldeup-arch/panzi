@@ -50,6 +50,12 @@ export function reasonLabel(record: { reason: RemovalReason; note: string | null
     : REMOVAL_LABELS[record.reason];
 }
 
+/** What Other saves from the text field: trimmed and capped, or null when
+ *  nothing was typed — Other can't be saved without a reason. */
+export function otherNote(text: string): string | null {
+  return text.trim().slice(0, NOTE_MAX).trim() || null;
+}
+
 export type RemovalRecord = {
   id: string;
   itemId: string;
@@ -78,6 +84,19 @@ export const EMPTY_HISTORY: RemovalHistory = {
   records: [],
   counts: { consumed: 0, spoiled: 0, expired: 0, other: 0 },
 };
+
+/**
+ * Whether Home shows "Where your food went". The chart reads History, not the
+ * shelves, so emptying the pantry must not take it away. Only a pantry that is
+ * empty AND has never had anything removed — a brand-new account — skips it,
+ * so the first screen stays about scanning rather than an empty chart.
+ * `pantryTotal` is null while the pantry is still loading.
+ */
+export function showRemovalChart(pantryTotal: number | null, history: RemovalHistory | null): boolean {
+  if (!history) return false;
+  if (pantryTotal !== 0) return true;
+  return REMOVAL_REASONS.some((reason) => history.counts[reason] > 0);
+}
 
 const KEY = 'pantry-history';
 

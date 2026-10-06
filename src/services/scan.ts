@@ -199,13 +199,27 @@ export function needsALook(c: ScanCandidate): boolean {
   return c.nameUnsure || !c.expiryDate || !!c.ripenessBlocked || !!c.fillNote;
 }
 
-export function splitByAttention(candidates: ScanCandidate[]): {
+/**
+ * `pinned` holds one open card in the group it was opened in, whatever its
+ * edits since would say. Without it, the first edit that settles the card
+ * (tapping "I don't know" marks it editedByUser) moved it from Needs a look
+ * to Looks right mid-edit — a different parent, so React rebuilt the card:
+ * its local state was lost and its Name field's autoFocus raised the
+ * keyboard the user had just put away. It moves when it is closed instead.
+ */
+export function splitByAttention(
+  candidates: ScanCandidate[],
+  pinned: { id: string; needsLook: boolean } | null = null
+): {
   needsLook: ScanCandidate[];
   looksRight: ScanCandidate[];
 } {
   const needsLook: ScanCandidate[] = [];
   const looksRight: ScanCandidate[] = [];
-  for (const c of candidates) (needsALook(c) ? needsLook : looksRight).push(c);
+  for (const c of candidates) {
+    const inNeedsLook = pinned?.id === c.id ? pinned.needsLook : needsALook(c);
+    (inNeedsLook ? needsLook : looksRight).push(c);
+  }
   return { needsLook, looksRight };
 }
 

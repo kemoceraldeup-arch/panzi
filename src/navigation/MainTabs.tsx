@@ -524,6 +524,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
 
       <RecipeDetailScreen
         recipe={openRecipe}
+        items={items}
         saved={openRecipe ? savedKeys.has(savedKey(openRecipe)) : false}
         onToggleSave={() => openRecipe && toggleSave(openRecipe)}
         onStartCooking={() => {

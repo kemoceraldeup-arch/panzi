@@ -30,9 +30,17 @@ test('keeps a trimmed note for other, capped at 80 characters', () => {
   assert.equal((parsed as RemoveRequest).note, 'x'.repeat(80));
 });
 
-test('a blank note is null, and a note on any other reason is dropped', () => {
-  const blank = parseRemoveBody({ items: [line('a', '1 bag', null)], reason: 'other', note: '   ' });
-  assert.equal((blank as RemoveRequest).note, null);
+test('other needs a note: blank, missing or non-text is refused', () => {
+  for (const note of ['   ', '', undefined, null, 42]) {
+    assert.equal(
+      parseRemoveBody({ items: [line('a', '1 bag', null)], reason: 'other', note }),
+      'Say why it is going.',
+      String(note)
+    );
+  }
+});
+
+test('a note on any other reason is dropped', () => {
   const ignored = parseRemoveBody({ items: [line('a', '1 bag', null)], reason: 'spoiled', note: 'mouldy' });
   assert.equal((ignored as RemoveRequest).note, null);
 });

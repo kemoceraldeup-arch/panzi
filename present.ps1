@@ -57,9 +57,15 @@ if (-not (Test-Path $cloudflared)) {
 # ports. A leftover backend on 8080 answers /health just fine on its own, but
 # it is not the one this run just started or that this run's tunnel points
 # at reliably - so clear the decks first rather than let a stale process
-# masquerade as this run's.
+# masquerade as this run's. Only the API and Metro ports are cleared, so the
+# admin website (Vite on 5173) keeps running; the admin's API on 8080 is the
+# same server and is restarted here, which the admin page does not notice.
 Write-Host "Clearing any leftover processes from a previous run..." -ForegroundColor Cyan
-Get-Process | Where-Object { $_.ProcessName -match "^node$|^cloudflared$" } | Stop-Process -Force -ErrorAction SilentlyContinue
+foreach ($port in 8080, 8081) {
+    Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+}
+Get-Process -Name cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $metroPort = 8081
@@ -141,11 +147,14 @@ $expoErrLog = Join-Path $env:TEMP "expo-present.err.log"
 # localhost:8081.
 # EXPO_PUBLIC_API_URL: overrides .env's LAN address for this run only, so the
 # bundle Metro serves points the app at the backend's public tunnel instead.
+# --clear: the tunnel URL is new every run, but Metro's transform cache can
+# keep serving modules built with a previous run's inlined URL, so the app
+# would call a dead tunnel. Clearing the cache forces the new URL in.
 $env:EXPO_PACKAGER_PROXY_URL = $metroTunnel.Url
 $env:EXPO_PUBLIC_API_URL = $apiTunnel.Url
 $expoMode = if ($Dev) { "" } else { " --no-dev --minify" }
 Write-Host ("Serving the app in " + $(if ($Dev) { "development" } else { "production (fast)" }) + " mode.") -ForegroundColor Cyan
-$expoProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx expo start --port $metroPort$expoMode" `
+$expoProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx expo start --clear --port $metroPort$expoMode" `
     -WorkingDirectory $projectDir `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $expoLog -RedirectStandardError $expoErrLog
 $allProcs += $expoProc

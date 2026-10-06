@@ -11,7 +11,15 @@
 // never read back.
 
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../Text';
@@ -70,7 +78,10 @@ export default function PersonalDetailsSheet({ visible, uid, name, email, onClos
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
+      <KeyboardAvoidingView
+        style={styles.backdrop}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <TouchableOpacity style={styles.backdropTap} activeOpacity={1} onPress={onClose} />
 
         <View style={[styles.sheet, { paddingBottom: insets.bottom + space.lg }]}>
@@ -120,7 +131,7 @@ export default function PersonalDetailsSheet({ visible, uid, name, email, onClos
             )}
           </TouchableOpacity>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

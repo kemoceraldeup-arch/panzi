@@ -189,7 +189,7 @@ export const LOCAL_RECIPES: LocalRecipe[] = [
     servings: 5,
     description: 'Oxtail and vegetables in a thick, nutty peanut sauce, served with shrimp paste on the side.',
     ingredients: [
-      { name: 'oxtail', amount: '1 kg' },
+      { name: 'beef oxtail', amount: '1 kg' },
       { name: 'water', amount: '2 liters' },
       { name: 'peanut butter', amount: '1 cup' },
       { name: 'ground toasted rice', amount: '3 tbsp' },

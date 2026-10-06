@@ -22,7 +22,7 @@ Removing food from the pantry says how much went, not just which item. Every rem
 - The reasons are `consumed`, `spoiled`, `expired` and `other`, in that order, on the client and server.
 - `consumed` is eaten; the other three are waste on Home's graph, as now.
 - Admin mapping: `consumed` is eaten; `spoiled` and `expired` are wasted; `other` is unclassified.
-- `other` may carry a `note`: free text, trimmed, at most 80 characters. An empty note is stored as `null` and shown as just "Other". A note sent with any other reason is ignored.
+- `other` must carry a `note`: free text, trimmed, at most 80 characters. A blank note is refused (the app keeps Save off until something is typed; the server answers 400 "Say why it is going."). A note sent with any other reason is ignored. (Changed 2026-10-01 at the user's request; it was optional before.)
 
 ### 2. Converting existing rows
 

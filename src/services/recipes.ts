@@ -12,6 +12,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiFetch, ApiError } from '../config/api';
 import { PantryItem, parseQuantity } from './pantry';
+import { pantryCovers, pantryHasIngredient } from './ingredientMatch';
 import { UserProfile } from './profile';
 import { getDaysLeft } from '../utils/freshness';
 import { isUrgentStage } from '../utils/ripeness';
@@ -629,10 +630,7 @@ function hasEnoughQuantity(ingredientName: string, amount: string, pantry: Pantr
   const needed = parseAmount(amount);
   if (needed.value === null) return null;
 
-  const lower = ingredientName.toLowerCase();
-  const matches = pantry.filter(
-    (item) => item.name === ingredientName || item.name.toLowerCase() === lower
-  );
+  const matches = pantry.filter((item) => pantryCovers(item.name, ingredientName));
   if (matches.length === 0) return null;
 
   let total = 0;
@@ -742,18 +740,34 @@ export function scaleAmount(amount: string, ratio: number): string {
  * wrong either, since a name either matches the current pantry or it doesn't.
  */
 export function withLiveIngredients(recipe: Recipe, items: PantryItem[]): Recipe {
-  const owned = new Set<string>();
-  for (const item of items) {
-    owned.add(item.name);
-    owned.add(item.name.toLowerCase());
-  }
-
+  const owned = items.map((item) => item.name);
   return {
     ...recipe,
     ingredients: recipe.ingredients.map((ingredient) => ({
       ...ingredient,
-      have: owned.has(ingredient.name) || owned.has(ingredient.name.toLowerCase()),
+      have: pantryHasIngredient(ingredient.name, owned),
     })),
+  };
+}
+
+/**
+ * A recipe's ingredients with anything the pantry covers marked as had —
+ * "Chicken" on the shelf ticks "chicken thighs and legs" (see
+ * ingredientMatch.ts). Adds to `have`, never clears it: a freshly suggested
+ * recipe's own `have` was checked against this same pantry and can know
+ * things a name match can't ("toyo" is soy sauce), and a cookbook recipe
+ * arrives with nothing marked at all.
+ */
+export function withPantryMatches(recipe: Recipe, items: PantryItem[]): Recipe {
+  if (items.length === 0) return recipe;
+  const owned = items.map((item) => item.name);
+  return {
+    ...recipe,
+    ingredients: recipe.ingredients.map((ingredient) =>
+      ingredient.have || !pantryHasIngredient(ingredient.name, owned)
+        ? ingredient
+        : { ...ingredient, have: true, assumedStaple: false }
+    ),
   };
 }
 

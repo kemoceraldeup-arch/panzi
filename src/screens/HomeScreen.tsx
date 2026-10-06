@@ -25,7 +25,8 @@ import VoiceIcon from '../components/chat/VoiceIcon';
 import FloatingChatBubble from '../components/home/FloatingChatBubble';
 import RemovalChart from '../components/home/RemovalChart';
 import PantryHistoryScreen from './PantryHistoryScreen';
-import { RemovalHistory, subscribeToRemovalHistory } from '../services/removals';
+import { RemovalHistory, showRemovalChart, subscribeToRemovalHistory } from '../services/removals';
+import { hasHadPantry, rememberHadPantry, shouldRemember, showWelcome } from '../services/firstRun';
 import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
 import { useCollapseOnScroll } from '../navigation/scrollCollapse';
 import { fonts, type } from '../theme/typography';
@@ -180,6 +181,8 @@ const UNFINISHED_CACHE = new Map<string, ScanRecord | null>();
 
 const removalCache = new Map<string, RemovalHistory>();
 
+const hadPantryCache = new Map<string, boolean>();
+
 type Props = {
   onOpenChat: () => void;
   /** The ask bar's microphone: open the chat already listening. */
@@ -268,6 +271,39 @@ export default function HomeScreen({
     () => (uid ? removalCache.get(uid) ?? null : null)
   );
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Whether this phone has seen the account with food on its shelves — the
+  // welcome screen is for new users only (see services/firstRun). null while
+  // it's being read.
+  const [hadPantry, setHadPantry] = useState<boolean | null>(
+    () => (uid ? hadPantryCache.get(uid) ?? null : null)
+  );
+
+  useEffect(() => {
+    if (!uid) return;
+    let alive = true;
+    hasHadPantry(uid).then((had) => {
+      if (!alive) return;
+      if (had) hadPantryCache.set(uid, true);
+      // Never back to false: the remember effect below may already have
+      // seen food on the shelves before this read came back.
+      setHadPantry((prev) => prev === true || had);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [uid]);
+
+  // Remembered the first time the shelves have food (or History has
+  // something), so emptying them later keeps the normal Home.
+  const remember = shouldRemember(status?.total ?? null, removals);
+  useEffect(() => {
+    if (!uid || !remember || hadPantry) return;
+    hadPantryCache.set(uid, true);
+    setHadPantry(true);
+    void rememberHadPantry(uid);
+  }, [uid, remember, hadPantry]);
+
+  const welcome = showWelcome(status?.total ?? null, hadPantry);
 
   // Live rather than fetched once: renaming yourself on the Profile tab has to
   // change the greeting here, and this screen stays mounted the whole time the
@@ -412,9 +448,11 @@ export default function HomeScreen({
             So an empty pantry gets its own screen rather than a hollow
             version of the full one — Panzi at proper size, one thing to do,
             and a plain sentence about what the scanner is for.
-            Gated on `status !== null` so the loading frame doesn't flash this
-            at a returning user with a full pantry. */}
-        {status !== null && status.total === 0 ? (
+            Only for a new user, like onboarding (see services/firstRun): a
+            returning user who has emptied their shelves keeps the normal Home
+            with its counts and chart. Nothing shows here while the pantry or
+            that answer is still loading. */}
+        {welcome ? (
           <View style={styles.firstRun}>
             <View style={styles.firstRunMascotWrap}>
               <Image
@@ -487,6 +525,39 @@ export default function HomeScreen({
           </TouchableOpacity>
         </View>
 
+        {/* What the pantry holds, and the way into it. Home's job now that
+            recipes have their own tab: answer "what have I got" before the
+            user has to go and look. Always the first card, above the alerts
+            that come and go, so it never shifts position from day to day. */}
+        <TouchableOpacity
+          style={styles.statusCard}
+          onPress={onViewPantry}
+          activeOpacity={0.85}
+          disabled={status === null}
+        >
+          <Text style={styles.statusLabel}>Your pantry</Text>
+          <Text style={styles.statusCount}>
+            {status === null
+              ? 'Loading…'
+              : `${status.total} item${status.total === 1 ? '' : 's'} tracked`}
+          </Text>
+
+          {!!status && status.total > 0 && (
+            <View style={styles.statusRow}>
+              <StatusDot color={colors.primary} label="Fresh" count={status.fresh} />
+              <StatusDot color={colors.warning} label="Use soon" count={status.useSoon} />
+              <StatusDot color={colors.accent} label="Expired" count={status.expired} />
+            </View>
+          )}
+
+          <View style={styles.statusLink}>
+            <Text style={styles.statusLinkText}>
+              {status?.total === 0 ? 'Add an item' : 'View pantry'}
+            </Text>
+            <Ionicons name="arrow-forward" size={14} color={colors.primaryDark} />
+          </View>
+        </TouchableOpacity>
+
         {/* Collecting on the promise the review page made.
             A user is allowed to add a batch with rows still missing a date
             because the footer told them they could fix those later. Until now
@@ -519,8 +590,8 @@ export default function HomeScreen({
           </TouchableOpacity>
         )}
 
-        {/* The point of the whole app, on the first screen. The status card
-            below counts what needs eating; this names it, which is the only
+        {/* The point of the whole app, on the first screen. The pantry card
+            above counts what needs eating; this names it, which is the only
             form of that information anyone can act on without tapping
             through. Absent entirely when nothing is urgent — a card that
             appears every day saying "nothing to worry about" is a card people
@@ -545,45 +616,13 @@ export default function HomeScreen({
           </View>
         )}
 
-        {/* What the pantry holds, and the way into it. Home's job now that
-            recipes have their own tab: answer "what have I got" before the
-            user has to go and look. */}
-        <TouchableOpacity
-          style={styles.statusCard}
-          onPress={onViewPantry}
-          activeOpacity={0.85}
-          disabled={status === null}
-        >
-          <Text style={styles.statusLabel}>Your pantry</Text>
-          <Text style={styles.statusCount}>
-            {status === null
-              ? 'Loading…'
-              : `${status.total} item${status.total === 1 ? '' : 's'} tracked`}
-          </Text>
-
-          {!!status && status.total > 0 && (
-            <View style={styles.statusRow}>
-              <StatusDot color={colors.primary} label="Fresh" count={status.fresh} />
-              <StatusDot color={colors.warning} label="Use soon" count={status.useSoon} />
-              <StatusDot color={colors.accent} label="Expired" count={status.expired} />
-            </View>
-          )}
-
-          <View style={styles.statusLink}>
-            <Text style={styles.statusLinkText}>
-              {status?.total === 0 ? 'Add your first item' : 'View pantry'}
-            </Text>
-            <Ionicons name="arrow-forward" size={14} color={colors.primaryDark} />
-          </View>
-        </TouchableOpacity>
-
         {/* What the pantry actually holds.
-            The card above says how *much* — "39 items tracked" — and never says
+            The pantry card says how *much* — "39 items tracked" — and never says
             *what*, so the question people open the app with ("have I got
             anything for dinner?") still meant tapping through and reading a
             list. This answers it in a glance, and each group opens the pantry
             already filtered to it.
-            Unlike the two cards above, this one stays put: it is a standing
+            Unlike the two alert cards above, this one stays put: it is a standing
             answer rather than an alert, so it has nothing to hide when
             everything is fine. It only goes away when the pantry is empty,
             where there is genuinely nothing to describe. */}
@@ -618,11 +657,15 @@ export default function HomeScreen({
             </View>
           </View>
         )}
+          </>
+        )}
 
         {/* Looking back rather than at what's on the shelf now, so it sits
-            last — below everything the user might act on today. */}
-        {removals && <RemovalChart counts={removals.counts} onViewMore={() => setHistoryOpen(true)} />}
-          </>
+            last — below everything the user might act on today. Outside the
+            empty/stocked switch above: it reads History, so emptying the
+            shelves must not take it away (see showRemovalChart). */}
+        {removals && showRemovalChart(status?.total ?? null, removals) && (
+          <RemovalChart counts={removals.counts} onViewMore={() => setHistoryOpen(true)} />
         )}
       </ScrollView>
       <PantryHistoryScreen
@@ -631,16 +674,14 @@ export default function HomeScreen({
         onClose={() => setHistoryOpen(false)}
       />
       {/* Floats over the screen rather than living in the scroll flow, fixed
-          bottom-right above the tab bar. Mounted only on an empty pantry —
-          the moment status.total leaves 0 this unmounts on its own, no
-          separate check needed for "gone once there's food on the shelves".
+          bottom-right above the tab bar. Mounted only with the new-user
+          welcome, which has no ask bar of its own — the normal Home (even
+          with an empty pantry) already has one in its flow.
           MainTabs.tsx unmounts this whole screen on every tab switch, which
           is also what makes the bubble's entrance animation replay each time
           Home becomes the active tab again — a side effect of that existing
           behaviour, not something this component has to orchestrate itself. */}
-      {status !== null && status.total === 0 && (
-        <FloatingChatBubble onPress={onOpenChat} active={active} />
-      )}
+      {welcome && <FloatingChatBubble onPress={onOpenChat} active={active} />}
     </View>
   );
 }
