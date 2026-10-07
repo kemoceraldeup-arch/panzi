@@ -14,14 +14,14 @@
 // (Recipe.minutes, Recipe.servings) and are shown as given, including the
 // app's own "0 means the model didn't give a believable figure" convention.
 //
-// This replaces an earlier version of this screen that opened on an
-// ingredients-first page and, on finishing, offered to clear the recipe's
-// matched items from the pantry. Neither has an equivalent in the new design
-// (which starts directly on step one and ends on stats + Rate this cook /
-// Back to recipe) and both are dropped rather than grafted on.
+// Finishing the last step is what takes the recipe's ingredients out of the
+// pantry — every "Start cooking" (recipe page, recipe cards, chat, saved
+// recipes) lands here, so this is the one place that covers them all. Leaving
+// early takes nothing. What was taken is shown over the complete sheet, with
+// an Undo, since a recipe marked done by mistake shouldn't cost the eggs.
 
-import React, { useEffect, useState } from 'react';
-import { Modal, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, Modal, View } from 'react-native';
 import {
   SafeAreaProvider,
   initialWindowMetrics,
@@ -32,6 +32,13 @@ import { CookCompleteStat } from './cook/CookCompleteSheet';
 import { cookTokens } from './cook/cookTokens';
 import { auth } from '../config/firebaseClient';
 import { PantryItem } from '../services/pantry';
+import {
+  DeductionPlan,
+  applyDeduction,
+  describeDeduction,
+  planDeduction,
+  undoDeduction,
+} from '../services/cookDeduction';
 import { Recipe, fetchDishPhoto } from '../services/recipes';
 import { rateRecipe } from '../services/recipeRatings';
 import { dishPhoto } from '../theme/dishPhotos';
@@ -39,9 +46,7 @@ import { useTheme } from '../theme/ThemeProvider';
 
 type Props = {
   recipe: Recipe | null;
-  /** Accepted for call-site compatibility with the screens that open cook
-   *  mode (RecipesScreen, MainTabs) — unused now that finishing a cook no
-   *  longer offers to clear matched pantry items. */
+  /** The pantry as it stands; the recipe's ingredients are taken out of it when the last step is finished. */
   items: PantryItem[];
   onClose: () => void;
 };
@@ -83,7 +88,7 @@ function statsFor(recipe: Recipe): [CookCompleteStat, CookCompleteStat, CookComp
   ];
 }
 
-export default function CookModeScreen({ recipe, onClose }: Props) {
+export default function CookModeScreen({ recipe, items, onClose }: Props) {
   // CookStepScreen indexes steps[0] unconditionally — a real assumption for a
   // screen built to a fixed 5-step example, but not a safe one for a Recipe
   // the model could in principle return with no steps at all. Closing
@@ -92,6 +97,84 @@ export default function CookModeScreen({ recipe, onClose }: Props) {
   // everywhere else they're used.
   const hasSteps = !!recipe && recipe.steps.length > 0;
   const { scheme } = useTheme();
+
+  // Read when Finish is pressed, not when cook mode opened: the pantry may
+  // have changed while the user cooked.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  // Once per cook: keyed on the recipe object, so the pantry refreshing
+  // underneath (which it does, straight after this writes) can't take the
+  // same ingredients twice.
+  const deductedFor = useRef<Recipe | null>(null);
+  // The summary waits for both the write and the complete sheet's arrival —
+  // an Alert raised while a modal is still presenting can be dropped on iOS.
+  const pending = useRef<{ plan: DeductionPlan | null; removalIds: string[]; error: boolean } | null>(null);
+  const sheetUp = useRef(false);
+
+  useEffect(() => {
+    deductedFor.current = null;
+    pending.current = null;
+    sheetUp.current = false;
+  }, [recipe]);
+
+  function handleComplete() {
+    if (!recipe || deductedFor.current === recipe) return;
+    deductedFor.current = recipe;
+
+    const plan = planDeduction(recipe, itemsRef.current);
+    if (plan.changes.length === 0 && plan.skipped.length === 0) return;
+    if (plan.changes.length === 0) {
+      pending.current = { plan, removalIds: [], error: false };
+      if (sheetUp.current) showSummary();
+      return;
+    }
+    applyDeduction(plan)
+      .then((removalIds) => {
+        pending.current = { plan, removalIds, error: false };
+      })
+      .catch(() => {
+        pending.current = { plan: null, removalIds: [], error: true };
+      })
+      .finally(() => {
+        if (sheetUp.current) showSummary();
+      });
+  }
+
+  function handleCompleteShown() {
+    sheetUp.current = true;
+    showSummary();
+  }
+
+  function showSummary() {
+    const next = pending.current;
+    if (!next) return;
+    pending.current = null;
+    if (next.error || !next.plan) {
+      Alert.alert(
+        "Couldn't update your pantry",
+        'The ingredients for this recipe were not taken out. Check your connection and adjust the amounts in your pantry by hand.',
+      );
+      return;
+    }
+    const { plan, removalIds } = next;
+    if (plan.changes.length === 0) {
+      Alert.alert('Nothing taken from your pantry', describeDeduction(plan));
+      return;
+    }
+    Alert.alert('Taken from your pantry', describeDeduction(plan), [
+      {
+        text: 'Undo',
+        style: 'destructive',
+        onPress: () => {
+          undoDeduction(plan, removalIds).catch(() =>
+            Alert.alert("Couldn't undo", 'Your pantry could not be put back. Check your connection and try again.'),
+          );
+        },
+      },
+      { text: 'OK', style: 'default' },
+    ]);
+  }
 
   return (
     <Modal
@@ -109,14 +192,24 @@ export default function CookModeScreen({ recipe, onClose }: Props) {
           that gap: the surface is never bare white to begin with. */}
       <View style={{ flex: 1, backgroundColor: cookTokens[scheme].page }}>
         <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-          {hasSteps && <Body recipe={recipe} onClose={onClose} />}
+          {hasSteps && <Body recipe={recipe} onClose={onClose} onComplete={handleComplete} onCompleteShown={handleCompleteShown} />}
         </SafeAreaProvider>
       </View>
     </Modal>
   );
 }
 
-function Body({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
+function Body({
+  recipe,
+  onClose,
+  onComplete,
+  onCompleteShown,
+}: {
+  recipe: Recipe;
+  onClose: () => void;
+  onComplete: () => void;
+  onCompleteShown: () => void;
+}) {
   // Same two-tier lookup DishTile uses everywhere else a dish gets a photo:
   // the bundled photo for recipe.dishKey wins outright when there is one, and
   // only a dish outside that hand-curated list asks the server to generate
@@ -128,7 +221,8 @@ function Body({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (bundledPhoto) return;
+    // An admin-uploaded cookbook photo counts as having one, same as DishTile.
+    if (bundledPhoto || recipe.photoUrl) return;
     let alive = true;
     fetchDishPhoto(recipe.title).then((url) => {
       if (alive) setGeneratedUrl(url);
@@ -136,9 +230,11 @@ function Body({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
     return () => {
       alive = false;
     };
-  }, [bundledPhoto, recipe.title]);
+  }, [bundledPhoto, recipe.photoUrl, recipe.title]);
 
-  const photo = bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
+  const photo = recipe.photoUrl
+    ? { uri: recipe.photoUrl }
+    : bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
   const steps = stepsFromRecipe(recipe, photo);
   const stats = statsFor(recipe);
 
@@ -150,6 +246,8 @@ function Body({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
       completeTitle={`${recipe.title} done!`}
       completeBody={recipe.why || recipe.description || 'Nicely done.'}
       onClose={onClose}
+      onComplete={onComplete}
+      onCompleteShown={onCompleteShown}
       onRate={(stars) => {
         const uid = auth.currentUser?.uid;
         if (!uid) return;

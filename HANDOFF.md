@@ -96,6 +96,7 @@ open the `panzi` database. Five collections:
 |---|---|
 | `users` | one document per account, keyed by Firebase uid |
 | `pantry_items` | the shelves |
+| `pantry_removals` | what left the shelves and why (Profile's history, Home's waste chart) |
 | `saved_recipes` | dishes the user kept |
 | `scans` | scan history, so a scan can be finished later |
 | `feedback` | what "Send feedback" writes |

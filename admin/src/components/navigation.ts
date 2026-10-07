@@ -1,19 +1,19 @@
-import { ChartColumn, CookingPot, Inbox, LayoutDashboard, MessagesSquare, Receipt, Refrigerator, ScrollText, Settings, Users } from 'lucide-react';
+import { BookOpen, ChartColumn, CookingPot, LayoutDashboard, MessageSquareText, Receipt, Refrigerator, ScrollText, Settings, Users } from 'lucide-react';
 
 export const navigation = [
-  { label: 'Overview', items: [
+  { label: 'Workspace', items: [
     { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-    { to: '/analytics', label: 'Food outcomes', icon: ChartColumn },
-  ] },
-  { label: 'Manage', items: [
-    { to: '/users', label: 'Users', icon: Users },
-    { to: '/food', label: 'Pantry insights', icon: Refrigerator },
+    { to: '/food', label: 'Pantry', icon: Refrigerator },
     { to: '/recipes', label: 'Recipes', icon: CookingPot },
-    { to: '/review', label: 'Needs review', icon: Inbox },
-    { to: '/chatbot', label: 'Conversations', icon: MessagesSquare },
+    { to: '/cookbook', label: 'Cookbook', icon: BookOpen },
+    { to: '/users', label: 'Users', icon: Users },
+    { to: '/feedback', label: 'Feedback', icon: MessageSquareText },
+  ] },
+  { label: 'Insights', items: [
+    { to: '/analytics', label: 'Food outcomes', icon: ChartColumn },
+    { to: '/costs', label: 'API costs', icon: Receipt },
   ] },
   { label: 'System', items: [
-    { to: '/costs', label: 'API costs', icon: Receipt },
     { to: '/logs', label: 'System logs', icon: ScrollText },
   ] },
 ];

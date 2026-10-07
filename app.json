@@ -69,7 +69,13 @@
           "backgroundColor": "#ffffff"
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Panzi listens when you tap the microphone, so you can ask about cooking out loud."
+        }
+      ]
     ]
   }
 }

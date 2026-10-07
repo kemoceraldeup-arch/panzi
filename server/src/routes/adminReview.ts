@@ -16,10 +16,11 @@ export function reviewState(row: any) {
 }
 
 /** Filter before pagination so handled records never hide older pending work. */
-export async function reviewPage(kind: 'scans' | 'feedback', status: ReviewFilter, page: number, window?: { $lte: Date; $gte?: Date }) {
+export async function reviewPage(kind: 'scans' | 'feedback', status: ReviewFilter, page: number, window?: { $lte: Date; $gte?: Date }, match?: Record<string, unknown>) {
   const source = kind === 'scans' ? Scan : Feedback;
   const result = await source.aggregate([
     ...(window ? [{ $match: { createdAt: window } }] : []),
+    ...(match ? [{ $match: match }] : []),
     { $addFields: { reviewKey: { $concat: [kind + ':', { $toString: '$_id' }] } } },
     { $lookup: { from: 'admin_reviews', localField: 'reviewKey', foreignField: '_id', as: 'reviews' } },
     { $addFields: { review: { $arrayElemAt: ['$reviews', 0] } } },

@@ -20,8 +20,8 @@ import {
   DeletionAuditLog,
   EmailVerification,
   Feedback,
-  ItemDisposition,
   PantryItem,
+  PantryRemoval,
   RecipeRating,
   SavedRecipe,
   Scan,
@@ -252,31 +252,30 @@ profileRouter.get(
   withDb(async (req, res) => {
     const uid = req.uid!;
     // Everything stored against this uid, so the export matches what the
-    // delete route below removes: feedback, ratings, and the record of what
-    // happened to removed pantry items belong to the person too.
-    const [user, pantryItems, savedRecipes, scans, conversations, messages, feedback, ratings, removals] = await Promise.all([
+    // delete route below removes: feedback and ratings belong to the person too.
+    const [user, pantryItems, pantryHistory, savedRecipes, scans, conversations, messages, feedback, ratings] = await Promise.all([
       User.findById(uid).lean(),
       PantryItem.find({ userId: uid }).lean(),
+      PantryRemoval.find({ userId: uid }).sort({ removedAt: -1 }).lean(),
       SavedRecipe.find({ userId: uid }).lean(),
       Scan.find({ userId: uid }).lean(),
       ChatConversation.find({ userId: uid }).lean(),
       ChatMessage.find({ userId: uid }).lean(),
       Feedback.find({ userId: uid }).select({ message: 1, appVersion: 1, platform: 1, createdAt: 1 }).lean(),
       RecipeRating.find({ userId: uid }).lean(),
-      ItemDisposition.find({ userId: uid }).lean(),
     ]);
 
     res.json({
       exportedAt: new Date().toISOString(),
       account: user ?? null,
       pantryItems,
+      pantryHistory,
       savedRecipes,
       scans,
       chatConversations: conversations,
       chatMessages: messages,
       feedback,
       recipeRatings: ratings,
-      pantryRemovals: removals,
     });
   })
 );
@@ -342,17 +341,13 @@ profileRouter.post(
     await Promise.all([
       AdminReview.deleteMany({ _id: { $in: reviewKeys } }),
       PantryItem.deleteMany({ userId: uid }),
+      PantryRemoval.deleteMany({ userId: uid }),
       SavedRecipe.deleteMany({ userId: uid }),
       RecipeRating.deleteMany({ userId: uid }),
       Scan.deleteMany({ userId: uid }),
       ChatConversation.deleteMany({ userId: uid }),
       ChatMessage.deleteMany({ userId: uid }),
       Feedback.deleteMany({ userId: uid }),
-      // What happened to this person's food is about this person. The admin
-      // console's waste figures lose these rows, which is the correct trade:
-      // an aggregate is not a reason to keep someone's record after they asked
-      // for it to go.
-      ItemDisposition.deleteMany({ userId: uid }),
       EmailVerification.deleteOne({ _id: uid }),
       User.deleteOne({ _id: uid }),
     ]);

@@ -10,7 +10,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "check": "tsx scripts/check-connections.ts"
+    "check": "tsx scripts/check-connections.ts",
+    "seed:cookbook": "tsx scripts/seed-cookbook.ts",
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",

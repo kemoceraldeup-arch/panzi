@@ -23,7 +23,11 @@ export function getDaysLeft(expiryDate: string | null): number | null {
   if (!expiryDate) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const expiry = new Date(expiryDate);
+  // Read as local midnight, the same clock as `today`. new Date('YYYY-MM-DD')
+  // is UTC midnight, which only rounded to the right day by luck of the
+  // time zone — east of UTC+12 an item expiring today counted as expired.
+  const [y, m, d] = expiryDate.slice(0, 10).split('-').map(Number);
+  const expiry = y && m && d ? new Date(y, m - 1, d) : new Date(expiryDate);
   return Math.round((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
@@ -111,10 +115,8 @@ export function getFreshnessBadge(
     return { label: 'NO DATE', bg: colors.backgroundAlt, color: colors.textSecondary };
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const expiry = new Date(expiryDate);
-  const diffDays = Math.round((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  // Same day count as everywhere else — see getDaysLeft for the time-zone fix.
+  const diffDays = getDaysLeft(expiryDate) ?? 0;
 
   if (diffDays < 0) {
     return { label: 'EXPIRED', bg: colors.accentSoft, color: colors.accent };

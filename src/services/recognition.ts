@@ -18,7 +18,6 @@ import { RipenessStage, isRipenessStage } from '../utils/ripeness';
 import { dateInDays } from '../utils/freshness';
 import { normaliseLocation } from './pantry';
 import { classifyMeasure } from './quantity';
-import { classifyFood, defaultLocationFor } from './foodClass';
 
 export type { ScanBox };
 
@@ -52,6 +51,10 @@ type RemoteItem = {
   sizeValue: number;
   sizeUnit: string;
   measuredByWeight: boolean;
+  /** Optional so a server from before this field still parses — missing
+   *  reads as a full pack. */
+  fillLevel?: number;
+  fillNote?: string;
   category: string;
   location: string;
   expiryDate: string;
@@ -101,11 +104,43 @@ async function prepareImage(photo: { uri: string; width: number; height: number 
 // oz/lb are read off a label often enough to be worth converting rather than
 // dropping — approximate is fine here, this only seeds the stepper's
 // starting amount, and the user is looking straight at the packet.
-const TO_GRAMS: Record<string, number> = { g: 1, kg: 1000, oz: 28.35, lb: 453.6 };
-const TO_ML: Record<string, number> = { ml: 1, l: 1000 };
+// The server canonicalises units, but a sack printed "25 KGS" that slipped
+// through unconverted would otherwise fall to the last line below and be
+// stored as 25 g — so the common label spellings are accepted here too.
+const TO_GRAMS: Record<string, number> = {
+  g: 1,
+  gm: 1,
+  gms: 1,
+  gram: 1,
+  grams: 1,
+  kg: 1000,
+  kgs: 1000,
+  kilo: 1000,
+  kilos: 1000,
+  kilogram: 1000,
+  kilograms: 1000,
+  oz: 28.35,
+  lb: 453.6,
+  lbs: 453.6,
+};
+const TO_ML: Record<string, number> = { ml: 1, l: 1000, ltr: 1000, litre: 1000, liter: 1000 };
 
-function toBaseUnitAmount(value: number, unit: string): number {
-  const lower = unit.trim().toLowerCase();
+/** A part-used pack's remaining share, as measured — 5% steps, which is
+ *  what the server sends. Missing or nonsense reads as full, the server's own
+ *  default. */
+function partFill(raw: number | undefined): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 1;
+  return Math.min(1, Math.max(0.05, Math.round(raw * 20) / 20));
+}
+
+/** The same share on the pack stepper, which only holds quarters (¼ at
+ *  least). Weight and volume keep the measured share exactly instead. */
+function toQuarter(fill: number): number {
+  return Math.min(1, Math.max(0.25, Math.round(fill * 4) / 4));
+}
+
+export function toBaseUnitAmount(value: number, unit: string): number {
+  const lower = unit.trim().toLowerCase().replace(/\.$/, '');
   const grams = TO_GRAMS[lower];
   if (grams !== undefined) return Math.round(value * grams);
   const ml = TO_ML[lower];
@@ -132,12 +167,28 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
   // Best guess from what the server read off the packet — the review card
   // overrides this from a remembered per-product correction, if there is
   // one, once it has the user's uid (see ScanReviewScreen's EditCard).
+  // A weighed item only gets a weight reading when the label's size was
+  // actually read. Without one, the weight measure's placeholder (500 g) was
+  // shown as if it had been scanned — a 25 kg rice sack came back as 500 g.
+  // Falling back to counting it (1 sack) is honest, and the user sets the
+  // weight from there.
+  const hasSize = item.sizeValue > 0 && !!item.sizeUnit;
   const quantity = classifyMeasure({
     name: item.name,
     category: item.category,
-    unit: item.measuredByWeight ? item.sizeUnit : null,
-    measuredByWeight: item.measuredByWeight === true,
+    unit: item.measuredByWeight && hasSize ? item.sizeUnit : null,
+    measuredByWeight: item.measuredByWeight === true && hasSize,
   });
+  // How many packs' worth is actually on hand: every pack but one is full,
+  // and the open one holds fillLevel of a pack — so two jars with one half
+  // gone are 1½, and a single bag rolled down to a quarter is ¼.
+  const count = item.count > 0 ? item.count : 1;
+  const fill = partFill(item.fillLevel);
+  // Only a measure that can hold a fraction of a pack takes the fill; a
+  // plain count (eggs, tins) stays whole, and so the note would be claiming
+  // a correction the amount never shows.
+  let usedFill = false;
+
   if (quantity.measure === 'pieces' && item.count > 0) {
     // count from the server is only meaningful for a plain pieces reading.
     quantity.amount = item.count;
@@ -148,19 +199,31 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
   ) {
     // The printed size is the actual amount for a measured-by-weight/volume
     // item — grams/ml stay as-is, kg/L/oz/lb convert up to the base unit
-    // the amount is always stored in (see services/quantity.ts).
-    quantity.amount = toBaseUnitAmount(item.sizeValue, item.sizeUnit);
+    // the amount is always stored in (see services/quantity.ts). Scaled by
+    // what's on hand: two 25 kg sacks are 50 kg, half a 1 kg bag is 500 g.
+    // Exact to the measured share — 25% of a 1 kg bag is 250 g, not a quarter
+    // step's worth of rounding.
+    quantity.amount = Math.round(toBaseUnitAmount(item.sizeValue, item.sizeUnit) * (count - 1 + fill));
+    usedFill = fill < 1;
+  } else if (quantity.measure === 'pack') {
+    quantity.amount = count - 1 + toQuarter(fill);
+    usedFill = fill < 1;
   }
+  // The measured percentage always rides along, so the user sees the precise
+  // reading even where the pack stepper had to round it to a quarter.
+  const percent = `about ${Math.round(fill * 100)}% left`;
+  const seen = item.fillNote?.trim();
+  const fillNote = usedFill ? (seen ? `${seen} · ${percent}` : percent.charAt(0).toUpperCase() + percent.slice(1)) : null;
 
   return {
     id,
     name: item.name,
     quantity,
-    // A scanned bag's own printed size unit ("kg") is already the natural
-    // unit noun for a pack reading — reused rather than asking for a second
-    // source of truth for the same thing. Pieces/weight/volume have no unit
-    // noun of their own from a camera scan.
-    unit: quantity.measure === 'pack' ? item.sizeUnit || '' : '',
+    // Left blank so a pack reads as "¾ pack". This used to reuse the printed
+    // size unit as the noun, which put the pack count next to the weight's
+    // unit — a part-used 500 g pack read "¾ g". The printed size still
+    // travels in `size` below.
+    unit: '',
     // A size needs both halves to mean anything: "500" with no unit is not a
     // measurement, and a stray "g" with no number is noise.
     size:
@@ -173,7 +236,9 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
     // the food class's own sensible default (Phase 2 §4) rather than staying
     // empty, so STORE IN is never blank on an item that lands with basis
     // 'estimated' and needs a location to compute anything from.
-    location: normaliseLocation(item.location || null) ?? defaultLocationFor(classifyFood(item.category)),
+    // Only what the photo actually showed — blank otherwise, for the user to
+    // pick, rather than a default that reads as if it had been seen.
+    location: normaliseLocation(item.location || null),
 
     expiryDate: printed ?? estimated,
     dateSource: printed ? 'label' : estimated ? 'estimated' : null,
@@ -207,6 +272,7 @@ function toCandidate(item: RemoteItem, id: string): ScanCandidate {
     // Only claims a source when there is a stage to source. The user can
     // overrule it later, at which point services/scan.ts flips this to 'user'.
     ripenessSource: ripeness ? 'estimated' : null,
+    fillNote,
 
     editedByUser: false,
     userConfirmed: false,

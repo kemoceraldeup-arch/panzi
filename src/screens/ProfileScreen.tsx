@@ -13,7 +13,7 @@
 // common case (tap the wrong chip) costs one tap to fix and the normal case
 // costs nothing.
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -38,6 +38,8 @@ import HelpSheet from '../components/profile/HelpSheet';
 import PersonalDetailsSheet from '../components/profile/PersonalDetailsSheet';
 import PrivacySheet from '../components/profile/PrivacySheet';
 import SecuritySheet from '../components/profile/SecuritySheet';
+import PantryHistoryScreen from './PantryHistoryScreen';
+import { RemovalHistory, subscribeToRemovalHistory } from '../services/removals';
 import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
 import { useCollapseOnScroll } from '../navigation/scrollCollapse';
 import {
@@ -111,6 +113,8 @@ type Props = {
    *  Home opens the same one. */
   onOpenReminders: () => void;
   onSignOut: () => void;
+  /** Help's "Show the app tour again" — MainTabs switches to Home and runs it. */
+  onReplayTour: () => void;
 };
 
 export default function ProfileScreen({
@@ -119,6 +123,7 @@ export default function ProfileScreen({
   onOpenSaved,
   onOpenReminders,
   onSignOut,
+  onReplayTour,
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
@@ -135,7 +140,25 @@ export default function ProfileScreen({
   const [personalDetails, setPersonalDetails] = useState(false);
   const [security, setSecurity] = useState(false);
   const [dataSheet, setDataSheet] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<RemovalHistory | null>(null);
   const [removal, setRemoval] = useState<Removal | null>(null);
+
+  // Shares Home's subscription (same key), so the count on the row below and
+  // the chart there never disagree.
+  useEffect(() => {
+    if (!uid) {
+      setHistory(null);
+      return;
+    }
+    return subscribeToRemovalHistory(setHistory, () => {
+      // Keep the last known history rather than blanking the row.
+    });
+  }, [uid]);
+
+  const removedTotal = history
+    ? Object.values(history.counts).reduce((sum, n) => sum + n, 0)
+    : null;
   // The just-picked file, shown while its upload is still in the air. The
   // document only ever holds the Storage URL, so without this the avatar would
   // sit on the old picture for the length of the upload — on a slow connection,
@@ -402,6 +425,28 @@ export default function ProfileScreen({
           <Chevron />
         </TouchableOpacity>
 
+        {/* ---------------- Pantry history ---------------- */}
+        <TouchableOpacity
+          style={[styles.savedCard, styles.historyCard]}
+          activeOpacity={0.8}
+          onPress={() => setHistoryOpen(true)}
+        >
+          <View style={styles.historyIcon}>
+            <Ionicons name="time-outline" size={16} color={colors.accentDeep} />
+          </View>
+          <View style={styles.rowText}>
+            <Text style={styles.rowTitle}>Pantry history</Text>
+            <Text style={styles.rowSubtitle}>
+              {removedTotal === null
+                ? 'What you used up or threw out'
+                : removedTotal === 0
+                  ? 'Nothing removed yet'
+                  : `${removedTotal} item${removedTotal === 1 ? '' : 's'} removed`}
+            </Text>
+          </View>
+          <Chevron />
+        </TouchableOpacity>
+
         {/* ---------------- What you eat ---------------- */}
         <View style={styles.prefsCard}>
           <Text style={styles.cardTitle}>What you eat</Text>
@@ -567,6 +612,7 @@ export default function ProfileScreen({
         email={email}
         appVersion={APP_VERSION}
         onClose={() => setHelp(false)}
+        onReplayTour={onReplayTour}
       />
 
       <PrivacySheet visible={privacy} onClose={() => setPrivacy(false)} />
@@ -580,6 +626,12 @@ export default function ProfileScreen({
       />
 
       <SecuritySheet visible={security} email={email} onClose={() => setSecurity(false)} />
+
+      <PantryHistoryScreen
+        visible={historyOpen}
+        history={history}
+        onClose={() => setHistoryOpen(false)}
+      />
 
       <DataSheet
         visible={dataSheet}
@@ -919,6 +971,17 @@ const useStyles = makeStyles((colors) => ({
     height: 34,
     borderRadius: 12,
     backgroundColor: colors.primaryLighter,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historyCard: {
+    marginTop: space.sm2,
+  },
+  historyIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },

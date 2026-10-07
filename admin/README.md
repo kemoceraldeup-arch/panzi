@@ -1,15 +1,15 @@
 # Panzi admin
 
-This folder is the admin website. The API it talks to is the sibling `server/` folder (`Our admin website\server`), and the Expo app talks to the same API. The quickest way to run both is `start.bat` one level up.
+This folder is the admin website. The API it talks to is the Expo app's own server, `C:\Users\Kenne\panzi-handoff\server`; the app and the console share it. The quickest way to run both is `start.bat` one level up.
 
-The admin website and Expo app share the Express API in `server/`. Firebase handles identity, MongoDB holds app data, and administrator routes enforce the Firebase admin claim on the server.
+Firebase handles identity, MongoDB holds app data, and administrator routes enforce the Firebase admin claim on the server. Paths below written `server/...` mean `panzi-handoff\server\...`.
 
 ## Run the connected workspace
 
 Run the backend in one terminal:
 
 ```powershell
-cd "$HOME\Desktop\Our admin website\server"
+cd "$HOME\panzi-handoff\server"
 npm install
 npm run dev
 ```
@@ -17,12 +17,14 @@ npm run dev
 Run the admin in a second terminal, from this folder:
 
 ```powershell
-cd "$HOME\Desktop\Our admin website\admin"
+cd "$HOME\Our admin website\Our admin website\admin"
 npm install
 npm run dev
 ```
 
 To look at the design without the server, set `VITE_SAMPLE_DATA=true` and `VITE_SKIP_AUTH=true` for `npm run dev`. Both flags are ignored by `npm run build`.
+
+`start.bat` always overrides these flags to `false` and disables public preview. It replaces a sample-mode Vite process from this workspace instead of silently reusing it. Use the manual `npm run dev` command above for an intentional sample preview.
 
 Use the existing `.env` files. For a fresh checkout, copy each package's `.env.example` and configure it before starting. The admin normally opens at `http://localhost:5173` and the API at `http://localhost:8080`.
 
@@ -33,41 +35,57 @@ Use the existing `.env` files. For a fresh checkout, copy each package's `.env.e
 
 Use the existing administrator account for the defense/testing setup. No additional administrator accounts are required. To grant the first administrator, run `npx tsx scripts/grant-admin.ts you@example.com` from `server/`, using the project's configured service account. The console itself no longer grants, revokes, or suspends accounts; Settings lists who holds admin access, read-only.
 
-For an isolated local design preview, set both preview flags to `true` for `npm run dev`. Production builds always use the API and require authentication, regardless of those flags. Review writes are disabled in sample mode.
+For an isolated local design preview, set both preview flags to `true` for `npm run dev`. Production builds always use the API and require authentication, regardless of those flags.
 
 ## Workspace screens
 
 | Screen | Purpose |
 |---|---|
-| Dashboard | Recent app activity and summary metrics |
+| Dashboard | Summary metrics, AI alerts from the last 24 hours, latest open feedback, recent activity |
 | Analytics | Scanner corrections and confirmed food outcomes |
-| Users | Account support, pantry inspection, suspension, and admin grants |
-| Pantry insights | Aggregates of stored ingredients; not an editable ingredient catalog |
+| Users | Accounts; the person panel shows their pantry, recent scans, where their food went, their feedback and their AI cost. Other pages open it with `/users?user=<uid>` |
+| Feedback | Messages from the app's Help & feedback, with a status (New, In progress, Resolved) and an internal note per message |
+| Pantry | Aggregates of stored ingredients; not an editable ingredient catalog |
 | Recipes | Dishes people saved, and the stars they gave after cooking |
-| Needs review | Scan issues and feedback with saved status and internal notes |
-| Conversations | Conversation summaries and separately audited transcripts |
+| Cookbook | Create, read, update and delete the dishes on the app's Recipes screen |
 | API costs | Estimated AI usage costs from recorded tokens |
 | System logs | API usage, administrator activity, and account deletions |
-| Settings | Admin access, with technical configuration collapsed by default |
+| Settings | Admin access and read-only app configuration |
 
-Recipes is a connected screen again. It was hidden while it had nothing behind it; `saved_recipes` and `recipe_ratings` now answer the two questions its cards ask, so it reads the server like the rest. There is still no recipe catalog to edit: every dish is written by the model on the night it is suggested, and the lowercased title is the only identity it has.
+Recipes is a connected screen again. It was hidden while it had nothing behind it; `saved_recipes` and `recipe_ratings` now answer the two questions its cards ask, so it reads the server like the rest. Those AI-suggested dishes are not editable: every one is written by the model on the night it is suggested, and the lowercased title is the only identity it has.
+
+## Cookbook
+
+The one screen that changes what people see in the app. It manages the dishes on the app's Recipes screen (the category tabs with Pantry Only off), stored in the `cookbook_recipes` collection.
+
+| Action | In the console | Server route | In the app |
+|---|---|---|---|
+| Create | Add recipe, fill the side panel, save | `POST /api/admin/cookbook` | Appears at the top of its category |
+| Read | The table, with search and category filter | `GET /api/admin/cookbook` | `GET /api/cookbook` loads the list |
+| Update | Edit on a row, change, save | `PATCH /api/admin/cookbook/:id` | Shows the change |
+| Delete | Delete on a row, confirm | `DELETE /api/admin/cookbook/:id` | Disappears |
+
+The app picks up changes when the Recipes screen opens or is pulled down. Every write is admin-only and recorded in the audit log like the other admin routes. A photo is shrunk to 1000px JPEG in the browser and stored in the Supabase `dish-photos` bucket; it replaces the photo built into the app for that dish. Two administrators editing the same dish cannot overwrite each other: the second save is refused and asks them to reload.
+
+The 51 dishes built into the app were copied in once with `npm run seed:cookbook` in the server folder. Running it again only adds dishes that are missing by title, so it never overwrites an edit, but it does bring back a built-in dish that was deleted. If the server cannot be reached, the app shows the last list it downloaded, or the built-in list.
 
 Each connected screen has Refresh and a last-successful-update timestamp. Light/dark mode follows the system until explicitly selected, then persists across reloads. Date charts and summary values respect reduced motion.
 
-## Review workflow
+## Removed screens
 
-`GET /api/admin/review?status=open&page=1` returns separate scan and feedback queues, with 20 records per queue per page. Filters are `open`, `new`, `in_progress`, `resolved`, and `all`. Status filtering happens before pagination, so resolved records do not conceal older pending work. CSV exports the current queue page.
+Conversations and the scan half of Needs review are removed from the admin, including routes, navigation, command search, and review badge requests. Old URLs redirect to Dashboard. Existing backend records and mobile app features are unaffected. The feedback half came back as its own Feedback screen.
 
-`PATCH /api/admin/review/:kind/:id` accepts `{ status, note, revision }`; kind is `scans` or `feedback`. Notes are limited to 2,000 characters. A revision conflict returns 409 instead of overwriting another administrator's edits. The UI preserves the draft and offers an explicit reload of the latest decision.
-
-Decisions live in `admin_reviews`, separate from app records. The server records the verified actor and update time. Administrator activity is also recorded by the existing audit middleware. Internal notes never enter mobile scan responses. Resolving an issue records a support decision; it does not alter the user's scan or pantry. Resolved work remains available for reopening.
+The Dashboard's "Expiring in the next 3 days" panel was removed: it listed food across every user's pantry, which an administrator cannot act on. Latest open feedback took its place.
 
 ## Food outcomes
 
-- The pantry list's Use up sends `consumed`; its Delete sends `removed`, because "Remove from your pantry" is not a statement that the food was thrown away.
-- Undo, Clear pantry, and older clients without a reason remain unclassified. Legacy `expired` outcomes still count as discarded.
-- Removal and outcome recording commit in one MongoDB transaction. Failed recording leaves the pantry entry intact; repeated deletions do not duplicate outcomes.
-- Analytics counts confirmed consumed/discarded entries. Waste rate uses confirmed outcomes as its denominator, excluding unclassified removals. Each entry counts once, regardless of its quantity.
+- Outcomes come from `pantry_removals`, which the app writes when someone removes an item and picks a reason. The old `item_dispositions` collection is no longer read or written.
+- Reasons map to outcomes in `server/src/removalOutcome.ts`:
+  - `consumed` and `leftover` count as consumed.
+  - `spoiled`, `expired` and `over-purchased` count as wasted.
+  - `other` is unclassified.
+- Cook mode's undo deletes the rows it created, so food put back on the shelf is never counted.
+- Analytics counts consumed and wasted entries. Waste rate uses those confirmed outcomes as its denominator, excluding unclassified removals. Each entry counts once, regardless of its quantity.
 - Chart values and CSV rows contain actual counts; percentage fields control bar heights only.
 
 ## Expiry provenance
@@ -87,32 +105,22 @@ Anywhere the console reads a due date it reads `expiryDate ?? estimatedUseBy`, t
 
 ## Verification
 
-From the repository root:
+From this folder:
 
 ```powershell
-npm run build --prefix server
-npm run build --prefix admin
-npx tsc --noEmit
+npm run build --prefix "$HOME\panzi-handoff\server"
+npm test --prefix "$HOME\panzi-handoff\server"
+npm run build
+npm run typecheck
 ```
 
-The backend test suite that shipped with the earlier admin branch is not in this tree; `npm test --prefix server` has nothing to run. The three commands above are the whole of what is checked automatically today, so anything touching the admin routes still needs a look against a real database.
+The server has one unit test today (removal reasons to outcomes). Anything touching the admin routes still needs a look against a real database.
 
-A real-device acceptance pass still needs the configured app and admin accounts: complete onboarding, scan and save food, correct a pantry item, send feedback, then refresh the corresponding admin pages. Use up one item and discard another; verify the outcomes. Save and reopen a review, then verify it after signing in again with the same administrator account. This confirms Firebase, hosting, device networking, and image recognition in the actual environment.
+A real-device acceptance pass still needs the configured app and admin accounts: complete onboarding, scan and save food, correct a pantry item, send feedback, then refresh the corresponding admin pages. Remove one item as "consumed" and another as "spoiled"; verify Analytics shows one of each. This confirms Firebase, hosting, device networking, and image recognition in the actual environment.
 
 Deploy the backend and admin together because Analytics now distinguishes raw counts from display percentages. Deploy the updated mobile app to start recording explicit outcomes. Apply the security headers in `vite.config.ts` to the static production host. Configuration details and visual conventions are documented in `DESIGN.md`.
 
 
-## Browsing and operational alerts
+## Browsing
 
-Users, Conversations, and System logs request 25 rows per page from the server. Search and filters run before pagination, and CSV exports the displayed page. Date filters support all time or the last 7, 30, or 90 days: Users filters signup dates, Conversations filters last activity, Review filters submission dates, and Logs filters recorded timestamps. Review retains its 20-row pages.
-
-List endpoints accept page, q, range, and an optional before timestamp. Responses include pagination metadata with an asOf cutoff. The UI carries that cutoff across pages and clears it on Refresh or filter changes. This keeps incoming log entries from shifting pages. Users still joins Firebase identity with Mongo activity before filtering on the server; this is suitable for the defense dataset, but large-scale identity browsing would need a synchronized search index.
-
-The Dashboard checks `/api/admin/alerts` when opened and when refreshed. Conditions use recorded AI requests in rolling 24-hour windows:
-
-- At least three failures, or at least three responses slower than ten seconds.
-- At least thirty requests, at least twice the prior 24-hour count, with at least ten prior requests.
-- Estimated spend reaching `ADMIN_DAILY_BUDGET_USD`, when a positive budget is configured in the server environment.
-- Requests whose model has no usable price estimate.
-
-Alerts link to matching logs or API costs, and clear when the recorded condition no longer applies. They do not send email, notifications, or change app behavior. An empty log is not an uptime measurement. The existing administrator login, permissions, and accounts are retained.
+Users and System logs retain server-side search, status/level filters, and 25-row pagination. CSV exports the displayed page. Pantry categories and recipe search/sorting work on the returned data. The redesigned dashboard focuses on food outcomes, scan activity, expiry dates, and shortcuts into the remaining workspace screens.

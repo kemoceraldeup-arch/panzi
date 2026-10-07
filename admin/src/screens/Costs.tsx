@@ -1,4 +1,6 @@
+import { AnimatedNumber } from '../components/AnimatedNumber';
 import { useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { getCosts } from '../api';
 import type { RangeKey } from '../api/types';
 import { ColumnChart, Empty, ErrorState, Loading, Notice, PageHead, Panel, RANGE_OPTIONS, Segmented } from '../components/pz';
@@ -21,7 +23,7 @@ export function Costs() {
     <>
       <PageHead
         title="API costs"
-        text="Estimated from the tokens each model call recorded. Token counts are stored; prices are applied when you open this page."
+        text="Understand the cost of powering Panzi's scanner, recipe suggestions, chat and dish photos. All costs are estimates in pesos, from recorded usage and OpenAI's dollar prices."
         updatedAt={updatedAt}
         tools={<>
           <Segmented label="Date range" options={RANGE_OPTIONS} value={range} onChange={setRange} />
@@ -37,7 +39,7 @@ export function Costs() {
             {data.stats.map((row) => (
               <div className="metric" key={row.label}>
                 <div className="metric-label">{row.label}</div>
-                <div className={`metric-value${shown(row.value) === 'Not priced' ? ' muted' : ''}`}>{shown(row.value)}</div>
+                <div className={`metric-value${shown(row.value) === 'Not priced' ? ' muted' : ''}`}><AnimatedNumber value={shown(row.value)} /></div>
                 <div className="metric-note">{row.note}</div>
               </div>
             ))}
@@ -46,7 +48,7 @@ export function Costs() {
             <Panel title="Spend over time" aside={range}>
               <div className="panel-body">
                 {data.chart.length === 0 ? <Empty title="No model calls in this period" /> : (
-                  <ColumnChart label="Spend" rows={data.chart.map((bar) => ({ label: bar.label, value: bar.pct, tip: `${bar.label}\n${shown(bar.value)}` }))} />
+                  <ColumnChart label="Spend" rows={data.chart.map((bar) => ({ label: bar.label, value: bar.amount ?? bar.pct, tip: `${bar.label}\n${shown(bar.value)}` }))} />
                 )}
               </div>
             </Panel>
@@ -54,7 +56,14 @@ export function Costs() {
               {data.users.length === 0 ? <Empty title="No usage in this period" /> : (
                 <div className="panel-flush"><table>
                   <thead><tr><th>Account</th><th className="r">Calls</th><th>Cost</th></tr></thead>
-                  <tbody>{data.users.map((u) => <tr key={u.userId}><td className="cell-strong">{u.userId === 'deleted' ? 'Deleted account' : u.userId}</td><td className="r">{u.calls.toLocaleString()}</td><td>{shown(u.cost)}</td></tr>)}</tbody>
+                  <tbody>{data.users.map((u) => (
+                    <tr key={u.userId}>
+                      <td>{u.userId === 'deleted'
+                        ? <span className="cell-strong">Deleted account</span>
+                        : <Link className="cell-strong" to={`/users?user=${encodeURIComponent(u.userId)}`}>{u.name || `Account ${u.userId.slice(0, 6)}`}</Link>}</td>
+                      <td className="r">{u.calls.toLocaleString()}</td><td>{shown(u.cost)}</td>
+                    </tr>
+                  ))}</tbody>
                 </table></div>
               )}
             </Panel>

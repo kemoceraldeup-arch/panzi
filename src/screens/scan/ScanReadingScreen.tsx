@@ -347,13 +347,14 @@ const useStyles = makeStyles((colors) => ({
     paddingVertical: space.sm,
     paddingHorizontal: space.md,
     borderRadius: 999,
-    backgroundColor: 'rgba(251,246,235,0.92)',
+    // Cream in light mode, black in dark — see cameraPill in palettes.ts.
+    backgroundColor: colors.cameraPill,
   },
   countPillText: {
     fontWeight: '800',
     fontSize: type.micro.fontSize,
     lineHeight: 13,
-    color: colors.primaryDarker,
+    color: colors.cameraPillText,
   },
   body: {
     flex: 1,

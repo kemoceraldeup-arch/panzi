@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 import { getAdmins, getConfig } from '../api';
 import { Empty, ErrorState, Loading, Notice, PageHead, Panel, Status } from '../components/pz';
 import { useResource } from '../lib/useResource';
@@ -16,17 +16,19 @@ export function Settings() {
     <>
       <PageHead
         title="Settings"
-        text="Who can open this console, and how the server is set up. Access is checked again by the server on every request."
+        text="Your workspace, its administrators, and the services behind Panzi."
         updatedAt={admins.updatedAt}
         tools={<button className="btn" type="button" onClick={() => { admins.reload(); config.reload(); }}>Refresh</button>}
       />
+      <div className="section-intro"><span className="shortcut-icon"><ShieldCheck className="i" /></span><div><h2>A workspace you can trust.</h2><p>Only authorized administrators can access Panzi's community data.</p></div></div>
+      <div className="settings-grid"><div>
       {admins.loading && !admins.data && <Loading />}
       {admins.error && <ErrorState message={admins.error} onRetry={admins.reload} />}
       {admins.data && (
-        <Panel title="Admins" aside={`${admins.data.admins.length} ${admins.data.admins.length === 1 ? 'account' : 'accounts'}`}>
+        <Panel title="Workspace access" aside={`${admins.data.admins.length} ${admins.data.admins.length === 1 ? 'account' : 'accounts'}`}>
           {admins.data.note && <div style={{ padding: '12px 18px 0' }}><Notice>{admins.data.note}</Notice></div>}
           {admins.data.admins.length === 0 ? <Empty title="No admin accounts to show" /> : (
-            <div className="panel-flush"><table>
+            <div className="panel-flush table-wrap" role="region" aria-label="Administrator accounts" tabIndex={0}><table>
               <thead><tr><th>Account</th><th>Status</th><th>Added</th><th>Last sign-in</th></tr></thead>
               <tbody>{admins.data.admins.map((a) => (
                 <tr key={a.id}>
@@ -39,9 +41,10 @@ export function Settings() {
             </table></div>
           )}
           <p className="hint" style={{ padding: '12px 18px 14px', margin: 0 }}>Admin access is granted with the grant-admin script in the server folder.</p>
-          <details className="more">
-            <summary><ChevronRight className="i" aria-hidden="true" />Server configuration</summary>
-            <div className="panel-body" style={{ paddingTop: 0 }}>
+        </Panel>
+      )}
+      </div><Panel title="App configuration" aside="Read only">
+            <div className="panel-body">
               {config.loading && !config.data && <Loading />}
               {config.error && <ErrorState message={config.error} onRetry={config.reload} />}
               {config.data && (config.data.groups.length === 0 ? <p className="hint">Configuration is available when connected to the server.</p> : config.data.groups.map((group) => (
@@ -51,9 +54,8 @@ export function Settings() {
                 </div>
               )))}
             </div>
-          </details>
         </Panel>
-      )}
+      </div>
     </>
   );
 }

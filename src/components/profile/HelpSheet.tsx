@@ -11,8 +11,17 @@
 // misses dates on curved tins" is more use to someone than "ensure adequate
 // lighting", and it is also true.
 
-import React, { useState } from 'react';
-import { ActivityIndicator, Modal, ScrollView, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../Text';
@@ -57,9 +66,11 @@ type Props = {
   email: string | null;
   appVersion: string;
   onClose: () => void;
+  /** Closes the sheet and runs the app tour again over Home. */
+  onReplayTour: () => void;
 };
 
-export default function HelpSheet({ visible, uid, email, appVersion, onClose }: Props) {
+export default function HelpSheet({ visible, uid, email, appVersion, onClose, onReplayTour }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -69,6 +80,7 @@ export default function HelpSheet({ visible, uid, email, appVersion, onClose }: 
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [failed, setFailed] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   function close() {
     onClose();
@@ -102,7 +114,10 @@ export default function HelpSheet({ visible, uid, email, appVersion, onClose }: 
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={close}>
-      <View style={styles.backdrop}>
+      <KeyboardAvoidingView
+        style={styles.backdrop}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <TouchableOpacity style={styles.backdropTap} activeOpacity={1} onPress={close} />
 
         <View style={[styles.sheet, { paddingBottom: insets.bottom + space.lg }]}>
@@ -116,11 +131,28 @@ export default function HelpSheet({ visible, uid, email, appVersion, onClose }: 
           </View>
 
           <ScrollView
+            ref={scrollRef}
             style={styles.scroll}
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            <View style={[styles.card, styles.tourCard]}>
+              <TouchableOpacity
+                style={styles.faqRow}
+                onPress={() => {
+                  close();
+                  onReplayTour();
+                }}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+              >
+                <Ionicons name="compass-outline" size={18} color={colors.primaryDark} />
+                <Text style={styles.faqQuestion}>Show the app tour again</Text>
+                <Ionicons name="chevron-forward" size={16} color={colors.chevron} />
+              </TouchableOpacity>
+            </View>
+
             <Text style={styles.eyebrow}>COMMON QUESTIONS</Text>
             <View style={styles.card}>
               {FAQS.map((faq, i) => {
@@ -169,6 +201,9 @@ export default function HelpSheet({ visible, uid, email, appVersion, onClose }: 
                     maxLength={FEEDBACK_MAX_LENGTH}
                     textAlignVertical="top"
                     selectionColor={colors.primaryDark}
+                    // The box sits below the questions; once the keyboard
+                    // shrinks the sheet, bring it and Send back into view.
+                    onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd(), 250)}
                   />
                 </View>
 
@@ -200,7 +235,7 @@ export default function HelpSheet({ visible, uid, email, appVersion, onClose }: 
             )}
           </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -265,6 +300,9 @@ const useStyles = makeStyles((colors) => ({
     borderWidth: 1,
     borderColor: colors.backgroundAlt,
     paddingHorizontal: space.lg,
+  },
+  tourCard: {
+    marginBottom: space.xxl,
   },
   divided: {
     borderTopWidth: 1,

@@ -38,7 +38,7 @@
 // `t`/`lerp` below), not by unmounting, so the row's own height eases down
 // smoothly rather than jumping the instant a label disappears.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { RefObject, useEffect, useRef, useState } from 'react';
 import { Animated, Easing, View, TouchableOpacity } from 'react-native';
 import Text from '../components/Text';
 import { Ionicons } from '@expo/vector-icons';
@@ -49,6 +49,7 @@ import { useColors } from '../theme/ThemeProvider';
 import { space } from '../theme/spacing';
 import { type } from '../theme/typography';
 import { collapseProgress } from './scrollCollapse';
+import { useTourTarget } from '../components/tour/TourProvider';
 
 // 'home' is the landing screen; 'pantry' is the inventory. They were named
 // 'pantry' and 'list' when the pantry *was* the landing screen — renamed once
@@ -174,6 +175,16 @@ export default function TabBar({ active, onChange }: Props) {
   const styles = useStyles();
   const colors = useColors();
   const insets = useSafeAreaInsets();
+
+  // Lit by the app tour. Refs on the existing buttons rather than wrappers:
+  // a wrapping View would make each tab's onLayout x relative to the wrapper
+  // (always 0) and break the sliding pill.
+  const scanTourRef = useTourTarget('tab.scan');
+  const tourRefs: Partial<Record<TabKey, RefObject<View | null>>> = {
+    recipes: useTourTarget('tab.recipes'),
+    pantry: useTourTarget('tab.pantry'),
+    profile: useTourTarget('tab.profile'),
+  };
 
   // The active pill is one view that moves, rather than a background on
   // whichever tab is current. A background can only appear and disappear; a
@@ -396,6 +407,7 @@ export default function TabBar({ active, onChange }: Props) {
             return (
               <TouchableOpacity
                 key={tab.key}
+                ref={tourRefs[tab.key]}
                 style={styles.tab}
                 onLayout={measure(tab.key)}
                 onPress={() => onChange(tab.key)}
@@ -436,6 +448,7 @@ export default function TabBar({ active, onChange }: Props) {
             hidden, per "do not remove the Scan icon." */}
         <Animated.View style={{ transform: [{ scale: scanButtonScale }] }}>
           <TouchableOpacity
+            ref={scanTourRef}
             style={styles.scanButton}
             onPress={() => onChange('scan')}
             activeOpacity={0.9}

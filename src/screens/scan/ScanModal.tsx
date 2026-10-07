@@ -201,7 +201,13 @@ export default function ScanModal({
   // aborted mid-flight, so its answer is dropped on arrival instead.
   const readId = useRef(0);
 
-  const [editingId, setEditingId] = useState<string | null>(null);
+  // Manual mode opens with its blank row's card already expanded, so "Add
+  // item" lands on the typing form itself rather than on a one-row list the
+  // user then has to tap into. The keyboard still waits for the slide-in to
+  // finish — see autoFocusBlank below.
+  const [editingId, setEditingId] = useState<string | null>(() =>
+    startMode === 'manual' ? candidates[0]?.id ?? null : null
+  );
   const [freshnessId, setFreshnessId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorCause, setErrorCause] = useState<ScanErrorCause>('unrecognised');
@@ -614,6 +620,19 @@ export default function ScanModal({
     return true;
   }
 
+  /** The same refusal for a row with nowhere to be stored, opening the
+   *  offending card so its Store in picker is right there. */
+  function blockedByMissingLocation(): boolean {
+    const homeless = candidates.find((c) => !c.location?.trim());
+    if (!homeless) return false;
+    setEditingId(homeless.id);
+    Alert.alert(
+      `Where does ${homeless.name.trim()} go?`,
+      'Pick where you’ll store it before adding it to your pantry.'
+    );
+    return true;
+  }
+
   /**
    * Saves corrections made to a scan reopened from history.
    *
@@ -691,7 +710,7 @@ export default function ScanModal({
    * alternative is alarming someone about a success.
    */
   async function submit() {
-    if (saving || candidates.length === 0 || blockedByBlankRow()) return;
+    if (saving || candidates.length === 0 || blockedByBlankRow() || blockedByMissingLocation()) return;
 
     // Reopened from history: those rows already exist in the pantry, so this is
     // a write-back rather than a second insert. Nothing new is being added, so
@@ -879,6 +898,9 @@ export default function ScanModal({
                 setPhase('freshness');
               }}
               onAddByHand={addByHand}
+              // Focusing only once the modal has finished opening — a focus
+              // during the slide-in is swallowed by the transition.
+              autoFocusBlank={modalShown}
               onScanAttached={scanAttachedPhoto}
               onSubmit={submit}
             />

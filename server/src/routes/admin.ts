@@ -16,20 +16,27 @@
 import { Router } from 'express';
 import { browseOptions, PAGE_SIZE, pageMetadata } from './adminBrowse';
 import {
+  AdminReview,
+  ApiUsage,
   ChatMessage,
   Feedback,
   PantryItem,
+  PantryRemoval,
   RecipeRating,
   SavedRecipe,
   Scan,
   User,
 } from '../models';
+import { outcomeOf } from '../removalOutcome';
+import { costOf, formatCost } from '../usage';
+import type { UserRecord } from 'firebase-admin/auth';
 import { auth } from '../firebase';
 import { badRequest, isValidId, localDay, relativeTime, withDb } from './helpers';
 import { adminAccessRouter } from './adminAccess';
 import { adminCatalogRouter } from './adminCatalog';
 import { adminReportsRouter } from './adminReports';
 import { adminAlertsRouter } from './adminAlerts';
+import { adminCookbookRouter } from './adminCookbook';
 
 export const adminRouter = Router();
 
@@ -39,6 +46,7 @@ adminRouter.use(adminReportsRouter);
 adminRouter.use(adminAlertsRouter);
 adminRouter.use(adminCatalogRouter);
 adminRouter.use(adminAccessRouter);
+adminRouter.use(adminCookbookRouter);
 
 // --------------------------------------------------------------------- time
 
@@ -142,7 +150,7 @@ function signInLabel(providers: string[] | undefined): string {
  * console renders every account with its uid and no email — degraded, but not
  * broken, and the reason is reported in the payload rather than swallowed.
  */
-async function loadFirebaseUsers(): Promise<{
+async function loadFirebaseUsers(onlyUid?: string): Promise<{
   users: Map<string, FirebaseRecord>;
   warning: string | null;
 }> {
@@ -156,25 +164,37 @@ async function loadFirebaseUsers(): Promise<{
     };
   }
 
+  const keep = (record: UserRecord) =>
+    users.set(record.uid, {
+      email: record.email ?? null,
+      displayName: record.displayName ?? null,
+      photoURL: record.photoURL ?? null,
+      disabled: record.disabled,
+      createdAt: record.metadata.creationTime ?? null,
+      lastSignInAt: record.metadata.lastSignInTime ?? null,
+      providers: record.providerData.map((provider) => provider.providerId),
+      isAdmin: record.customClaims?.admin === true,
+    });
+
   try {
+    // One account, looked up directly: the person panel opened from a link
+    // should not pay for a walk of every account in the project.
+    if (onlyUid) {
+      try {
+        keep(await auth.getUser(onlyUid));
+      } catch (err: any) {
+        if (err?.code !== 'auth/user-not-found') throw err;
+      }
+      return { users, warning: null };
+    }
+
     // listUsers pages at 1000. Panzi is nowhere near that, but a loop costs one
     // line and removes a silent ceiling that would only show up as accounts
     // quietly missing from the list.
     let pageToken: string | undefined;
     do {
       const page = await auth.listUsers(1000, pageToken);
-      for (const record of page.users) {
-        users.set(record.uid, {
-          email: record.email ?? null,
-          displayName: record.displayName ?? null,
-          photoURL: record.photoURL ?? null,
-          disabled: record.disabled,
-          createdAt: record.metadata.creationTime ?? null,
-          lastSignInAt: record.metadata.lastSignInTime ?? null,
-          providers: record.providerData.map((provider) => provider.providerId),
-          isAdmin: record.customClaims?.admin === true,
-        });
-      }
+      for (const record of page.users) keep(record);
       pageToken = page.pageToken;
     } while (pageToken);
 
@@ -211,16 +231,17 @@ function displayName(
 
 // ------------------------------------------------------------------ /users
 
-adminRouter.get(
-  '/users',
-  withDb(async (req, res) => {
-    const options = browseOptions(req.query);
-    const statusFilter = req.query.status ?? 'All';
-    if (!options || !['All', 'Active', 'Dormant', 'Suspended'].includes(String(statusFilter))) return badRequest(res, 'Choose valid account filters.');
+/**
+ * Every account as the Users table draws it, or just one when `onlyUid` is
+ * given — the person panel opened from another page, whose row may not be on
+ * whatever page of the table is loaded.
+ */
+async function adminUsers(onlyUid?: string) {
     const [mongoUsers, firebase] = await Promise.all([
-      User.find({}).lean(),
-      loadFirebaseUsers(),
+      User.find(onlyUid ? { _id: onlyUid } : {}).lean(),
+      loadFirebaseUsers(onlyUid),
     ]);
+    const only = onlyUid ? [{ $match: { userId: onlyUid } }] : [];
 
     // One grouped count per collection rather than a query per user: a hundred
     // accounts would otherwise be four hundred round trips.
@@ -235,19 +256,20 @@ adminRouter.get(
       feedbackPlatforms,
     ] =
       await Promise.all([
-        PantryItem.aggregate([{ $group: { _id: '$userId', n: { $sum: 1 } } }]),
-        Scan.aggregate([{ $group: { _id: '$userId', n: { $sum: 1 } } }]),
-        SavedRecipe.aggregate([{ $group: { _id: '$userId', n: { $sum: 1 } } }]),
+        PantryItem.aggregate([...only, { $group: { _id: '$userId', n: { $sum: 1 } } }]),
+        Scan.aggregate([...only, { $group: { _id: '$userId', n: { $sum: 1 } } }]),
+        SavedRecipe.aggregate([...only, { $group: { _id: '$userId', n: { $sum: 1 } } }]),
         // Ratings are only given on cook mode's complete sheet, so this counts
         // dishes this person actually cooked — which saved recipes never did,
         // whatever the field was once called.
-        RecipeRating.aggregate([{ $group: { _id: '$userId', n: { $sum: 1 } } }]),
-        PantryItem.aggregate([{ $group: { _id: '$userId', t: { $max: '$updatedAt' } } }]),
-        Scan.aggregate([{ $group: { _id: '$userId', t: { $max: '$createdAt' } } }]),
-        ChatMessage.aggregate([{ $group: { _id: '$userId', t: { $max: '$createdAt' } } }]),
+        RecipeRating.aggregate([...only, { $group: { _id: '$userId', n: { $sum: 1 } } }]),
+        PantryItem.aggregate([...only, { $group: { _id: '$userId', t: { $max: '$updatedAt' } } }]),
+        Scan.aggregate([...only, { $group: { _id: '$userId', t: { $max: '$createdAt' } } }]),
+        ChatMessage.aggregate([...only, { $group: { _id: '$userId', t: { $max: '$createdAt' } } }]),
         // The fallback for accounts that predate device.ts: anyone who ever sent
         // feedback told us their platform at the time.
         Feedback.aggregate([
+          ...only,
           { $match: { platform: { $nin: ['', null] } } },
           { $sort: { createdAt: -1 } },
           { $group: { _id: '$userId', platform: { $first: '$platform' } } },
@@ -331,6 +353,17 @@ adminRouter.get(
       };
     });
 
+    return { users: payload, warning: firebase.warning };
+}
+
+adminRouter.get(
+  '/users',
+  withDb(async (req, res) => {
+    const options = browseOptions(req.query);
+    const statusFilter = req.query.status ?? 'All';
+    if (!options || !['All', 'Active', 'Dormant', 'Suspended'].includes(String(statusFilter))) return badRequest(res, 'Choose valid account filters.');
+    const { users: payload, warning } = await adminUsers();
+
     // Busiest first: an admin opening this screen is looking for someone who is
     // using the app, not for whoever happens to sort first alphabetically.
     payload.sort((a, b) => b.scans - a.scans || b.items - a.items || a.id.localeCompare(b.id));
@@ -341,7 +374,129 @@ adminRouter.get(
       (statusFilter === 'All' || user.status === statusFilter) &&
       `${user.name} ${user.email}`.toLowerCase().includes(options.q.toLowerCase()) &&
       new Date(user.joinedAt) <= options.asOf && (!options.from || new Date(user.joinedAt) >= options.from));
-    res.json({ users: matching.slice((options.page - 1) * PAGE_SIZE, options.page * PAGE_SIZE), warning: firebase.warning ?? null, pagination: pageMetadata(options, matching.length) });
+    res.json({ users: matching.slice((options.page - 1) * PAGE_SIZE, options.page * PAGE_SIZE), warning: warning ?? null, pagination: pageMetadata(options, matching.length) });
+  })
+);
+
+// ------------------------------------------------------- /users/:id
+
+/** One account, for the person panel opened from a link on another page. */
+adminRouter.get(
+  '/users/:id',
+  withDb(async (req, res) => {
+    const userId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    if (!isValidId(userId)) return badRequest(res, 'That is not a user id.');
+    const { users, warning } = await adminUsers(userId);
+    if (!users.length) {
+      res.status(404).json({ error: 'not-found', message: 'No account with that id. It may have been deleted.' });
+      return;
+    }
+    res.json({ user: users[0], warning: warning ?? null });
+  })
+);
+
+// ---------------------------------------------- /users/:id/activity
+
+// Each list in the person panel is the latest few, not a history.
+const ACTIVITY_LIMIT = 8;
+
+/**
+ * Everything one person did that the console can speak to, beside their
+ * pantry: what they scanned, what left their shelves and why, what they wrote
+ * to us, and what they cost against the Anthropic key.
+ */
+adminRouter.get(
+  '/users/:id/activity',
+  withDb(async (req, res) => {
+    const userId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+    if (!isValidId(userId)) return badRequest(res, 'That is not a user id.');
+
+    const monthAgo = new Date(Date.now() - 30 * DAY_MS);
+    const [scans, reasonCounts, removals, feedback, usage] = await Promise.all([
+      Scan.find({ userId })
+        .sort({ createdAt: -1 })
+        .limit(ACTIVITY_LIMIT)
+        .select({ sceneLabel: 1, candidates: 1, addedItemIds: 1, unresolvedCount: 1, createdAt: 1 })
+        .lean(),
+      PantryRemoval.aggregate([{ $match: { userId } }, { $group: { _id: '$reason', n: { $sum: 1 } } }]),
+      PantryRemoval.find({ userId })
+        .sort({ removedAt: -1 })
+        .limit(ACTIVITY_LIMIT)
+        .select({ name: 1, reason: 1, note: 1, removedAt: 1 })
+        .lean(),
+      Feedback.find({ userId }).sort({ createdAt: -1 }).limit(ACTIVITY_LIMIT).lean(),
+      ApiUsage.find({ userId })
+        .select({ route: 1, model: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheWriteTokens: 1, createdAt: 1 })
+        .lean(),
+    ]);
+
+    const outcomes = { eaten: 0, wasted: 0, unclassified: 0 };
+    for (const row of reasonCounts as { _id: string; n: number }[]) outcomes[outcomeOf(row._id)] += row.n;
+
+    const reviews = await AdminReview.find({ _id: { $in: feedback.map((row: any) => `feedback:${String(row._id)}`) } }).lean();
+    const reviewById = new Map(reviews.map((row: any) => [String(row._id), row]));
+
+    // A sum with nothing priced in it is "unknown", not $0 — the same rule the
+    // costs page follows — so each total tracks whether anything counted.
+    const sum = () => ({ calls: 0, cost: 0, priced: 0 });
+    const add = (into: ReturnType<typeof sum>, cost: number | null) => {
+      into.calls += 1;
+      if (cost !== null) { into.cost += cost; into.priced += 1; }
+    };
+    const total = sum(), month = sum();
+    const byRoute = new Map<string, ReturnType<typeof sum>>();
+    for (const row of usage as any[]) {
+      const cost = costOf(row.model, {
+        inputTokens: row.inputTokens ?? 0,
+        outputTokens: row.outputTokens ?? 0,
+        cacheReadTokens: row.cacheReadTokens ?? 0,
+        cacheWriteTokens: row.cacheWriteTokens ?? 0,
+      });
+      add(total, cost);
+      if (row.createdAt >= monthAgo) add(month, cost);
+      const entry = byRoute.get(row.route) ?? sum();
+      add(entry, cost);
+      byRoute.set(row.route, entry);
+    }
+    const shown = (s: ReturnType<typeof sum>) => formatCost(s.priced ? s.cost : null);
+
+    res.json({
+      scans: scans.map((row: any) => ({
+        id: String(row._id),
+        scene: row.sceneLabel || 'Scan',
+        items: Array.isArray(row.candidates) ? row.candidates.length : 0,
+        added: Array.isArray(row.addedItemIds) ? row.addedItemIds.length : 0,
+        unresolved: row.unresolvedCount ?? 0,
+        at: relativeTime(row.createdAt),
+      })),
+      outcomes,
+      removals: removals.map((row: any) => ({
+        id: String(row._id),
+        name: row.name,
+        reason: row.reason,
+        note: row.note ?? null,
+        outcome: outcomeOf(row.reason),
+        at: relativeTime(row.removedAt),
+      })),
+      feedback: feedback.map((row: any) => ({
+        id: String(row._id),
+        message: String(row.message ?? ''),
+        platform: row.platform || '—',
+        appVersion: row.appVersion || '—',
+        status: reviewById.get(`feedback:${String(row._id)}`)?.status ?? 'new',
+        at: relativeTime(row.createdAt),
+      })),
+      cost: {
+        total: shown(total),
+        month: shown(month),
+        calls: total.calls,
+        monthCalls: month.calls,
+        unpriced: total.calls - total.priced,
+        routes: [...byRoute.entries()]
+          .sort(([, a], [, b]) => b.cost - a.cost || b.calls - a.calls)
+          .map(([route, entry]) => ({ route, calls: entry.calls, cost: shown(entry) })),
+      },
+    });
   })
 );
 
@@ -431,12 +586,11 @@ adminRouter.get(
     // the stat row is measured against.
     const prevFrom = new Date(now - 2 * range.days * DAY_MS);
 
-    const [current, previous, chartRows, outcomes, expiring, activity] = await Promise.all([
+    const [current, previous, chartRows, outcomes, activity] = await Promise.all([
       windowTotals(from, new Date(now)),
       windowTotals(prevFrom, from),
       scanSeries(from),
       dateSourceMix(from),
-      expiringSoon(),
       recentActivity(),
     ]);
 
@@ -509,11 +663,11 @@ adminRouter.get(
         {
           label: 'Feedback (7d)',
           value: current.feedback7d.toLocaleString(),
+          href: '/feedback',
           color: current.feedback7d > 0 ? 'var(--amber)' : 'var(--green-deep)',
         },
       ],
       activity,
-      expiring,
     });
   })
 );
@@ -755,53 +909,6 @@ export function provenanceBucket(
   // and a person who has not been asked.
   if (expiryUnknown === true) return 'unknown';
   return 'none';
-}
-
-/**
- * The design's 72-hour window, on the same one timeline the app itself draws.
- *
- * A Panzi estimate stands in wherever no date was printed or typed (Phase 2
- * §6: "never sort estimated and real dates into separate sections, the user
- * thinks in one timeline"). Leaving estimates out would have quietly emptied
- * this card as more of the pantry moved onto estimated dates — the food is
- * still about to go off either way.
- */
-async function expiringSoon() {
-  const today = new Date();
-  const from = isoDay(today);
-  const to = isoDay(new Date(today.getTime() + 3 * DAY_MS));
-
-  const rows = await PantryItem.aggregate([
-    { $set: { dueDate: { $ifNull: ['$expiryDate', '$estimatedUseBy'] } } },
-    { $match: { dueDate: { $ne: null, $gte: from, $lte: to } } },
-    {
-      $group: {
-        _id: { name: '$name', category: '$category' },
-        // Distinct owners, not rows: two jars of the same thing in one pantry is
-        // one household at risk, and "184 pantries" is the number the card
-        // promises.
-        users: { $addToSet: '$userId' },
-        soonest: { $min: '$dueDate' },
-      },
-    },
-    { $project: { _id: 1, soonest: 1, count: { $size: '$users' } } },
-    { $sort: { count: -1 } },
-    { $limit: 6 },
-  ]);
-
-  return rows.map((row: any, index: number) => {
-    const days = Math.round(
-      (new Date(`${row.soonest}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) /
-        DAY_MS
-    );
-    return {
-      id: `${row._id.name}-${index}`,
-      name: row._id.name,
-      cat: row._id.category || 'Uncategorised',
-      count: String(row.count),
-      due: days <= 0 ? 'today' : days === 1 ? '1 day' : `${days} days`,
-    };
-  });
 }
 
 /**

@@ -42,7 +42,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/AuthProvider';
 import {
   subscribeToPantryItems,
-  deletePantryItem,
+  deletePantryItems,
   movePantryItem,
   updatePantryItem,
   NewPantryItem,
@@ -53,6 +53,9 @@ import {
   effectiveDate,
 } from '../services/pantry';
 import EditItemSheet from './EditItemSheet';
+import RemovalReasonSheet from '../components/pantry/RemovalReasonSheet';
+import { RemovalReason, removeFromPantry } from '../services/removals';
+import { RemovalLine } from '../services/removalAmount';
 import { backfillItemPhotos } from '../services/scans';
 import { UserProfile } from '../services/profile';
 import { checkItemConflicts, ItemConflict } from '../services/dietCheck';
@@ -69,6 +72,9 @@ import { type } from '../theme/typography';
 
 // "Use soon" shows this many rows before collapsing the rest behind "See all".
 const USE_SOON_PREVIEW = 3;
+
+// What an item saved with no category is filed under.
+const UNCATEGORIZED = 'Uncategorized';
 
 // Each swipe action pane, and the two of them together.
 const ACTION_WIDTH = 74;
@@ -173,6 +179,14 @@ export default function ListScreen({
   // whole selection from the action bar.
   const [movingIds, setMovingIds] = useState<string[] | null>(null);
 
+  // What the removal sheet is open for: which items, and whether it was
+  // Delete (asks why) or Use up (Consumed, no reason step).
+  const [removing, setRemoving] = useState<{ ids: string[]; mode: 'remove' | 'useUp' } | null>(null);
+  const removingItems = useMemo(
+    () => (removing ? items.filter((i) => removing.ids.includes(i.id)) : []),
+    [removing, items]
+  );
+
   // The row whose edit sheet is open. Held as an id rather than the item, so
   // the sheet keeps showing live values if the listener pushes an update while
   // it is open instead of freezing a copy taken when it was tapped.
@@ -239,7 +253,7 @@ export default function ListScreen({
   // category renders no chip, no header and no card.
   const categories = useMemo(() => {
     const present = Array.from(new Set(items.map((i) => i.category).filter(Boolean)));
-    return present.sort((a, b) => {
+    const sorted = present.sort((a, b) => {
       const ai = FOOD_CATEGORIES.indexOf(a);
       const bi = FOOD_CATEGORIES.indexOf(b);
       if (ai !== -1 && bi !== -1) return ai - bi;
@@ -247,6 +261,10 @@ export default function ListScreen({
       if (bi !== -1) return 1;
       return a.localeCompare(b);
     });
+    // Items saved without a category ('' — nothing picked) are grouped last
+    // under Uncategorized. Without this they matched no section and silently
+    // disappeared from the grouped list.
+    return items.some((i) => !i.category) ? [...sorted, ''] : sorted;
   }, [items]);
 
   const visible = useMemo(() => {
@@ -338,35 +356,36 @@ export default function ListScreen({
     setSelected(visible.map((i) => i.id));
   }
 
-  async function removeItems(ids: string[], verb: string) {
+  function closeRemoval() {
+    setRemoving(null);
+    setOpenSwipeId(null);
+    exitSelection();
+  }
+
+  async function saveRemoval(lines: RemovalLine[], reason: RemovalReason, note: string | null) {
+    closeRemoval();
     try {
-      await Promise.all(ids.map((id) => deletePantryItem(id)));
+      await removeFromPantry(lines, reason, note);
     } catch (err: any) {
-      Alert.alert(`Could not ${verb}`, err.message);
+      Alert.alert('Could not remove those', err.message);
     }
   }
 
+  /** Added by mistake: deleted, nothing recorded. */
+  async function discardRemoval() {
+    const ids = removing?.ids ?? [];
+    closeRemoval();
+    try {
+      await deletePantryItems(ids);
+    } catch (err: any) {
+      Alert.alert('Could not delete those', err.message);
+    }
+  }
+
+  // Both ask how much (see RemovalReasonSheet). Delete then asks why; Use up
+  // already says why — it was eaten — and saves as Consumed.
   function confirmRemove(ids: string[], mode: 'delete' | 'useUp') {
-    const count = ids.length;
-    const what = count === 1 ? 'this item' : `${count} items`;
-    Alert.alert(
-      mode === 'useUp' ? 'Mark as used up?' : 'Delete?',
-      mode === 'useUp'
-        ? `Take ${what} off your shelves.`
-        : `Remove ${what} from your pantry.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: mode === 'useUp' ? 'Use up' : 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            await removeItems(ids, mode === 'useUp' ? 'use those up' : 'delete those');
-            setOpenSwipeId(null);
-            exitSelection();
-          },
-        },
-      ]
-    );
+    setRemoving({ ids, mode: mode === 'delete' ? 'remove' : 'useUp' });
   }
 
   async function applyMove(location: string) {
@@ -576,11 +595,11 @@ export default function ListScreen({
             const isActive = activeCategory === chip;
             return (
               <TouchableOpacity
-                key={chip}
+                key={chip || UNCATEGORIZED}
                 style={[styles.chip, isActive && styles.chipActive]}
                 onPress={() => setActiveCategory(chip)}
               >
-                <Text style={[styles.chipText, isActive && styles.chipTextActive]}>{chip}</Text>
+                <Text style={[styles.chipText, isActive && styles.chipTextActive]}>{chip || UNCATEGORIZED}</Text>
               </TouchableOpacity>
             );
           })}
@@ -629,9 +648,9 @@ export default function ListScreen({
 
         {grouped ? (
           sections.map((section) => (
-            <View key={section.category} style={styles.section}>
+            <View key={section.category || UNCATEGORIZED} style={styles.section}>
               <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>{section.category.toUpperCase()}</Text>
+                <Text style={styles.sectionLabel}>{(section.category || UNCATEGORIZED).toUpperCase()}</Text>
                 <Text style={styles.sectionCount}>{section.rows.length}</Text>
               </View>
               <View style={styles.card}>
@@ -736,6 +755,14 @@ export default function ListScreen({
         </Pressable>
       </Modal>
 
+      <RemovalReasonSheet
+        items={removingItems}
+        mode={removing?.mode ?? 'remove'}
+        onSave={saveRemoval}
+        onDiscard={discardRemoval}
+        onClose={() => setRemoving(null)}
+      />
+
       {/* Edit — every field of one item, opened by tapping its row */}
       <EditItemSheet
         item={editingItem}
@@ -744,7 +771,10 @@ export default function ListScreen({
         onDelete={() => {
           const id = editingId;
           setEditingId(null);
-          if (id) confirmRemove([id], 'delete');
+          // After the edit sheet has finished sliding away: iOS won't present
+          // a second modal while the first is still dismissing, and the reason
+          // sheet would silently never appear.
+          if (id) setTimeout(() => confirmRemove([id], 'delete'), 350);
         }}
       />
 
@@ -1357,8 +1387,10 @@ const useStyles = makeStyles((colors) => ({
     justifyContent: 'center',
   },
   checkboxOn: {
-    backgroundColor: colors.primaryDark,
-    borderColor: colors.primaryDark,
+    // inkFill, not primaryDark: primaryDark is an ink colour that turns light
+    // green in dark mode, and white on it was unreadable there.
+    backgroundColor: colors.inkFill,
+    borderColor: colors.inkFill,
   },
   rowMain: {
     flex: 1,

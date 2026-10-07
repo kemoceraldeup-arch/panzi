@@ -62,11 +62,13 @@ async function setCachedLockout(lockedUntilMs: number | null): Promise<void> {
  *  without re-reading auth.currentUser itself. Throws ApiError with
  *  code 'locked' (and details.lockedUntilMs) if a lockout is still active —
  *  also cached locally so a later cold start knows without asking. */
-export async function sendVerificationCode(): Promise<{ email: string; alreadyVerified?: boolean }> {
+export async function sendVerificationCode(
+  purpose: VerificationPurpose = 'signup'
+): Promise<{ email: string; alreadyVerified?: boolean }> {
   try {
     const result = await apiFetch<{ email: string; alreadyVerified?: boolean }>(
       '/api/verify-email/send',
-      {}
+      { purpose }
     );
     return result;
   } catch (err) {
@@ -81,9 +83,12 @@ export async function sendVerificationCode(): Promise<{ email: string; alreadyVe
  *  code — the screen reads err.message straight off that for what to show,
  *  and err.details.attemptsLeft / err.details.lockedUntilMs for the
  *  structured numbers the wrong-code and lockout states need. */
-export async function confirmVerificationCode(code: string): Promise<void> {
+export async function confirmVerificationCode(
+  code: string,
+  purpose: VerificationPurpose = 'signup'
+): Promise<void> {
   try {
-    await apiFetch('/api/verify-email/confirm', { code });
+    await apiFetch('/api/verify-email/confirm', { code, purpose });
     // Success clears any cached lockout outright — a fresh code was
     // necessarily requested (and accepted) after any prior lockout ended.
     await setCachedLockout(null);
@@ -108,6 +113,52 @@ export async function isEmailVerified(): Promise<boolean> {
   if (!user) return false;
   await user.reload();
   return user.emailVerified;
+}
+
+// ─── Sign-in codes ──────────────────────────────────────────────────────────
+//
+// Every email/password sign-in asks for a code sent to that address before
+// the app opens, not only a brand-new account. Once one is confirmed, this
+// phone remembers it for that account until sign-out, so reopening the app on
+// a session that is still signed in doesn't ask again.
+
+export type VerificationPurpose = 'signup' | 'login';
+
+const LOGIN_VERIFIED_KEY = 'panzi.loginVerifiedUid';
+
+/** Whether this signed-in email account has confirmed a code on this phone
+ *  since it last signed in. */
+export async function isLoginVerified(uid: string): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(LOGIN_VERIFIED_KEY)) === uid;
+  } catch {
+    // Storage failing shouldn't lock someone out of their own account — the
+    // worst case is being asked for a code they didn't strictly need.
+    return false;
+  }
+}
+
+export async function markLoginVerified(uid: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(LOGIN_VERIFIED_KEY, uid);
+  } catch {
+    // Asked again next launch at worst.
+  }
+}
+
+/** Called on sign-out, so the next sign-in has to confirm a code again. */
+export async function clearLoginVerified(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(LOGIN_VERIFIED_KEY);
+  } catch {
+    // Nothing to do — a stale uid can only match the same account again.
+  }
+}
+
+/** Email/password accounts get sign-in codes; Google and guests don't. */
+export function usesEmailPassword(): boolean {
+  const user = auth.currentUser;
+  return !!user && !user.isAnonymous && user.providerData.some((p) => p.providerId === 'password');
 }
 
 export { ApiError };

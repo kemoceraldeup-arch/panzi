@@ -34,7 +34,7 @@ function contentSecurityPolicy(apiUrl: string, dev: boolean): string {
     // Inline styles stay allowed in both: this codebase styles with the `style`
     // prop throughout, which is an inline style as far as CSP is concerned.
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    'font-src https://fonts.gstatic.com',
+    "font-src 'self' https://fonts.gstatic.com",
     // blob: and data: are for the avatars and dish photos the app stores.
     "img-src 'self' data: blob: https:",
     `connect-src 'self' ${apiUrl} ${firebase}${dev ? ' ws://localhost:5173' : ''}`,

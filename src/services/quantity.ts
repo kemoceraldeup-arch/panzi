@@ -227,6 +227,25 @@ export function pluralizeUnit(unit: string, amount: number): string {
   return `${unit}s`;
 }
 
+/** The inverse of pluralizeUnit, loosely — "eggs" → "egg", "loaves" → "loaf".
+ *  Good enough for the unit nouns pantry rows and recipes actually use. */
+export function singularWord(word: string): string {
+  if (word.endsWith('ies') && word.length > 4) return `${word.slice(0, -3)}y`;
+  if (word.endsWith('oes')) return word.slice(0, -2);
+  if (word.endsWith('ves')) return `${word.slice(0, -3)}f`;
+  if (word.endsWith('ses') || word.endsWith('ches') || word.endsWith('shes')) return word.slice(0, -2);
+  if (word.endsWith('s') && !word.endsWith('ss') && word.length > 3) return word.slice(0, -1);
+  return word;
+}
+
+/** The unit noun after a saved quantity's number, singular — "egg" in "5
+ *  eggs". What formatQuantityString takes back to write a new amount in the
+ *  same words. Empty when there is no number. */
+export function unitWordOf(quantity: string): string {
+  const m = quantity.trim().match(/^[\d.¼½¾]+\s*(.*)$/);
+  return m ? singularWord(m[1].trim().toLowerCase()) : '';
+}
+
 // ─── Fractions — real glyphs, never decimals ───────────────────────────────
 
 const FRACTION_GLYPHS: Record<number, string> = { 0.25: '¼', 0.5: '½', 0.75: '¾' };
@@ -450,7 +469,9 @@ export function formatQuantityString(q: ItemQuantity, unit: string): string {
  *  parses. */
 export function parseQuantityString(text: string): ItemQuantity {
   const trimmed = text.trim();
-  const match = trimmed.match(/^([\d.]+|[¼½¾]|\d+[¼½¾])\s*(.*)$/);
+  // Mixed numbers ("1½") first: the plain-number branch would otherwise take
+  // the "1" alone and leave "½ packs" as the unit, reading 1½ packs as 1 piece.
+  const match = trimmed.match(/^(\d+[¼½¾]|[¼½¾]|[\d.]+)\s*(.*)$/);
   if (!match) return { measure: 'pieces', splittable: false, amount: 1 };
 
   const amount = parseLeadingNumber(match[1]);
@@ -526,4 +547,57 @@ export async function saveMeasurePref(uid: string, name: string, pref: MeasurePr
     // Best-effort — see saveCachedRecipes in services/recipes.ts for the same
     // reasoning applied to a different cache.
   }
+}
+
+// No real amount needs more than this many digits before the decimal point
+// — maxFor's largest ceiling is 500,000 (500 kg/L in base units), six
+// digits — so seven is already generous headroom, not a tight limit someone
+// typing a normal amount would ever brush against. What it does stop is a
+// runaway string of digits (from a stuck key, a paste, or a duplicated
+// onChangeText firing) turning into something Number() renders as
+// scientific notation once it's simply too long to be a real quantity.
+export const MAX_AMOUNT_DIGITS = 7;
+
+/**
+ * Keeps what a person can actually type in this field to something that
+ * could plausibly be a real amount — digits and at most one decimal point,
+ * capped in length — filtered on every keystroke rather than only at
+ * commit. Committing alone was not enough: Number() on an unbounded string
+ * of digits happily returns a valid, finite number in the 1e+36 range, which
+ * then sails straight through commitTyped's floor/ceiling clamp (that clamp
+ * bounds the *value*, not how many digits produced it) and back out through
+ * displayAmount as "9.666164664646464e+36 kg" — a real bug this app hit.
+ * Filtering the keystrokes themselves is what stops the string from ever
+ * reaching that size in the first place.
+ */
+export function sanitizeDecimalInput(text: string): string {
+  // Only one decimal point survives — a second one is dropped rather than
+  // rejected outright, so "1.2.3" typed quickly becomes "1.23" instead of
+  // silently refusing every keystroke after the first period.
+  const firstDot = text.indexOf('.');
+  const withoutExtraDots =
+    firstDot === -1
+      ? text.replace(/[^0-9]/g, '')
+      : text.slice(0, firstDot + 1).replace(/[^0-9]/g, '') +
+        '.' +
+        text.slice(firstDot + 1).replace(/[^0-9]/g, '');
+  return withoutExtraDots.slice(0, MAX_AMOUNT_DIGITS + 1); // +1 allows for the decimal point itself.
+}
+
+/**
+ * What typed text means as a quantity, or null when nothing usable was typed
+ * (blank, "0", punctuation only). `ceiling` is in base units. A weight or
+ * volume is typed in the unit on screen, so it goes through toBaseAmount
+ * before it is held between the measure's floor and the ceiling — "4.5" with
+ * L showing is 4500 mL, never 4.5.
+ */
+export function typedQuantity(text: string, quantity: ItemQuantity, ceiling: number): ItemQuantity | null {
+  const n = Number(sanitizeDecimalInput(text));
+  // Number('') is 0, so a blank or all-punctuation field must not read as a
+  // valid amount.
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const floor = minFor(quantity.measure, quantity.splittable);
+  const isSplit = quantity.measure === 'weight' || quantity.measure === 'volume';
+  const base = isSplit ? toBaseAmount(n, displayUnitFor(quantity)) : n;
+  return { ...quantity, amount: Math.min(ceiling, Math.max(floor, base)) };
 }

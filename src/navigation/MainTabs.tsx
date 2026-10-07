@@ -12,12 +12,14 @@ import ScanModal from '../screens/scan/ScanModal';
 import Toast from '../components/Toast';
 import TabBar, { TabKey, SCAN_BUTTON_LIFT } from './TabBar';
 import TabLayer from './TabLayer';
+import { TourProvider } from '../components/tour/TourProvider';
 import { resetTabScroll } from './scrollCollapse';
 import { useAuth } from '../auth/AuthProvider';
 import { PantryItem, deletePantryItems, subscribeToPantryItems } from '../services/pantry';
 import {
   onNotificationReceived,
   onNotificationTap,
+  onChatReplyTap,
   retireDuePlan,
   scheduleTestSoon,
   sendTestNow,
@@ -109,6 +111,11 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
   // that would drift from the one inside the scanner.
   const [scanOpen, setScanOpen] = useState(false);
   const [scanMode, setScanMode] = useState<'camera' | 'manual'>('camera');
+  // Bumped on every open so the scanner mounts fresh each time. Keying on the
+  // mode alone wasn't enough: closing or saving resets the still-mounted
+  // scanner to its camera phase, so a second "Add item" in a row (same mode,
+  // same key) reopened onto the camera instead of the typing form.
+  const [scanNonce, setScanNonce] = useState(0);
   // A past scan Home asked to reopen. Cleared on close so the next plain scan
   // doesn't land back on it.
   const [pendingScan, setPendingScan] = useState<ScanRecord | null>(null);
@@ -121,6 +128,8 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
   const [selecting, setSelecting] = useState(false);
   // The last batch written, while its Undo toast is still up.
   const [batch, setBatch] = useState<Batch | null>(null);
+  // Bumped by Help's "Show the app tour again" (see ProfileScreen).
+  const [tourReplay, setTourReplay] = useState(0);
   const { uid } = useAuth();
 
   // Watched here rather than inside ProfileScreen, because a listener that
@@ -154,6 +163,10 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
   const [openRecipe, setOpenRecipe] = useState<Recipe | null>(null);
   const [cooking, setCooking] = useState<Recipe | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  // Set when the chat was opened from Home's microphone, so it starts
+  // listening; cleared on every other way in, or the next ordinary open
+  // would switch the mic on too.
+  const [chatVoice, setChatVoice] = useState<number | null>(null);
   // Set by "Start cooking", read by RecipeDetailScreen's onDismiss — see the
   // race that prop exists to dodge, documented on RecipeDetailScreen's own
   // Props type (and used the same way in RecipesScreen's own "Start cooking").
@@ -256,6 +269,20 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
   // about a specific piece of food and the pantry is where they act on it.
   useEffect(() => onNotificationTap((route) => goTo(route)), [goTo]);
 
+  // "Panzi replied" — straight into that conversation.
+  const [chatTarget, setChatTarget] = useState<{ id: string; title: string; nonce: number } | null>(
+    null
+  );
+  useEffect(
+    () =>
+      onChatReplyTap((conversation) => {
+        setChatVoice(null);
+        setChatTarget({ ...conversation, nonce: Date.now() });
+        setChatOpen(true);
+      }),
+    []
+  );
+
   // One arriving while the app is open has no sync behind it to file it away,
   // so the history would not show it until something else changed the pantry.
   useEffect(
@@ -276,6 +303,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
     if (!requireSignIn()) return;
     setPendingScan(null);
     setScanMode('manual');
+    setScanNonce((n) => n + 1);
     setScanOpen(true);
   }
 
@@ -283,6 +311,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
     if (!requireSignIn()) return;
     setPendingScan(null);
     setScanMode('camera');
+    setScanNonce((n) => n + 1);
     setScanOpen(true);
   }
 
@@ -301,6 +330,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
     if (!requireSignIn()) return;
     setScanMode('camera');
     setPendingScan(scan);
+    setScanNonce((n) => n + 1);
     setScanOpen(true);
   }
 
@@ -312,6 +342,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
       if (!requireSignIn()) return;
       setPendingScan(null);
       setScanMode('camera');
+      setScanNonce((n) => n + 1);
       setScanOpen(true);
       return;
     }
@@ -378,11 +409,27 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
     }
   }
 
+  // The app tour only runs over Home with nothing else on top of it. The
+  // scanner, chat and every sheet are Modals the tour's own Modal must not
+  // race; "Scan my first shelf" opens the camera first, and the tour simply
+  // waits for it to close.
+  const tourBlocked =
+    active !== 'home' ||
+    selecting ||
+    scanOpen ||
+    chatOpen ||
+    savedOpen ||
+    openRecipe !== null ||
+    cooking !== null ||
+    inbox ||
+    reminderSheet;
+
   return (
     <SafeAreaView
       style={styles.container}
       edges={FULL_BLEED.includes(active) ? [] : ['top']}
     >
+      <TourProvider blocked={tourBlocked} replayNonce={tourReplay}>
       {/* Home, Recipes and Profile stay mounted permanently — TabLayer only
           fades/slides their opacity and position, it never unmounts them.
           Switching away and back used to unmount and remount HomeScreen,
@@ -397,7 +444,14 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
         <TabLayer active={active === 'home'} direction={direction}>
           <HomeScreen
             active={active === 'home'}
-            onOpenChat={() => setChatOpen(true)}
+            onOpenChat={() => {
+              setChatVoice(null);
+              setChatOpen(true);
+            }}
+            onOpenChatVoice={() => {
+              setChatVoice(Date.now());
+              setChatOpen(true);
+            }}
             onFinishScan={finishScan}
             onViewCategory={viewCategory}
             onOpenNotifications={(anchor) => {
@@ -432,6 +486,10 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
             onOpenSaved={() => setSavedOpen(true)}
             onOpenReminders={() => setReminderSheet(true)}
             onSignOut={onSignOut}
+            onReplayTour={() => {
+              handleChange('home');
+              setTourReplay((n) => n + 1);
+            }}
           />
         </TabLayer>
       </View>
@@ -442,7 +500,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
           // Remounted per entry so a manual add never opens onto the leftovers
           // of the last camera scan, and so reopening the same scan twice
           // starts clean rather than resuming stale edits.
-          key={`${scanMode}:${pendingScan?.id ?? ''}`}
+          key={`${scanMode}:${pendingScan?.id ?? ''}:${scanNonce}`}
           visible={scanOpen}
           uid={uid}
           startMode={scanMode}
@@ -459,6 +517,8 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
       <ChatFlow
         visible={chatOpen}
         items={items}
+        voiceNonce={chatVoice}
+        openConversation={chatTarget}
         onOpenRecipe={(recipe) => {
           setChatOpen(false);
           setOpenRecipe(recipe);
@@ -487,6 +547,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
 
       <RecipeDetailScreen
         recipe={openRecipe}
+        items={items}
         saved={openRecipe ? savedKeys.has(savedKey(openRecipe)) : false}
         onToggleSave={() => openRecipe && toggleSave(openRecipe)}
         onStartCooking={() => {
@@ -549,6 +610,7 @@ export default function MainTabs({ onSignOut, autoOpenScan }: Props) {
           bottomOffset={TOAST_OFFSET}
         />
       )}
+      </TourProvider>
     </SafeAreaView>
   );
 }

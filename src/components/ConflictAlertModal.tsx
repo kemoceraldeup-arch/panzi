@@ -70,6 +70,9 @@ export default function ConflictAlertModal({ visible, items, onCancel, onAddAnyw
   const isAllergy = items.some((item) => item.conflicts.some((c) => c.type === 'allergy'));
   const tone = isAllergy ? colors.accentDeep : colors.primaryDark;
   const toneSoft = isAllergy ? colors.accentSoft : colors.primaryLighter;
+  // The button's own fill. `tone` is an ink colour — right for the icon and
+  // border, but it turns light in dark mode, and white text on it vanished.
+  const toneFill = isAllergy ? colors.accent : colors.inkFill;
 
   const lines = items.map(lineFor);
   const message =
@@ -98,7 +101,7 @@ export default function ConflictAlertModal({ visible, items, onCancel, onAddAnyw
             >
               <Text style={[type.subtitle, styles.buttonWeight, { color: colors.textPrimary }]}>Cancel</Text>
             </Pressable>
-            <Pressable onPress={onAddAnyway} style={[styles.button, { backgroundColor: tone }]}>
+            <Pressable onPress={onAddAnyway} style={[styles.button, { backgroundColor: toneFill }]}>
               <Text style={[type.subtitle, styles.buttonWeight, { color: colors.onAccent }]}>Add anyway</Text>
             </Pressable>
           </View>

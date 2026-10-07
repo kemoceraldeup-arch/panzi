@@ -1,3 +1,4 @@
+import { AnimatedNumber } from '../components/AnimatedNumber';
 import { useCallback, useMemo, useState } from 'react';
 import { getFoods } from '../api';
 import { Empty, ErrorState, Loading, Notice, PageHead, SearchField } from '../components/pz';
@@ -21,28 +22,26 @@ export function FoodDatabase() {
   return (
     <>
       <PageHead
-        title="Pantry insights"
-        text="What people keep in their pantries, and where each expiry date came from. This is a summary of stored items, not a food list you can edit."
+        title="Inside the pantry"
+        text="A closer look at what people keep, how long it lasts, and where its expiry date came from."
         updatedAt={updatedAt}
         tools={<button className="btn" type="button" onClick={exportRows} disabled={!foods.length}>Export CSV</button>}
       />
       {data?.note && <Notice>{data.note}</Notice>}
+      {data && <section className="panel strip" aria-label="Pantry summary">
+        <div className="metric"><div className="metric-label">Pantry items</div><div className="metric-value"><AnimatedNumber value={data.totalItems.toLocaleString()} /></div><div className="metric-note">Stored across the community</div></div>
+        <div className="metric"><div className="metric-label">Foods in this view</div><div className="metric-value"><AnimatedNumber value={data.foods.length.toLocaleString()} /></div><div className="metric-note">Grouped by ingredient</div></div>
+        <div className="metric"><div className="metric-label">Food categories</div><div className="metric-value"><AnimatedNumber value={data.categories.length} /></div><div className="metric-note">From produce to pantry staples</div></div>
+      </section>}
+      {data && <div className="category-tabs" role="group" aria-label="Food category"><button type="button" aria-pressed={category === 'All'} onClick={() => setCategory('All')}>All foods</button>{data.categories.map(c => <button type="button" key={c.label} aria-pressed={category === c.label} onClick={() => setCategory(c.label)}>{c.label}<span>{c.n}</span></button>)}</div>}
       <div className="toolbar">
-        <SearchField label="Search foods" value={query} onChange={setQuery} placeholder="Food name" />
-        {data && data.categories.length > 0 && (
-          <label className="field-wrap" style={{ width: 'auto' }}>
-            <span className="sr-only">Category</span>
-            <select className="field-input" style={{ paddingLeft: 12 }} value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option value="All">All categories</option>
-              {data.categories.map((c) => <option key={c.label} value={c.label}>{c.label} ({c.n})</option>)}
-            </select>
-          </label>
-        )}
+        <SearchField label="Search foods" value={query} onChange={setQuery} placeholder="Find an ingredient…" />
       </div>
       {loading && !data && <Loading />}
       {error && <ErrorState message={error} onRetry={reload} />}
       {data && (
         <section className="panel">
+          <div className="table-heading"><h2>What's on the shelves</h2><span>{foods.length} foods shown</span></div>
           <div className="panel-body" style={{ paddingBottom: 4 }}>
             <div className="legend">
               <span data-tip="Printed on the pack, or typed in by the person"><i className="sw" style={{ background: 'var(--ink-2)' }} />Date known</span>

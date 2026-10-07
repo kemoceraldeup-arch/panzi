@@ -128,7 +128,30 @@ const RESULT_SCHEMA = {
             description:
               'True when this item is something a person portions out by weight or volume rather than counting individual units — rice, flour, sugar, pasta, loose spices, cooking oil, milk. False for anything counted as whole items even when it also has a printed weight — a bag of crisps, a tin of chickpeas, a dozen eggs, a loaf of bread, six yoghurt pots. The test: would a person say "add half a kilo more" (true) or "add one more" (false)? A different question from count and size above — a 1 kg bag of rice is still count 1, sizeValue 1000, sizeUnit "g", and measuredByWeight true, all at once.',
           },
-          category: { type: 'string', enum: FOOD_CATEGORIES },
+          fillLevel: {
+            type: 'number',
+            description:
+              'How much of ONE pack is left, as 1, 0.75, 0.5 or 0.25. 1 for anything sealed or unopened, and 1 whenever you cannot see how much is inside — an opaque closed box, a tin, a carton you cannot see into. Only go below 1 when you can see evidence: the level in a clear jar or bottle, a bag rolled or clipped down, a packet visibly half flat. When count is more than 1, this is for the one open pack; the others are assumed full.',
+          },
+          fillNote: {
+            type: 'string',
+            description:
+              'When fillLevel is below 1, one short phrase addressed to the user naming what you saw: "Jar about half full", "Bag rolled down to a quarter". Empty string when fillLevel is 1.',
+          },
+          contentsVisible: {
+            type: 'boolean',
+            description:
+              'True when you can see the food itself inside its container — a clear jar, a see-through bag, a bottle you can see the level in, an open box. False for opaque or sealed packaging you cannot see into. The app measures how full every true item is in a second, closer look.',
+          },
+          category: {
+            type: 'string',
+            // '' is allowed so an unsure read stays blank for the user to
+            // pick, rather than being forced into the nearest category — which
+            // in practice was Snacks for anything packaged and unfamiliar.
+            enum: [...FOOD_CATEGORIES, ''],
+            description:
+              'Which of these the food belongs to. Only pick one you are confident of; empty string when you cannot tell what kind of food it is. Never use Snacks as a fallback for something you are unsure about.',
+          },
           location: {
             type: 'string',
             description:
@@ -189,6 +212,9 @@ const RESULT_SCHEMA = {
           'sizeValue',
           'sizeUnit',
           'measuredByWeight',
+          'fillLevel',
+          'fillNote',
+          'contentsVisible',
           'category',
           'location',
           'expiryDate',
@@ -215,6 +241,8 @@ List each distinct product once. Six eggs in a box is one item with a quantity o
 
 BE EXHAUSTIVE. A shelf or fridge photo is very often crowded — several rows, items partly behind one another, small jars and packets at the edges or in the background. Scan the entire frame methodically, corner to corner and front to back, before you finish your answer. Missing an item the user can plainly see is a worse mistake than being unsure about one you did list — an uncertain guess can be marked nameUnsure and fixed with one tap, but a skipped item never appears at all and the user has to notice it is missing and add it by hand. When a photo shows many items, err toward listing every plausible one, including partially hidden or small items at the back or edges, rather than stopping once you have found the obvious ones at the front.
 
+When the same food sits in two containers — rice in a bag and more rice in a jar — they are two items, and their names must tell them apart: "Rice bag" and "Rice jar", not "Rice" twice or a name that doesn't say which is which.
+
 Name things the way a person would say them while unpacking a bag — short. The name and the quantity sit side by side in a narrow row, so a name that runs past four words gets cut off and the user cannot read what you found.
 
 COUNT AND SIZE ARE DIFFERENT NUMBERS.
@@ -223,7 +251,13 @@ count is how many things a person would pick up. size is how big one of them is,
 
 count is what the user's own quantity control shows, and it is nearly always between 1 and about a dozen. If you find yourself writing a large number there, it is almost certainly a weight and belongs in sizeValue.
 
-MEASURED VS COUNTED IS A THIRD, SEPARATE QUESTION.
+Bulk sacks are common — rice especially comes in 5 kg, 10 kg, 25 kg and 50 kg sacks, and the net weight is usually printed large on the front as "25 KG", "25 KGS", "NET WT. 25 KILOS" or similar. Look for it and read it: one 25 kg sack of rice is count 1, sizeValue 25, sizeUnit "kg". Never shrink a sack to a small retail size — a woven or plastic sack that fills the frame is not a 500 g packet.
+
+HOW MUCH IS LEFT IS A FOURTH QUESTION.
+
+People scan their pantry, not just their shopping, so plenty of packs are part used. fillLevel is how much of one pack remains, in quarters: 1, 0.75, 0.5 or 0.25. sizeValue stays the printed size of a full pack — a 1 kg bag of rice that is half gone is sizeValue 1000, sizeUnit "g", fillLevel 0.5, never sizeValue 500. Judge only from what you can see: the level through a clear jar or bottle, a bag rolled or clipped down, a packet sagging half flat, an open box you can see into. Anything sealed, or anything you cannot see into, is 1 — do not guess that a closed carton is half empty. When you do go below 1, say what you saw in fillNote so the user can check it.
+
+MEASURED VS COUNTED IS A FIFTH, SEPARATE QUESTION.
 
 measuredByWeight says whether the user's own quantity control should let them enter a fraction — half a bag of rice, a cup and a half of flour — or only whole numbers. Rice, flour, sugar, pasta, loose herbs and spices, cooking oil, milk are measuredByWeight true. A tin of chickpeas, a dozen eggs, a loaf of bread, a bag of crisps are measuredByWeight false — the user counts these as whole items, however much any one of them weighs. This never changes what goes in count or sizeValue; it only tells the app which kind of "how many" control to draw.
 
@@ -258,6 +292,9 @@ type Candidate = {
   sizeValue: number;
   sizeUnit: string;
   measuredByWeight: boolean;
+  fillLevel: number;
+  fillNote: string;
+  contentsVisible: boolean;
   category: string;
   location: string;
   expiryDate: string;
@@ -349,6 +386,44 @@ const COUNTING_UNITS = new Set([
   'tins',
 ]);
 
+const UNIT_ALIASES: Record<string, string> = {
+  g: 'g',
+  gm: 'g',
+  gms: 'g',
+  gr: 'g',
+  gram: 'g',
+  grams: 'g',
+  gramme: 'g',
+  grammes: 'g',
+  kg: 'kg',
+  kgs: 'kg',
+  kilo: 'kg',
+  kilos: 'kg',
+  kilogram: 'kg',
+  kilograms: 'kg',
+  ml: 'ml',
+  mls: 'ml',
+  millilitre: 'ml',
+  millilitres: 'ml',
+  milliliter: 'ml',
+  milliliters: 'ml',
+  l: 'L',
+  lt: 'L',
+  ltr: 'L',
+  ltrs: 'L',
+  litre: 'L',
+  litres: 'L',
+  liter: 'L',
+  liters: 'L',
+  oz: 'oz',
+  ounce: 'oz',
+  ounces: 'oz',
+  lb: 'lb',
+  lbs: 'lb',
+  pound: 'lb',
+  pounds: 'lb',
+};
+
 /**
  * Drops a size unit that isn't a measurement.
  *
@@ -361,8 +436,15 @@ function cleanUnit(name: string, unit: unknown): string {
   const trimmed = unit.trim();
   if (!trimmed) return '';
 
-  const lower = trimmed.toLowerCase();
+  const lower = trimmed.toLowerCase().replace(/\.$/, '');
   if (COUNTING_UNITS.has(lower)) return '';
+
+  // Labels spell the same unit a dozen ways — a rice sack reads "25 KGS" or
+  // "25 KILOS" far more often than "25 kg". The app only converts the
+  // canonical spellings, so an alias left as-is was read as grams: 25 kilos
+  // became 25 g.
+  const canonical = UNIT_ALIASES[lower];
+  if (canonical) return canonical;
 
   // "Oreo biscuits pack" + "pack" — the name already carries the word, so
   // repeating it adds nothing even if it isn't in the list above.
@@ -370,6 +452,246 @@ function cleanUnit(name: string, unit: unknown): string {
   if (words.includes(lower)) return '';
 
   return trimmed;
+}
+
+/**
+ * Snaps a fill reading to 5% steps — fine enough to turn into grams, coarse
+ * enough not to claim a precision a photo can't give. The app rounds further
+ * to quarters where its pack stepper needs them.
+ *
+ * Anything missing or out of range reads as a full pack: an unreadable answer
+ * is "couldn't see in", and the prompt's rule for that is 1. A reading of 0
+ * would be an empty pack, which is a thing to throw away, not to save.
+ */
+function cleanFillLevel(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 1;
+  const snapped = Math.round(raw * 20) / 20;
+  return Math.min(1, Math.max(0.05, snapped));
+}
+
+// ─── Fill measurement ─────────────────────────────────────────────────────
+//
+// The first read judges fullness in one glance, alongside a dozen other
+// questions, on the cheapest model — and it was wrong in the way that matters:
+// a see-through bag with rice in its bottom quarter came back "half left".
+// A second, narrower call on a stronger model fixes that by measuring instead
+// of judging: it marks where the container's top and bottom are and where the
+// food's surface sits, and the fraction is computed here from those three
+// heights. Asking for positions rather than a percentage is what makes it
+// precise — a model is far better at "where is the rice line" than at "what
+// fraction is this".
+
+const MEASURE_MODEL = 'gpt-5.6-terra';
+
+const MEASURE_SCHEMA = {
+  type: 'object',
+  properties: {
+    measurements: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          index: { type: 'number', description: 'The number of the item in the list you were given.' },
+          found: {
+            type: 'boolean',
+            description: 'False when you cannot find this container or cannot see the food level in it.',
+          },
+          containerLeft: { type: 'number' },
+          containerRight: { type: 'number' },
+          containerTop: {
+            type: 'number',
+            description:
+              'Top of the space the food can fill, as a fraction of image height from the top (0 = top edge, 1 = bottom edge). A jar: just under the lid or shoulder. A bag: where it is folded, clipped, tied or sealed shut — not the loose flap above that.',
+          },
+          containerBottom: {
+            type: 'number',
+            description: 'The bottom of the inside of the container, as a fraction of image height from the top.',
+          },
+          contentsTop: {
+            type: 'number',
+            description:
+              'The surface of the food inside — the average height of the top of the rice, liquid or powder — as a fraction of image height from the top. If the surface is uneven or tilted, its average level.',
+          },
+          fillPercent: {
+            type: 'number',
+            description:
+              'Your own estimate, 0 to 100, of how full the container is by volume. A cross-check on the heights above.',
+          },
+          note: {
+            type: 'string',
+            description: 'One short phrase for the user saying what you saw: "Rice fills the bottom quarter of the bag".',
+          },
+        },
+        required: [
+          'index',
+          'found',
+          'containerLeft',
+          'containerRight',
+          'containerTop',
+          'containerBottom',
+          'contentsTop',
+          'fillPercent',
+          'note',
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['measurements'],
+  additionalProperties: false,
+} as const;
+
+const MEASURE_SYSTEM = `You measure how full food containers are in a photograph, for a pantry app that turns your answer into how much food the user has left.
+
+You are given a numbered list of items already found in the photo, each with a rough box. The boxes can be off, or even point at a neighbouring container — find the container that actually holds the named item, and describe that one.
+
+For each item, mark three heights, each as a fraction of the WHOLE IMAGE's height measured from the top edge (0 is the top edge, 1 is the bottom edge):
+- containerTop: the top of the space the food could fill. For a bag, that is where it is folded, clipped, tied or sealed — a floppy empty flap above the closure does not count. For a jar or bottle, just below the lid or neck.
+- containerBottom: the inside bottom of the container.
+- contentsTop: the surface of the food — where the rice, grain, liquid or powder stops. Look closely; in a clear bag the top of the food is where the texture of grains ends and empty, crinkled plastic begins.
+
+Also give containerLeft and containerRight as fractions of image width, and your own fillPercent as a cross-check.
+
+Be exact. Measure, don't guess from a first impression: a bag with food only in its bottom quarter is 25% full even if the bag is bulging there. If you cannot see the food level at all, set found to false.`;
+
+type Measurement = {
+  index: number;
+  found: boolean;
+  containerLeft: number;
+  containerRight: number;
+  containerTop: number;
+  containerBottom: number;
+  contentsTop: number;
+  fillPercent: number;
+  note: string;
+};
+
+const inUnit = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1;
+
+/**
+ * The fill fraction from a measurement's heights, cross-checked against the
+ * model's own percentage. The heights win: they are the precise part. When
+ * they are unusable (the container has no height, the surface sits outside
+ * it) the percentage stands in, and when both are unusable there's no answer.
+ */
+function fillFromMeasurement(m: Measurement): number | null {
+  if (inUnit(m.containerTop) && inUnit(m.containerBottom) && inUnit(m.contentsTop)) {
+    const height = m.containerBottom - m.containerTop;
+    if (height > 0.02) {
+      const surface = Math.min(m.containerBottom, Math.max(m.containerTop, m.contentsTop));
+      return (m.containerBottom - surface) / height;
+    }
+  }
+  if (typeof m.fillPercent === 'number' && Number.isFinite(m.fillPercent) && m.fillPercent > 0) {
+    return Math.min(100, m.fillPercent) / 100;
+  }
+  return null;
+}
+
+/**
+ * Re-measures fullness for every item whose contents can be seen, in place.
+ * Never fails the scan: on any error the first read's numbers stand, since a
+ * rough answer is still better than none.
+ */
+export async function measureFillLevels(
+  uid: string | undefined,
+  imageUrl: string,
+  items: Candidate[],
+): Promise<void> {
+  const targets = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.contentsVisible || item.fillLevel < 1);
+  if (targets.length === 0) return;
+
+  const list = targets
+    .map(({ item, index }) => {
+      const b = item.box;
+      const where =
+        b && b.width > 0 && b.height > 0
+          ? ` — roughly x ${b.x.toFixed(2)}–${(b.x + b.width).toFixed(2)}, y ${b.y.toFixed(2)}–${(b.y + b.height).toFixed(2)}`
+          : '';
+      return `${index}: ${item.name}${where}`;
+    })
+    .join('\n');
+
+  const startedAt = Date.now();
+  try {
+    const response = await openai().chat.completions.create({
+      model: MEASURE_MODEL,
+      max_completion_tokens: 12000,
+      messages: [
+        { role: 'system', content: MEASURE_SYSTEM },
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+            { type: 'text', text: `Measure how full each of these is:\n${list}` },
+          ],
+        },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'fill_measurements',
+          strict: true,
+          schema: MEASURE_SCHEMA as unknown as Record<string, unknown>,
+        },
+      },
+    });
+
+    // A second, high-detail look at the same photo — billed on its own, so it
+    // gets its own row rather than hiding inside the scan's.
+    recordUsage({
+      userId: uid,
+      route: 'scan-measure',
+      model: MEASURE_MODEL,
+      durationMs: Date.now() - startedAt,
+      ...tokensFrom(response.usage),
+    });
+
+    const raw = response.choices[0]?.message?.content;
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { measurements?: Measurement[] };
+
+    for (const m of parsed.measurements ?? []) {
+      const item = items[m.index];
+      if (!item || !m.found || !targets.some((t) => t.index === m.index)) continue;
+      const fill = fillFromMeasurement(m);
+      if (fill === null) continue;
+
+      item.fillLevel = cleanFillLevel(fill);
+      item.fillNote = item.fillLevel < 1 ? String(m.note ?? '').trim() : '';
+
+      // The measured container is a tighter, checked outline than the first
+      // read's box — which, on a counter with a bag and a jar of the same
+      // food, outlined the jar for the bag. Taken only when it's a real box.
+      if (
+        inUnit(m.containerLeft) &&
+        inUnit(m.containerRight) &&
+        m.containerRight - m.containerLeft > 0.02 &&
+        m.containerBottom - m.containerTop > 0.02
+      ) {
+        item.box = {
+          x: m.containerLeft,
+          y: m.containerTop,
+          width: m.containerRight - m.containerLeft,
+          height: m.containerBottom - m.containerTop,
+        };
+      }
+    }
+
+    console.info('Fill measured', {
+      uid,
+      readings: (parsed.measurements ?? []).map((m) => {
+        const fill = m.found ? fillFromMeasurement(m) : null;
+        return `${items[m.index]?.name ?? m.index}: ${fill === null ? 'not found' : `${Math.round(fill * 100)}%`} (model said ${m.fillPercent}%)`;
+      }),
+      inputTokens: response.usage?.prompt_tokens ?? 0,
+      outputTokens: response.usage?.completion_tokens ?? 0,
+    });
+  } catch (err: any) {
+    console.warn('Fill measurement failed; keeping first read', { uid, message: err?.message });
+  }
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -517,6 +839,7 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
       const looseProduce = item.looseProduce === true;
       const ripeness = cleanRipeness(item.ripeness, looseProduce);
       const nameUnsure = item.nameUnsure === true;
+      const fillLevel = cleanFillLevel(item.fillLevel);
 
       return {
         ...item,
@@ -541,6 +864,11 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
             : 0,
         sizeUnit: cleanUnit(name, item.sizeUnit),
         measuredByWeight: item.measuredByWeight === true,
+        fillLevel,
+        // A note only means something next to a part-used pack; on a full one
+        // it would flag a card that has nothing to check.
+        fillNote: fillLevel < 1 ? String(item.fillNote ?? '').trim() : '',
+        contentsVisible: item.contentsVisible === true,
         expiryDate: cleanPrintedDate(item.expiryDate),
         looseProduce,
         ripeness,
@@ -566,6 +894,12 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     ...tokensFrom(response.usage),
   });
 
+  // A closer look at anything whose level can be seen, before the numbers go
+  // out — see measureFillLevels.
+  if (parsed.readable && items.length > 0) {
+    await measureFillLevels(uid, `data:${mediaType};base64,${imageBase64}`, items);
+  }
+
   // The per-scan cost line, so a spike in either figure shows up in the logs
   // rather than only on the bill at the end of the month.
   console.info('Scan complete', {
@@ -574,6 +908,11 @@ scanRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     itemCount: items.length,
     produceCount: items.filter((i) => i.looseProduce).length,
     unsureCount: items.filter((i) => i.nameUnsure).length,
+    // What was read for each item, so a wrong amount on the review page can be
+    // traced to the model's reading or to the app's handling of it.
+    sizes: items.map(
+      (i) => `${i.name}: ${i.count} × ${i.sizeValue || '?'} ${i.sizeUnit}, ${Math.round(i.fillLevel * 100)}% left`,
+    ),
     inputTokens: response.usage?.prompt_tokens ?? 0,
     cachedTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
     outputTokens: response.usage?.completion_tokens ?? 0,

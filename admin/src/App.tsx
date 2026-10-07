@@ -1,25 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Search, Sun } from 'lucide-react';
+import { ChevronRight, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Search, Sun } from 'lucide-react';
 import { MotionConfig } from 'framer-motion';
 import { SAMPLE_MODE } from './api/client';
-import { getReview } from './api';
 import { navigation, settingsItem } from './components/navigation';
 import { useTheme } from './lib/useTheme';
 import { NotAdmin, SignIn } from './components/SignIn';
 import { reducedMotion, TipLayer, ToastProvider } from './components/pz';
 import { AuthProvider, useAuth } from './lib/auth';
 import { Analytics } from './screens/Analytics';
-import { Chatbot } from './screens/Chatbot';
 import { Costs } from './screens/Costs';
 import { Dashboard } from './screens/Dashboard';
+import { Feedback } from './screens/Feedback';
 import { FoodDatabase } from './screens/FoodDatabase';
 import { Logs } from './screens/Logs';
 import { Recipes } from './screens/Recipes';
-import { Review } from './screens/Review';
+import { Cookbook } from './screens/Cookbook';
 import { Settings } from './screens/Settings';
 import { Users } from './screens/Users';
+import { PanziCompanion } from './components/PanziCompanion';
 
 // A way to look at the console before anyone holds an admin claim, without
 // leaving a hole in a deployed build: `import.meta.env.DEV` is false in
@@ -64,22 +64,15 @@ function useNarrow() {
   return narrow;
 }
 
-function Brand({ collapsed, narrow, onToggle }: { collapsed: boolean; narrow: boolean; onToggle: () => void }) {
-  const label = narrow ? 'Close navigation' : collapsed ? 'Expand sidebar' : 'Collapse sidebar';
-  const showOpen = collapsed && !narrow;
+function Brand({ narrow, onClose }: { narrow: boolean; onClose: () => void }) {
   return (
     <div className="brand-row">
       <NavLink className="brand" to="/" aria-label="Panzi dashboard">
         <img src="/panzi-logo.png" alt="" width={26} height={26} />
-        <span className="label">Panzi</span>
+        <span className="label">Panzi<span className="brand-caption">ADMIN WORKSPACE</span></span>
       </NavLink>
-      <button className="icon-btn side-toggle" type="button" onClick={onToggle} aria-label={label}
-        aria-controls="side" aria-expanded={narrow || !collapsed} data-tip={narrow ? undefined : `${label} (Ctrl+B)`}>
-        {/* Keyed so the new icon mounts and plays its turn-in animation. */}
-        <span className="swap" key={showOpen ? 'open' : 'close'}>
-          {showOpen ? <PanelLeftOpen className="i" aria-hidden="true" /> : <PanelLeftClose className="i" aria-hidden="true" />}
-        </span>
-      </button>
+      {narrow && <button className="icon-btn side-toggle" type="button" onClick={onClose} aria-label="Close navigation"
+        aria-controls="side" aria-expanded="true"><PanelLeftClose className="i" aria-hidden="true" /></button>}
     </div>
   );
 }
@@ -90,32 +83,19 @@ function Shell() {
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [openReports, setOpenReports] = useState<number | null>(null);
   const { collapsed, toggle: toggleCollapsed } = useCollapsed();
   const narrow = useNarrow();
   const rail = collapsed && !narrow;
-  const onSideToggle = narrow ? () => setMenuOpen(false) : toggleCollapsed;
   const page = ALL_PAGES.find((item) => item.to === location.pathname) ?? ALL_PAGES[0];
 
   useEffect(() => { document.title = `${page.label} - Panzi admin`; }, [page.label]);
+  useEffect(() => { if (!narrow) setMenuOpen(false); }, [narrow]);
   useEffect(() => { setMenuOpen(false); window.scrollTo(0, 0); document.getElementById('page')?.focus({ preventScroll: true }); }, [location.pathname]);
-
-  // The badge on Needs review: open scan issues plus open feedback. Refreshed on
-  // every page change so a decision saved on the review page shows up here.
-  useEffect(() => {
-    let cancelled = false;
-    getReview('open', 1).then((data) => {
-      if (cancelled) return;
-      const count = (data.pagination?.scans ?? data.scans.length) + (data.pagination?.feedback ?? data.feedback.length);
-      setOpenReports(count);
-    }).catch(() => { if (!cancelled) setOpenReports(null); });
-    return () => { cancelled = true; };
-  }, [location.pathname]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true); }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && !window.matchMedia(NARROW).matches) { event.preventDefault(); toggleCollapsed(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && !window.matchMedia(NARROW).matches) { event.preventDefault(); if (!event.repeat) toggleCollapsed(); }
       if (event.key === 'Escape') setMenuOpen(false);
     };
     document.addEventListener('keydown', onKey);
@@ -151,9 +131,6 @@ function Shell() {
       <li key={item.to}>
         <NavLink className="nav-link" to={item.to} end aria-label={rail ? item.label : undefined} data-tip={rail ? item.label : undefined}>
           <Icon className="i" aria-hidden="true" /><span className="label">{item.label}</span>
-          {item.to === '/review' && openReports !== null && openReports > 0 && (
-            <span className="badge" aria-label={`${openReports} open`}>{openReports}</span>
-          )}
         </NavLink>
       </li>
     );
@@ -165,7 +142,7 @@ function Shell() {
         <a href="#page" className="skip" onClick={(e) => { e.preventDefault(); document.getElementById('page')?.focus(); }}>Skip to content</a>
         <div className={`pz-shell${rail ? ' collapsed' : ''}`}>
           <aside className={`side${menuOpen ? ' on' : ''}`} id="side" aria-label="Main navigation">
-            <Brand collapsed={collapsed} narrow={narrow} onToggle={onSideToggle} />
+            <Brand narrow={narrow} onClose={() => setMenuOpen(false)} />
             <nav id="nav">
               {navigation.map((group) => (
                 <div className="nav-group" key={group.label}>
@@ -175,6 +152,7 @@ function Shell() {
               ))}
             </nav>
             <div className="side-foot">
+              <PanziCompanion pathname={location.pathname} active={!rail && (!narrow || menuOpen)} />
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>{link(settingsItem)}</ul>
               <div className="me">
                 <span className="avatar" style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }} data-tip={rail ? 'Signed in as Admin' : undefined}>A</span>
@@ -185,9 +163,14 @@ function Shell() {
           </aside>
           <div className="pz-main" inert={menuOpen}>
             <header className="top">
+              {!narrow && <button className="icon-btn sidebar-control" type="button" onClick={toggleCollapsed}
+                aria-label={rail ? 'Expand sidebar' : 'Collapse sidebar'} aria-controls="side" aria-expanded={!rail}>
+                {rail ? <PanelLeftOpen className="i" aria-hidden="true" /> : <PanelLeftClose className="i" aria-hidden="true" />}
+              </button>}
               <button className="icon-btn menu-btn" type="button" onClick={() => setMenuOpen(true)} aria-label="Open navigation" aria-controls="side" aria-expanded={menuOpen}>
                 <Menu className="i" aria-hidden="true" />
               </button>
+              <div className="breadcrumb"><span>Workspace</span><ChevronRight className="i" aria-hidden="true" /><b>{page.label}</b></div>
               <div className="search-global">
                 <Search className="i" aria-hidden="true" />
                 <input type="search" placeholder="Go to a page" aria-label="Search pages" readOnly onClick={() => setPaletteOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter') setPaletteOpen(true); }} />
@@ -203,7 +186,7 @@ function Shell() {
             {AUTH_BYPASS && <div className="preview-bar">{PUBLIC_PREVIEW
               ? 'Design preview with sample data. The people and numbers are made up, and nothing here can be saved.'
               : 'Local preview with sample data. Sign-in is skipped in development only.'}</div>}
-            <main className="page" id="page" tabIndex={-1}><Outlet /></main>
+            <main className="page" id="page" tabIndex={-1} data-page={location.pathname}><Outlet /><footer className="workspace-footer"><span>Panzi · Good food, less waste.</span><span>Admin workspace</span></footer></main>
           </div>
         </div>
         {paletteOpen && <Palette onClose={() => setPaletteOpen(false)} />}
@@ -274,10 +257,10 @@ export function App() {
             <Route element={<Gate />}>
               <Route index element={<Dashboard />} />
               <Route path="users" element={<Users />} />
+              <Route path="feedback" element={<Feedback />} />
               <Route path="food" element={<FoodDatabase />} />
               <Route path="recipes" element={<Recipes />} />
-              <Route path="review" element={<Review />} />
-              <Route path="chatbot" element={<Chatbot />} />
+              <Route path="cookbook" element={<Cookbook />} />
               <Route path="analytics" element={<Analytics />} />
               <Route path="costs" element={<Costs />} />
               <Route path="logs" element={<Logs />} />

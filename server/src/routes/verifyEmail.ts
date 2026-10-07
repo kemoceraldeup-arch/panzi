@@ -34,6 +34,23 @@ const RESEND_COOLDOWN_MS = 30 * 1000;
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MS = 5 * 60 * 1000;
 
+type Purpose = 'signup' | 'login';
+
+/**
+ * Which code a request is about. 'signup' proves a new account's address
+ * once; 'login' is asked for on every email sign-in, verified account or not.
+ * They are separate records so a login code can never be redeemed as a
+ * sign-up one or the other way round, and a pending sign-up code isn't
+ * clobbered by a login.
+ */
+function purposeOf(body: unknown): Purpose {
+  return (body as { purpose?: unknown } | null)?.purpose === 'login' ? 'login' : 'signup';
+}
+
+function recordId(uid: string, purpose: Purpose): string {
+  return purpose === 'login' ? `login:${uid}` : uid;
+}
+
 function generateCode(): string {
   // Zero-padded so every code is exactly CODE_LENGTH digits — Math.random
   // alone would occasionally hand back "042913" as 42913.
@@ -58,18 +75,22 @@ verifyEmailRouter.post(
   '/send',
   withDb(async (req, res) => {
     const uid = req.uid!;
+    const purpose = purposeOf(req.body);
+    const id = recordId(uid, purpose);
     const user = await admin.auth().getUser(uid);
     const email = user.email;
     if (!email) {
       badRequest(res, 'This account has no email to verify.');
       return;
     }
-    if (user.emailVerified) {
+    // Only a sign-up code has nothing left to do for a verified account — a
+    // login code is asked for on every sign-in regardless.
+    if (purpose === 'signup' && user.emailVerified) {
       res.json({ ok: true, alreadyVerified: true });
       return;
     }
 
-    const existing = await EmailVerification.findById(uid);
+    const existing = await EmailVerification.findById(id);
 
     // A live lockout blocks a fresh code too — otherwise "request a new
     // code" would be exactly how someone routes around the attempt limit
@@ -96,9 +117,9 @@ verifyEmailRouter.post(
     const code = generateCode();
     const expiresAt = new Date(Date.now() + CODE_TTL_MS);
     await EmailVerification.findByIdAndUpdate(
-      uid,
+      id,
       {
-        _id: uid,
+        _id: id,
         email,
         code,
         attempts: 0,
@@ -109,7 +130,21 @@ verifyEmailRouter.post(
       { upsert: true }
     );
 
-    await sendVerificationEmail(email, code);
+    try {
+      await sendVerificationEmail(email, code, purpose);
+    } catch (err: any) {
+      // The code never left, so it must not stand: dropping the record
+      // undoes the resend cooldown it would otherwise start, and the user can
+      // try again straight away instead of waiting on an email that is never
+      // coming.
+      console.error('Verification email failed', { uid, purpose, message: err?.message });
+      await EmailVerification.findByIdAndDelete(id);
+      res.status(502).json({
+        error: 'send-failed',
+        message: `We couldn't send the code to ${email}. Check your connection and try again.`,
+      });
+      return;
+    }
     res.json({ ok: true, email });
   })
 );
@@ -120,6 +155,7 @@ verifyEmailRouter.post(
   '/confirm',
   withDb(async (req, res) => {
     const uid = req.uid!;
+    const purpose = purposeOf(req.body);
     const { code } = (req.body ?? {}) as { code?: string };
 
     if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
@@ -127,7 +163,7 @@ verifyEmailRouter.post(
       return;
     }
 
-    const record = await EmailVerification.findById(uid);
+    const record = await EmailVerification.findById(recordId(uid, purpose));
     if (!record) {
       res.status(410).json({ error: 'expired', message: 'That code has expired — send a new one.' });
       return;
@@ -187,6 +223,7 @@ verifyEmailRouter.post(
       return;
     }
 
+    // Either code proves the inbox belongs to this account.
     await admin.auth().updateUser(uid, { emailVerified: true });
     await record.deleteOne();
     res.json({ ok: true });

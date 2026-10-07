@@ -12,14 +12,15 @@
 // ScanModal is — the tab bar has no place in a recipe, and this keeps the
 // navigation shape unchanged.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../components/Text';
 import DishTile from '../components/recipes/DishTile';
 import { Eyebrow, MacroPill } from './scan/atoms';
-import { Recipe, scaleAmount } from '../services/recipes';
+import { Recipe, scaleAmount, withPantryMatches } from '../services/recipes';
+import { PantryItem } from '../services/pantry';
 import { lookupRecipeNutrition, RecipeNutritionEstimate } from '../services/nutrition';
 import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
@@ -46,6 +47,9 @@ const MIN_NUTRITION_COVERAGE = 0.6;
 
 type Props = {
   recipe: Recipe | null;
+  /** The live pantry, so the checklist ticks what's on the shelf even when
+   *  the name differs — "Chicken" covering "chicken thighs and legs". */
+  items: PantryItem[];
   saved: boolean;
   onToggleSave: () => void;
   onStartCooking: () => void;
@@ -62,6 +66,7 @@ type Props = {
 
 export default function RecipeDetailScreen({
   recipe,
+  items,
   saved,
   onToggleSave,
   onStartCooking,
@@ -91,6 +96,7 @@ export default function RecipeDetailScreen({
           {recipe && (
             <Body
               recipe={recipe}
+              items={items}
               saved={saved}
               onToggleSave={onToggleSave}
               onStartCooking={onStartCooking}
@@ -104,13 +110,15 @@ export default function RecipeDetailScreen({
 }
 
 function Body({
-  recipe,
+  recipe: given,
+  items,
   saved,
   onToggleSave,
   onStartCooking,
   onClose,
 }: {
   recipe: Recipe;
+  items: PantryItem[];
   saved: boolean;
   onToggleSave: () => void;
   onStartCooking: () => void;
@@ -119,6 +127,7 @@ function Body({
   const styles = useStyles();
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  const recipe = useMemo(() => withPantryMatches(given, items), [given, items]);
 
   // Serving count as chosen on this screen, independent of the recipe's own
   // authored value — Cook Mode is a separate navigation away and keeps
@@ -166,6 +175,7 @@ function Body({
       <DishTile
         look={recipe.look}
         dishKey={recipe.dishKey}
+        photoUrl={recipe.photoUrl}
         title={recipe.title}
         size="hero"
         style={[styles.hero, { paddingTop: insets.top + 8 }]}

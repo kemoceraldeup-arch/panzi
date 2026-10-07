@@ -1,8 +1,9 @@
+import { AnimatedNumber } from '../components/AnimatedNumber';
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, CircleAlert, Inbox, Receipt, Refrigerator, TrendingDown, TrendingUp } from 'lucide-react';
-import { getAlerts, getAnalytics, getDashboard, getReview } from '../api';
-import type { AnalyticsData, RangeKey } from '../api/types';
+import { ArrowUpRight, CircleX, CookingPot, Leaf, Refrigerator, ScanLine, TrendingDown, TrendingUp, TriangleAlert, Users } from 'lucide-react';
+import { getAlerts, getAnalytics, getDashboard, getFeedback } from '../api';
+import type { AlertsResponse, AnalyticsData, RangeKey } from '../api/types';
 import { ColumnChart, Empty, ErrorState, Loading, PageHead, Panel, RANGE_OPTIONS, Segmented, Status, toneFromColor, TrendLine } from '../components/pz';
 import { downloadCsv } from '../lib/csv';
 import { useResource } from '../lib/useResource';
@@ -15,66 +16,60 @@ export function Dashboard() {
   const dashboard = useResource(useCallback(() => getDashboard(range), [range]), [range]);
   const outcomes = useResource(useCallback(() => getAnalytics(range), [range]), [range]);
   const alerts = useResource(useCallback(() => getAlerts(), []), []);
-  const review = useResource(useCallback(() => getReview('open', 1), []), []);
+  const feedback = useResource(useCallback(() => getFeedback({ status: 'open' }), []), []);
   const data = dashboard.data;
 
-  const refresh = () => { dashboard.reload(); outcomes.reload(); alerts.reload(); review.reload(); };
+  const refresh = () => { dashboard.reload(); outcomes.reload(); alerts.reload(); feedback.reload(); };
   const exportRows = () => data && downloadCsv(`panzi-dashboard-${range}.csv`, ['Metric', 'Value', 'Change', 'Note'],
-    data.range.stats.map((row) => [row.label, row.value, row.delta, row.note]));
+    data.range.stats.filter((row) => !/chat|review|report/i.test(row.label)).map((row) => [row.label, row.value, row.delta, row.note]));
 
-  const openReports = review.data ? (review.data.pagination?.scans ?? review.data.scans.length) + (review.data.pagination?.feedback ?? review.data.feedback.length) : null;
+  const metricIcons = [Users, ScanLine, Users, Leaf];
 
   return (
     <>
       <PageHead
         title="Dashboard"
-        text={`How Panzi pantries did over the ${data?.range.label ?? 'selected period'}, and what needs a look.`}
+        text="A little care for every pantry. Here's the bigger picture."
         updatedAt={dashboard.updatedAt}
         tools={<>
           <Segmented label="Date range" options={RANGE_OPTIONS} value={range} onChange={setRange} />
           <button className="btn" type="button" onClick={refresh}>Refresh</button>
-          <button className="btn" type="button" onClick={exportRows} disabled={!data}>Export CSV</button>
+          <button className="btn primary" type="button" onClick={exportRows} disabled={!data}>Export report <ArrowUpRight className="i" /></button>
         </>}
       />
       {dashboard.loading && !data && <Loading />}
       {dashboard.error && <ErrorState message={dashboard.error} onRetry={dashboard.reload} />}
+      {alerts.data && alerts.data.alerts.length > 0 && <Alerts data={alerts.data} />}
       {data && (
         <div className={dashboard.loading ? 'is-busy' : ''}>
-          <div className="row hero">
-            <FoodOutcome data={outcomes.data} error={outcomes.error} loading={outcomes.loading} label={data.range.label} />
-            <Panel title="Needs your attention">
-              <ul className="todo">
-                {openReports !== null && (
-                  <li><Link to="/review"><span className={`todo-icon ${openReports ? 'warn' : 'good'}`}><Inbox className="i" aria-hidden="true" /></span>
-                    <span><b>{openReports ? `${openReports} open report${openReports === 1 ? '' : 's'}` : 'No open reports'}</b><small>Scan issues and feedback waiting for a decision</small></span>
-                    <ChevronRight className="i go" aria-hidden="true" /></Link></li>
-                )}
-                {alerts.data?.alerts.map((alert) => (
-                  <li key={alert.id}><Link to={alert.href}><span className={`todo-icon ${alert.severity === 'error' ? 'bad' : 'warn'}`}><CircleAlert className="i" aria-hidden="true" /></span>
-                    <span><b>{alert.title}</b><small>{alert.detail}</small></span><ChevronRight className="i go" aria-hidden="true" /></Link></li>
-                ))}
-                {data.expiring[0] && (
-                  <li><Link to="/food"><span className="todo-icon"><Refrigerator className="i" aria-hidden="true" /></span>
-                    <span><b>{data.expiring[0].name} is due in {data.expiring[0].count} pantries</b><small>Due {data.expiring[0].due}</small></span>
-                    <ChevronRight className="i go" aria-hidden="true" /></Link></li>
-                )}
-                <li><Link to="/costs"><span className="todo-icon"><Receipt className="i" aria-hidden="true" /></span>
-                  <span><b>API spend</b><small>See what each scan, recipe and chat reply cost</small></span><ChevronRight className="i go" aria-hidden="true" /></Link></li>
-              </ul>
-              {alerts.data && alerts.data.alerts.length === 0 && <p className="hint" style={{ padding: '0 18px 14px', margin: 0 }}>{alerts.data.note}</p>}
-            </Panel>
-          </div>
+          <section className="welcome-banner">
+            <div className="welcome-copy"><span className="eyebrow"><Leaf className="i" /> THE PANZI PICTURE</span><h2>Good food.<br />Less going to waste.</h2><p>From the first scan to the last bite, see how people are making the most of what they have.</p><Link className="btn primary" to="/analytics">Explore food outcomes <ArrowUpRight className="i" /></Link></div>
+            <img src="/mascot/panzi-shelf.png" alt="Panzi keeping the pantry stocked" className="welcome-mascot" />
+            <div className="welcome-note"><Refrigerator className="i" /><span>Every pantry<br /><b>has a bigger story.</b></span></div>
+          </section>
 
           <section className="panel strip" aria-label="Summary">
-            {data.range.stats.map((row) => (
+            {data.range.stats.filter((row) => !/chat|review|report/i.test(row.label)).map((row, index) => {
+              const Icon = metricIcons[index % metricIcons.length];
+              return (
               <div className="metric" key={row.label}>
-                <div className="metric-label">{row.label}</div>
-                <div className="metric-value">{row.value}</div>
+                <div className="metric-label">{row.label}<span className="metric-icon"><Icon className="i" /></span></div>
+                <div className="metric-value"><AnimatedNumber value={row.value} /></div>
                 <div className="metric-note">{row.note}</div>
                 {row.delta && <div className="metric-note"><span className={row.up ? 'up' : 'down'}>{row.delta}</span> vs the previous {data.range.label.replace(/^last /, '')}</div>}
               </div>
-            ))}
+            );})}
           </section>
+
+          <div className="row hero">
+            <FoodOutcome data={outcomes.data} error={outcomes.error} loading={outcomes.loading} label={data.range.label} />
+            <Panel title="Explore your workspace" className="workspace-shortcuts">
+              <p className="panel-intro">The things that make Panzi, Panzi.</p>
+              <Link to="/food"><span className="shortcut-icon"><Refrigerator className="i" /></span><span><b>Inside the pantry</b><small>Ingredients, categories & expiry dates</small></span><ArrowUpRight className="i" /></Link>
+              <Link to="/recipes"><span className="shortcut-icon peach"><CookingPot className="i" /></span><span><b>What's cooking?</b><small>Saved recipes & cooking ratings</small></span><ArrowUpRight className="i" /></Link>
+              <Link to="/users"><span className="shortcut-icon cream"><Users className="i" /></span><span><b>The Panzi community</b><small>Accounts, pantries & scan activity</small></span><ArrowUpRight className="i" /></Link>
+            </Panel>
+          </div>
 
           <div className="row two">
             <Panel title="Items scanned" aside={data.range.label}>
@@ -91,8 +86,12 @@ export function Dashboard() {
                   <tbody>
                     {data.health.map((row) => {
                       const tone = toneFromColor(row.color);
-                      return <tr key={row.label}><td className="cell-strong">{row.label}</td><td>{row.value}</td><td><Status tone={tone}>{tone === 'good' ? 'Normal' : 'Check'}</Status></td></tr>;
+                      return <tr key={row.label}><td className="cell-strong">{row.href ? <Link to={row.href}>{row.label}</Link> : row.label}</td><td>{row.value}</td><td><Status tone={tone}>{tone === 'good' ? 'Normal' : 'Check'}</Status></td></tr>;
                     })}
+                    {alerts.data && (
+                      <tr><td className="cell-strong" title={alerts.data.note}>AI alerts (24h)</td><td>{alerts.data.alerts.length}</td>
+                        <td><Status tone={alerts.data.alerts.some((a) => a.severity === 'error') ? 'bad' : alerts.data.alerts.length ? 'warn' : 'good'}>{alerts.data.alerts.length ? 'Check' : 'Normal'}</Status></td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -100,15 +99,20 @@ export function Dashboard() {
           </div>
 
           <div className="row half">
-            <Panel title="Expiring in the next 3 days" aside={<Link to="/food">Pantry insights</Link>}>
-              {data.expiring.length === 0 ? <Empty title="Nothing is due in the next 3 days" /> : (
-                <div className="panel-flush table-wrap" role="region" aria-label="Expiring soon" tabIndex={0}>
-                  <table>
-                    <thead><tr><th>Food</th><th className="r">Pantries</th><th>Due</th></tr></thead>
-                    <tbody>{data.expiring.map((row) => <tr key={row.id}><td><span className="cell-strong">{row.name}</span><span className="cell-sub">{row.cat}</span></td><td className="r">{row.count}</td><td>{row.due}</td></tr>)}</tbody>
-                  </table>
-                </div>
-              )}
+            <Panel title="Latest feedback" aside={<Link to="/feedback">{feedback.data ? `All open (${feedback.data.open.toLocaleString()})` : 'All feedback'}</Link>}>
+              {feedback.loading && !feedback.data && <Loading label="Loading feedback" />}
+              {feedback.error && <ErrorState message={feedback.error} onRetry={feedback.reload} />}
+              {feedback.data && (feedback.data.feedback.length === 0 ? <Empty title="No open feedback">Everything people sent has been handled.</Empty> : (
+                <ul className="todo">
+                  {feedback.data.feedback.slice(0, 4).map((row) => (
+                    <li key={row.id}><Link to="/feedback">
+                      <span className="todo-icon warn" aria-hidden="true">{row.user.slice(0, 1).toUpperCase()}</span>
+                      <span style={{ minWidth: 0 }}><b>{row.user}</b><small style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.message}</small></span>
+                      <small className="go">{row.at}</small>
+                    </Link></li>
+                  ))}
+                </ul>
+              ))}
             </Panel>
             <Panel title="Recent activity" aside={<Link to="/logs">All logs</Link>}>
               {data.activity.length === 0 ? <Empty title="No activity yet" /> : (
@@ -127,6 +131,28 @@ export function Dashboard() {
         </div>
       )}
     </>
+  );
+}
+
+/** Conditions the server checks over the last 24 hours of AI requests. Only
+ *  drawn when one holds, so its presence alone means something needs a look. */
+function Alerts({ data }: { data: AlertsResponse }) {
+  return (
+    <section className="panel" aria-labelledby="alerts-title" style={{ marginBottom: 18 }}>
+      <div className="panel-head"><h2 id="alerts-title">Needs attention</h2><span className="aside" title={data.note}>Last 24 hours</span></div>
+      <ul className="todo" role="alert">
+        {data.alerts.map((alert) => {
+          const Icon = alert.severity === 'error' ? CircleX : TriangleAlert;
+          return (
+            <li key={alert.id}><Link to={alert.href}>
+              <span className={`todo-icon ${alert.severity === 'error' ? 'bad' : 'warn'}`}><Icon className="i" aria-hidden="true" /></span>
+              <span><b>{alert.title}</b><small>{alert.detail}</small></span>
+              <span className="go">{alert.action} <ArrowUpRight className="i" aria-hidden="true" /></span>
+            </Link></li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -161,7 +187,7 @@ function FoodOutcome({ data, error, loading, label }: { data: AnalyticsData | nu
             </>
           ) : (
             <>
-              <div className="hero-figure">{rate}<span>%</span></div>
+              <div className="hero-figure"><AnimatedNumber value={rate} /><span>%</span></div>
               <div className="sub" style={{ marginTop: 6 }}>of confirmed items were thrown out</div>
               {byAmount && byAmount !== '—' && <div className="sub">{byAmount} by amount, counting “some of it” as half</div>}
               {change !== null && change !== 0 && (
@@ -183,9 +209,9 @@ function FoodOutcome({ data, error, loading, label }: { data: AnalyticsData | nu
             {unknown > 0 && <span className="seg unknown" style={{ width: `${pct(unknown)}%` }} data-tip={`No reason given\n${unknown.toLocaleString()} items, ${pct(unknown).toFixed(1)}%`} />}
           </div>
           <div className="ribbon-key">
-            <div className="key"><i className="sw used" /><span>Used up</span><b style={{ gridColumn: 2 }}>{used.toLocaleString()}</b><p>Eaten or cooked</p></div>
-            <div className="key"><i className="sw wasted" /><span>Thrown out</span><b style={{ gridColumn: 2 }}>{wasted.toLocaleString()}</b><p>Marked as thrown away</p></div>
-            <div className="key"><i className="sw unknown" /><span>No reason given</span><b style={{ gridColumn: 2 }}>{unknown.toLocaleString()}</b><p>Deleted or cleared, so not counted as waste</p></div>
+            <div className="key"><i className="sw used" /><span>Used up</span><b style={{ gridColumn: 2 }}><AnimatedNumber value={used} /></b><p>Eaten or cooked</p></div>
+            <div className="key"><i className="sw wasted" /><span>Thrown out</span><b style={{ gridColumn: 2 }}><AnimatedNumber value={wasted} /></b><p>Marked as thrown away</p></div>
+            <div className="key"><i className="sw unknown" /><span>No reason given</span><b style={{ gridColumn: 2 }}><AnimatedNumber value={unknown} /></b><p>Deleted or cleared, so not counted as waste</p></div>
           </div>
         </>
       ) : (

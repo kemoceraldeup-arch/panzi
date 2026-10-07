@@ -1,6 +1,6 @@
 // src/screens/HomeScreen.tsx
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -21,9 +21,15 @@ import { getDaysLeft, USE_SOON_DAYS } from '../utils/freshness';
 import { attentionCount, currentAttention } from '../services/notifications';
 import { RIPENESS_LABELS, isUrgentStage } from '../utils/ripeness';
 import PulsingMascot from '../components/PulsingMascot';
+import VoiceIcon from '../components/chat/VoiceIcon';
 import FloatingChatBubble from '../components/home/FloatingChatBubble';
+import RemovalChart from '../components/home/RemovalChart';
+import PantryHistoryScreen from './PantryHistoryScreen';
+import { RemovalHistory, showRemovalChart, subscribeToRemovalHistory } from '../services/removals';
+import { hasHadPantry, rememberHadPantry, shouldRemember, showWelcome } from '../services/firstRun';
 import { SCAN_BUTTON_LIFT, TAB_BAR_CONTENT_HEIGHT } from '../navigation/TabBar';
-import { useCollapseOnScroll } from '../navigation/scrollCollapse';
+import { resetTabScroll, useCollapseOnScroll } from '../navigation/scrollCollapse';
+import { TourHome, useTourHome, useTourTarget } from '../components/tour/TourProvider';
 import { fonts, type } from '../theme/typography';
 import { makeStyles } from '../theme/makeStyles';
 import { useColors } from '../theme/ThemeProvider';
@@ -174,8 +180,14 @@ const categoryCache = new Map<string, CategoryCount[]>();
 // the one they still remember taking.
 const UNFINISHED_CACHE = new Map<string, ScanRecord | null>();
 
+const removalCache = new Map<string, RemovalHistory>();
+
+const hadPantryCache = new Map<string, boolean>();
+
 type Props = {
   onOpenChat: () => void;
+  /** The ask bar's microphone: open the chat already listening. */
+  onOpenChatVoice: () => void;
   /** Reopens a past scan that still has rows missing a date. */
   onFinishScan: (scan: ScanRecord) => void;
   /** Opens the pantry already filtered to one category, or all of it. */
@@ -207,6 +219,7 @@ type Props = {
 
 export default function HomeScreen({
   onOpenChat,
+  onOpenChatVoice,
   onFinishScan,
   onViewCategory,
   onOpenNotifications,
@@ -234,6 +247,13 @@ export default function HomeScreen({
   // Measured on press rather than on layout: the header scrolls, so where the
   // bell was when it rendered is not where it is when it is tapped.
   const bellRef = useRef<View>(null);
+  // Lit by the app tour (components/tour). The bell already has a ref for its
+  // panel's anchor; the tour shares it.
+  useTourTarget('home.bell', bellRef);
+  const firstScanTourRef = useTourTarget('home.firstScan');
+  const askTourRef = useTourTarget('home.ask');
+  const pantryCardTourRef = useTourTarget('home.pantryCard');
+  const scrollRef = useRef<ScrollView>(null);
 
   // What the bell's panel will actually list. Held separately from `status`
   // because the two count different things: the pantry card's "use soon" is a
@@ -253,6 +273,59 @@ export default function HomeScreen({
   const [categories, setCategories] = useState<CategoryCount[]>(
     () => (uid ? categoryCache.get(uid) ?? [] : [])
   );
+  // null until the history has been read once, so the chart doesn't flash its
+  // "nothing removed yet" state at someone who has removed plenty.
+  const [removals, setRemovals] = useState<RemovalHistory | null>(
+    () => (uid ? removalCache.get(uid) ?? null : null)
+  );
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // Whether this phone has seen the account with food on its shelves — the
+  // welcome screen is for new users only (see services/firstRun). null while
+  // it's being read.
+  const [hadPantry, setHadPantry] = useState<boolean | null>(
+    () => (uid ? hadPantryCache.get(uid) ?? null : null)
+  );
+
+  useEffect(() => {
+    if (!uid) return;
+    let alive = true;
+    hasHadPantry(uid).then((had) => {
+      if (!alive) return;
+      if (had) hadPantryCache.set(uid, true);
+      // Never back to false: the remember effect below may already have
+      // seen food on the shelves before this read came back.
+      setHadPantry((prev) => prev === true || had);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [uid]);
+
+  // Remembered the first time the shelves have food (or History has
+  // something), so emptying them later keeps the normal Home.
+  const remember = shouldRemember(status?.total ?? null, removals);
+  useEffect(() => {
+    if (!uid || !remember || hadPantry) return;
+    hadPantryCache.set(uid, true);
+    setHadPantry(true);
+    void rememberHadPantry(uid);
+  }, [uid, remember, hadPantry]);
+
+  const welcome = showWelcome(status?.total ?? null, hadPantry);
+
+  // What the app tour needs from Home: which face is showing, once it's
+  // final. Nothing while the pantry or the first-run answer is still loading,
+  // or while History is open over the page.
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    resetTabScroll();
+  }, []);
+  const tourReady = status !== null && hadPantry !== null && removals !== null && !historyOpen;
+  const tourHome = useMemo<TourHome | null>(
+    () => (tourReady ? { layout: welcome ? 'welcome' : 'full', scrollToTop } : null),
+    [tourReady, welcome, scrollToTop]
+  );
+  useTourHome(tourHome);
 
   // Live rather than fetched once: renaming yourself on the Profile tab has to
   // change the greeting here, and this screen stays mounted the whole time the
@@ -301,6 +374,22 @@ export default function HomeScreen({
     );
   }, [uid]);
 
+  // What has left the shelves, and why. Removing an item anywhere refreshes
+  // this key (see services/removals), which is what moves the chart without a
+  // reload.
+  useEffect(() => {
+    if (!uid) return;
+    return subscribeToRemovalHistory(
+      (history) => {
+        removalCache.set(uid, history);
+        setRemovals(history);
+      },
+      () => {
+        // Keep the last chart rather than replacing it with an error.
+      }
+    );
+  }, [uid]);
+
   // Scans the user added while some rows still had no date. The review page
   // promised those could be fixed later; this is what makes "later" arrive
   // somewhere they actually look, rather than behind the clock icon inside the
@@ -324,6 +413,7 @@ export default function HomeScreen({
   return (
     <View style={styles.container}>
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1 }}
         contentContainerStyle={[
           styles.content,
@@ -381,9 +471,11 @@ export default function HomeScreen({
             So an empty pantry gets its own screen rather than a hollow
             version of the full one — Panzi at proper size, one thing to do,
             and a plain sentence about what the scanner is for.
-            Gated on `status !== null` so the loading frame doesn't flash this
-            at a returning user with a full pantry. */}
-        {status !== null && status.total === 0 ? (
+            Only for a new user, like onboarding (see services/firstRun): a
+            returning user who has emptied their shelves keeps the normal Home
+            with its counts and chart. Nothing shows here while the pantry or
+            that answer is still loading. */}
+        {welcome ? (
           <View style={styles.firstRun}>
             <View style={styles.firstRunMascotWrap}>
               <Image
@@ -416,7 +508,7 @@ export default function HomeScreen({
             {/* The tab bar's scan button is a wordless circle. On the one screen
                 where the user has never scanned anything, the action needs to
                 say what it is. */}
-            <TouchableOpacity style={styles.firstRunPrimary} onPress={onScan} activeOpacity={0.85}>
+            <TouchableOpacity ref={firstScanTourRef} style={styles.firstRunPrimary} onPress={onScan} activeOpacity={0.85}>
               <Ionicons name="scan-outline" size={18} color={colors.onAccent} />
               <Text style={styles.firstRunPrimaryText}>Scan your first item</Text>
             </TouchableOpacity>
@@ -433,7 +525,7 @@ export default function HomeScreen({
             covered a strip of content and the scroll had to reserve a matching
             gap to compensate. In flow it obscures nothing, and it's still on
             screen without scrolling. */}
-        <View style={styles.askCard}>
+        <View ref={askTourRef} collapsable={false} style={styles.askCard}>
           {/* maxScale is capped by the card's 8pt padding — the ring grows
               size × (maxScale − 1) / 2 beyond the avatar, so 1.4 on 34pt
               reaches 6.8pt and stays inside the rounded corner. Raising one
@@ -442,10 +534,53 @@ export default function HomeScreen({
           <TouchableOpacity style={styles.askInput} onPress={onOpenChat} activeOpacity={0.8}>
             <Text style={styles.askPlaceholder}>Ask Panzi what to cook...</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.askMic}
+            onPress={onOpenChatVoice}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="Ask Panzi by voice"
+          >
+            <VoiceIcon size={20} color={colors.textDark} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.askSend} onPress={onOpenChat}>
             <Text style={styles.askSendArrow}>›</Text>
           </TouchableOpacity>
         </View>
+
+        {/* What the pantry holds, and the way into it. Home's job now that
+            recipes have their own tab: answer "what have I got" before the
+            user has to go and look. Always the first card, above the alerts
+            that come and go, so it never shifts position from day to day. */}
+        <TouchableOpacity
+          ref={pantryCardTourRef}
+          style={styles.statusCard}
+          onPress={onViewPantry}
+          activeOpacity={0.85}
+          disabled={status === null}
+        >
+          <Text style={styles.statusLabel}>Your pantry</Text>
+          <Text style={styles.statusCount}>
+            {status === null
+              ? 'Loading…'
+              : `${status.total} item${status.total === 1 ? '' : 's'} tracked`}
+          </Text>
+
+          {!!status && status.total > 0 && (
+            <View style={styles.statusRow}>
+              <StatusDot color={colors.primary} label="Fresh" count={status.fresh} />
+              <StatusDot color={colors.warning} label="Use soon" count={status.useSoon} />
+              <StatusDot color={colors.accent} label="Expired" count={status.expired} />
+            </View>
+          )}
+
+          <View style={styles.statusLink}>
+            <Text style={styles.statusLinkText}>
+              {status?.total === 0 ? 'Add an item' : 'View pantry'}
+            </Text>
+            <Ionicons name="arrow-forward" size={14} color={colors.primaryDark} />
+          </View>
+        </TouchableOpacity>
 
         {/* Collecting on the promise the review page made.
             A user is allowed to add a batch with rows still missing a date
@@ -479,8 +614,8 @@ export default function HomeScreen({
           </TouchableOpacity>
         )}
 
-        {/* The point of the whole app, on the first screen. The status card
-            below counts what needs eating; this names it, which is the only
+        {/* The point of the whole app, on the first screen. The pantry card
+            above counts what needs eating; this names it, which is the only
             form of that information anyone can act on without tapping
             through. Absent entirely when nothing is urgent — a card that
             appears every day saying "nothing to worry about" is a card people
@@ -505,45 +640,13 @@ export default function HomeScreen({
           </View>
         )}
 
-        {/* What the pantry holds, and the way into it. Home's job now that
-            recipes have their own tab: answer "what have I got" before the
-            user has to go and look. */}
-        <TouchableOpacity
-          style={styles.statusCard}
-          onPress={onViewPantry}
-          activeOpacity={0.85}
-          disabled={status === null}
-        >
-          <Text style={styles.statusLabel}>Your pantry</Text>
-          <Text style={styles.statusCount}>
-            {status === null
-              ? 'Loading…'
-              : `${status.total} item${status.total === 1 ? '' : 's'} tracked`}
-          </Text>
-
-          {!!status && status.total > 0 && (
-            <View style={styles.statusRow}>
-              <StatusDot color={colors.primary} label="Fresh" count={status.fresh} />
-              <StatusDot color={colors.warning} label="Use soon" count={status.useSoon} />
-              <StatusDot color={colors.accent} label="Expired" count={status.expired} />
-            </View>
-          )}
-
-          <View style={styles.statusLink}>
-            <Text style={styles.statusLinkText}>
-              {status?.total === 0 ? 'Add your first item' : 'View pantry'}
-            </Text>
-            <Ionicons name="arrow-forward" size={14} color={colors.primaryDark} />
-          </View>
-        </TouchableOpacity>
-
         {/* What the pantry actually holds.
-            The card above says how *much* — "39 items tracked" — and never says
+            The pantry card says how *much* — "39 items tracked" — and never says
             *what*, so the question people open the app with ("have I got
             anything for dinner?") still meant tapping through and reading a
             list. This answers it in a glance, and each group opens the pantry
             already filtered to it.
-            Unlike the two cards above, this one stays put: it is a standing
+            Unlike the two alert cards above, this one stays put: it is a standing
             answer rather than an alert, so it has nothing to hide when
             everything is fine. It only goes away when the pantry is empty,
             where there is genuinely nothing to describe. */}
@@ -580,18 +683,29 @@ export default function HomeScreen({
         )}
           </>
         )}
+
+        {/* Looking back rather than at what's on the shelf now, so it sits
+            last — below everything the user might act on today. Outside the
+            empty/stocked switch above: it reads History, so emptying the
+            shelves must not take it away (see showRemovalChart). */}
+        {removals && showRemovalChart(status?.total ?? null, removals) && (
+          <RemovalChart counts={removals.counts} onViewMore={() => setHistoryOpen(true)} />
+        )}
       </ScrollView>
+      <PantryHistoryScreen
+        visible={historyOpen}
+        history={removals}
+        onClose={() => setHistoryOpen(false)}
+      />
       {/* Floats over the screen rather than living in the scroll flow, fixed
-          bottom-right above the tab bar. Mounted only on an empty pantry —
-          the moment status.total leaves 0 this unmounts on its own, no
-          separate check needed for "gone once there's food on the shelves".
+          bottom-right above the tab bar. Mounted only with the new-user
+          welcome, which has no ask bar of its own — the normal Home (even
+          with an empty pantry) already has one in its flow.
           MainTabs.tsx unmounts this whole screen on every tab switch, which
           is also what makes the bubble's entrance animation replay each time
           Home becomes the active tab again — a side effect of that existing
           behaviour, not something this component has to orchestrate itself. */}
-      {status !== null && status.total === 0 && (
-        <FloatingChatBubble onPress={onOpenChat} active={active} />
-      )}
+      {welcome && <FloatingChatBubble onPress={onOpenChat} active={active} />}
     </View>
   );
 }
@@ -992,6 +1106,16 @@ const useStyles = makeStyles((colors) => ({
   askPlaceholder: {
     fontSize: type.bodySmall.fontSize,
     color: colors.textSecondary,
+  },
+  // A well like the field beside it, so the green arrow stays the one
+  // filled button in the bar.
+  askMic: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   askSend: {
     width: 34,

@@ -22,6 +22,7 @@ import { createHash } from 'crypto';
 import { Router } from 'express';
 import OpenAI from 'openai';
 import { supabase } from '../supabase';
+import { imageTokensFrom, recordUsage } from '../usage';
 
 export const dishPhotoRouter = Router();
 
@@ -49,7 +50,9 @@ function normaliseTitle(title: string): string {
   return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function objectPathFor(title: string): string {
+/** Exported so the admin console's Recipes page can show the same generated
+ *  photo the app shows for a dish, without generating anything itself. */
+export function objectPathFor(title: string): string {
   const hash = createHash('sha256').update(normaliseTitle(title)).digest('hex').slice(0, 24);
   return `${hash}.png`;
 }
@@ -88,12 +91,22 @@ dishPhotoRouter.post('/', async (req, res) => {
   // Tier two: nobody has asked for this dish before. Generate once, store it,
   // and every future request — anyone's — hits the tier above instead.
   let imageB64: string;
+  const startedAt = Date.now();
   try {
     const response = await openai().images.generate({
       model: MODEL,
       prompt: `A single appetizing photo of the finished dish "${clean}", plated and ready to eat, shot from a 45-degree angle on a plain background, natural lighting, no text or watermark, no people, no hands, no utensils in motion — just the food.`,
       size: '1024x1024',
       n: 1,
+    });
+    // Recorded as soon as the model answers: the image is paid for whether or
+    // not the upload below succeeds.
+    recordUsage({
+      userId: uid,
+      route: 'dish-photo',
+      model: MODEL,
+      durationMs: Date.now() - startedAt,
+      ...imageTokensFrom(response.usage),
     });
     const first = response.data?.[0];
     if (!first?.b64_json) throw new Error('No image data in response');

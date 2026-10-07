@@ -7,9 +7,10 @@
 // uses, inside the same bare-Modal-plus-sheet shape ChipPickerSheet already
 // uses elsewhere in the app — no new pattern, no new dependency.
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Modal, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import Text from '../../components/Text';
+import { DatePartKey, nextDatePart } from '../../utils/datePart';
 import { fonts, type } from '../../theme/typography';
 import { makeStyles } from '../../theme/makeStyles';
 import { useColors } from '../../theme/ThemeProvider';
@@ -45,11 +46,16 @@ export default function PickDateModal({ visible, onClose, onPick }: Props) {
   const colors = useColors();
   const [parts, setParts] = useState<Parts>({ day: '', month: '', year: '' });
   const [error, setError] = useState(false);
+  const dayRef = useRef<TextInput>(null);
+  const yearRef = useRef<TextInput>(null);
+  const [focusedPart, setFocusedPart] = useState<DatePartKey | null>(null);
 
-  function edit(key: keyof Parts, raw: string, max: number) {
-    const digits = raw.replace(/[^0-9]/g, '').slice(0, max);
-    setParts((p) => ({ ...p, [key]: digits }));
+  function edit(key: keyof Parts, raw: string, next?: TextInput | null) {
+    // Month 1–12 and day 1–31 only — see utils/datePart.ts.
+    const { value, complete } = nextDatePart(key, raw, parts[key]);
+    setParts((p) => ({ ...p, [key]: value }));
     setError(false);
+    if (complete && next) next.focus();
   }
 
   function close() {
@@ -76,40 +82,51 @@ export default function PickDateModal({ visible, onClose, onPick }: Props) {
         <View style={styles.sheet}>
           <Text style={styles.title}>When was it opened?</Text>
 
-          <View style={styles.field}>
+          <View style={[styles.field, focusedPart && styles.fieldFocused]}>
             <TextInput
-              style={styles.box}
+              style={[styles.box, focusedPart === 'month' && styles.boxFocused]}
               value={parts.month}
-              onChangeText={(t) => edit('month', t, 2)}
+              onChangeText={(t) => edit('month', t, dayRef.current)}
+              onFocus={() => setFocusedPart('month')}
+              onBlur={() => setFocusedPart((p) => (p === 'month' ? null : p))}
+              cursorColor={colors.accent}
               placeholder="MM"
               placeholderTextColor={colors.mutedLight}
               keyboardType="number-pad"
               maxLength={2}
-              selectionColor={colors.primaryDark}
+              selectionColor={colors.accent}
               accessibilityLabel="Month"
             />
             <Text style={styles.slash}>/</Text>
             <TextInput
-              style={styles.box}
+              ref={dayRef}
+              style={[styles.box, focusedPart === 'day' && styles.boxFocused]}
               value={parts.day}
-              onChangeText={(t) => edit('day', t, 2)}
+              onChangeText={(t) => edit('day', t, yearRef.current)}
+              onFocus={() => setFocusedPart('day')}
+              onBlur={() => setFocusedPart((p) => (p === 'day' ? null : p))}
+              cursorColor={colors.accent}
               placeholder="DD"
               placeholderTextColor={colors.mutedLight}
               keyboardType="number-pad"
               maxLength={2}
-              selectionColor={colors.primaryDark}
+              selectionColor={colors.accent}
               accessibilityLabel="Day"
             />
             <Text style={styles.slash}>/</Text>
             <TextInput
-              style={[styles.box, styles.boxYear]}
+              ref={yearRef}
+              style={[styles.box, styles.boxYear, focusedPart === 'year' && styles.boxFocused]}
               value={parts.year}
-              onChangeText={(t) => edit('year', t, 4)}
+              onChangeText={(t) => edit('year', t)}
+              onFocus={() => setFocusedPart('year')}
+              onBlur={() => setFocusedPart((p) => (p === 'year' ? null : p))}
+              cursorColor={colors.accent}
               placeholder="YYYY"
               placeholderTextColor={colors.mutedLight}
               keyboardType="number-pad"
               maxLength={4}
-              selectionColor={colors.primaryDark}
+              selectionColor={colors.accent}
               accessibilityLabel="Year"
             />
           </View>
@@ -178,10 +195,18 @@ const useStyles = makeStyles((colors) => ({
   boxYear: {
     minWidth: 62,
   },
+  fieldFocused: {
+    borderWidth: 2,
+    borderColor: colors.primaryDark,
+  },
+  boxFocused: {
+    backgroundColor: colors.primaryLighter,
+    borderRadius: 8,
+  },
   slash: {
     fontWeight: '700',
     fontSize: type.body.fontSize,
-    color: colors.chevron,
+    color: colors.mutedLight,
   },
   error: {
     fontWeight: '600',
@@ -213,7 +238,9 @@ const useStyles = makeStyles((colors) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 14,
-    backgroundColor: colors.primaryDark,
+    // inkFill, not primaryDark: primaryDark is an ink colour that turns light
+    // green in dark mode, and white on it was unreadable there.
+    backgroundColor: colors.inkFill,
   },
   confirmText: {
     fontWeight: '700',

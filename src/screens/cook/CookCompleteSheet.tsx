@@ -53,6 +53,9 @@ type Props = {
   stats: [CookCompleteStat, CookCompleteStat, CookCompleteStat];
   onRate: (stars: number) => void;
   onBackToRecipe: () => void;
+  /** Fired once the sheet's modal has finished presenting — the earliest an
+   *  Alert can be raised over it without iOS dropping it. */
+  onShow?: () => void;
 };
 
 const STAR_VALUES = [1, 2, 3, 4, 5];
@@ -70,7 +73,7 @@ const BADGE_DELAY = 100;
 const SHEET_EASING = Easing.bezier(0.2, 0.9, 0.3, 1.06);
 const BADGE_EASING = Easing.bezier(0.2, 0.9, 0.3, 1.3);
 
-export default function CookCompleteSheet({ visible, title, body, stats, onRate, onBackToRecipe }: Props) {
+export default function CookCompleteSheet({ visible, title, body, stats, onRate, onBackToRecipe, onShow }: Props) {
   const insets = useSafeAreaInsets();
   const { scheme } = useTheme();
   const tokens = cookTokens[scheme];
@@ -185,6 +188,7 @@ export default function CookCompleteSheet({ visible, title, body, stats, onRate,
   return (
     <Modal
       visible={mounted}
+      onShow={onShow}
       transparent
       animationType="none"
       // Android hardware back and RN Web's Escape key both fire this — the

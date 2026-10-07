@@ -102,7 +102,13 @@ export default function ScanFreshnessScreen({
             full shot when there is no box to crop to. */}
         <View style={styles.crop}>
           {candidate.box && photo?.width ? (
-            <ItemThumb size={CROP_SIZE} tone="neutral" photo={photo} box={candidate.box} />
+            <ItemThumb
+              size={CROP_SIZE}
+              tone="neutral"
+              photo={photo}
+              box={candidate.box}
+              previewTitle={candidate.name}
+            />
           ) : photo?.uri ? (
             <Image source={{ uri: photo.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
           ) : (

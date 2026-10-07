@@ -182,6 +182,54 @@ const pantryItemSchema = new Schema(
 pantryItemSchema.index({ userId: 1, expiryDate: 1 });
 
 // ---------------------------------------------------------------------------
+// pantry_removals
+// ---------------------------------------------------------------------------
+
+/** Why an item left the shelves. The order is the order the app offers them. */
+export const REMOVAL_REASONS = ['consumed', 'spoiled', 'expired', 'other'] as const;
+
+export type RemovalReason = (typeof REMOVAL_REASONS)[number];
+
+// One row per removal, written in the same request that shrinks or deletes
+// the item. `quantity` is the amount that left in this removal, not what the
+// item held: taking 2 of 5 eggs writes "2 eggs" here and leaves the item at 3.
+//
+// A snapshot of one removal rather than a reference: after a partial removal
+// the item may still be on the shelf (with less of it), and after a full one
+// it is gone, so everything the history screen and the waste chart need is
+// copied across at the moment of removal.
+//
+// An undo (cook mode puts used-up items back) deletes by this row's own id —
+// the ids the remove call handed back — so it takes away exactly the rows it
+// made and nothing else. `itemId` records which pantry item the row came from.
+// `expiryDate` and `addedAt` are kept for the research side: how long
+// an item sat, and whether it was past its date when it went, are the two
+// questions the removal reason alone cannot answer.
+const pantryRemovalSchema = new Schema(
+  {
+    _id: { type: String, required: true },
+    userId: { type: String, required: true, index: true },
+    itemId: { type: String, required: true },
+    name: { type: String, required: true },
+    quantity: { type: String, default: '' },
+    category: { type: String, default: '' },
+    location: { type: String, default: null },
+    expiryDate: { type: String, default: null }, // 'YYYY-MM-DD', real or estimated
+    addedAt: { type: Date, default: null },
+    reason: { type: String, enum: REMOVAL_REASONS, required: true },
+    // Only for 'other': what the user typed, at most 80 characters.
+    note: { type: String, default: null },
+    removedAt: { type: Date, required: true },
+  },
+  { timestamps: true, collection: 'pantry_removals' }
+);
+
+// History is listed newest-first; the {userId, itemId} index serves per-item
+// history lookups.
+pantryRemovalSchema.index({ userId: 1, removedAt: -1 });
+pantryRemovalSchema.index({ userId: 1, itemId: 1 });
+
+// ---------------------------------------------------------------------------
 // saved_recipes
 // ---------------------------------------------------------------------------
 
@@ -456,48 +504,6 @@ adminAuditSchema.index({ createdAt: -1 });
 adminAuditSchema.index({ createdAt: 1 }, { expireAfterSeconds: 180 * 24 * 60 * 60 });
 
 // ---------------------------------------------------------------------------
-// item_dispositions
-// ---------------------------------------------------------------------------
-
-// What happened to a pantry item when it left the pantry.
-//
-// A `disposition` field on pantry_items would answer nothing, because removal
-// is a hard delete — the document that would carry the field is the document
-// that goes away. So the event is recorded here instead, and it is the only
-// thing that can ever tell "eaten" apart from "thrown out". Until this existed
-// the Analytics screen had no honest source and said so on the page.
-//
-// Explicit app actions send consumed/discarded; plain deletion and older clients
-// default to removed. Expiry is retained as context, never substituted for a
-// confirmed outcome. Legacy expired records still represent discarded food.
-const itemDispositionSchema = new Schema(
-  {
-    userId: { type: String, required: true, index: true },
-    itemId: { type: String, required: true },
-    name: { type: String, required: true },
-    category: { type: String, default: '' },
-    reason: {
-      type: String,
-      enum: ['consumed', 'discarded', 'expired', 'removed'],
-      default: 'removed',
-      index: true,
-    },
-    expiryDate: { type: String, default: null },
-    pastExpiry: { type: Boolean, default: false },
-    // The share of the item that was thrown out, 0-1, for 'discarded' rows
-    // ("some of it" is 0.5). The rest of a discarded item counts as eaten.
-    // Absent on rows written before it existed, which read as 1.
-    portion: { type: Number, default: 1, min: 0, max: 1 },
-    // The item's quantity text as it stood ("5 kg", "12 pcs"). Kept for
-    // context and export; units differ too much between foods to add up.
-    quantity: { type: String, default: '' },
-  },
-  { timestamps: true, collection: 'item_dispositions' }
-);
-
-itemDispositionSchema.index({ createdAt: -1 });
-
-// ---------------------------------------------------------------------------
 // admin_reviews
 // ---------------------------------------------------------------------------
 
@@ -515,12 +521,61 @@ const adminReviewSchema = new Schema({
   updatedBy: { type: String, required: true },
 }, { timestamps: true, collection: 'admin_reviews' });
 
+// ---------------------------------------------------------------------------
+// cookbook_recipes
+// ---------------------------------------------------------------------------
+
+// The cookbook behind the Recipes screen's category tabs with Pantry Only off.
+// It used to be a fixed list compiled into the app (src/data/localRecipes.ts);
+// it lives here now so the admin console can add, edit and remove dishes
+// without shipping a new build. That list is still in the app as the offline
+// fallback, and scripts/seed-cookbook.ts copies it in here once.
+//
+// Shared by every account, so nothing here is scoped to a user. Only the admin
+// routes write; the app's route only reads.
+const cookbookRecipeSchema = new Schema(
+  {
+    title: { type: String, required: true, trim: true, maxlength: 60 },
+    // Lower-cased title, unique, so "Chicken adobo" and "chicken Adobo" cannot
+    // both exist and show up twice on the phone.
+    titleKey: { type: String, required: true, unique: true },
+    category: { type: String, enum: ['quick', 'ulam', 'merienda'], required: true },
+    minutes: { type: Number, required: true, min: 1, max: 600 },
+    servings: { type: Number, required: true, min: 1, max: 30 },
+    description: { type: String, default: '', maxlength: 200 },
+    ingredients: {
+      type: [{ _id: false, name: { type: String, required: true }, amount: { type: String, default: '' } }],
+      default: [],
+    },
+    steps: { type: [String], default: [] },
+    // The app's bundled photo key (theme/dishPhotos.ts) for the seeded dishes;
+    // 'other' for anything added from the console, which uses photoUrl instead.
+    dishKey: { type: String, default: 'other' },
+    // The gradient tile the app draws when there is no photo.
+    look: { type: String, default: 'other' },
+    // An uploaded photo in the public dish-photos bucket, and its object path
+    // so it can be deleted when replaced or when the recipe goes.
+    photoUrl: { type: String, default: null },
+    photoPath: { type: String, default: null },
+    // Lower comes first on the phone. Seeded dishes keep the order they had in
+    // the app; new ones go above them so an admin sees what they just added.
+    position: { type: Number, default: 0, index: true },
+    // Bumped on every save. An edit sends the revision it started from, so a
+    // second administrator's save cannot silently overwrite the first.
+    revision: { type: Number, default: 0 },
+    updatedBy: { type: String, default: null },
+  },
+  { timestamps: true, collection: 'cookbook_recipes' }
+);
+
 // `mongoose.models.X ?? model(...)` rather than a bare `model(...)`: tsx watch
 // re-executes this file on every save, and registering the same model twice
 // throws OverwriteModelError, which reads as a crash rather than a reload.
 export const User = mongoose.models.User ?? mongoose.model('User', userSchema);
 export const PantryItem =
   mongoose.models.PantryItem ?? mongoose.model('PantryItem', pantryItemSchema);
+export const PantryRemoval =
+  mongoose.models.PantryRemoval ?? mongoose.model('PantryRemoval', pantryRemovalSchema);
 export const SavedRecipe =
   mongoose.models.SavedRecipe ?? mongoose.model('SavedRecipe', savedRecipeSchema);
 export const Scan = mongoose.models.Scan ?? mongoose.model('Scan', scanSchema);
@@ -538,7 +593,7 @@ export const RecipeRating =
 export const ApiUsage = mongoose.models.ApiUsage ?? mongoose.model('ApiUsage', apiUsageSchema);
 export const AdminAudit =
   mongoose.models.AdminAudit ?? mongoose.model('AdminAudit', adminAuditSchema);
-export const ItemDisposition =
-  mongoose.models.ItemDisposition ?? mongoose.model('ItemDisposition', itemDispositionSchema);
 export const AdminReview =
   mongoose.models.AdminReview ?? mongoose.model('AdminReview', adminReviewSchema);
+export const CookbookRecipe =
+  mongoose.models.CookbookRecipe ?? mongoose.model('CookbookRecipe', cookbookRecipeSchema);

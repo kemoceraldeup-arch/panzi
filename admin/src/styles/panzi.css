@@ -126,8 +126,6 @@
 .pz .brand { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 4px 5px; text-decoration: none; font-weight: 700; font-size: 17px; }
 .pz .brand img { width: 26px; height: 26px; flex-shrink: 0; transition: opacity .18s ease; }
 .pz .side-toggle { flex: none; transition: opacity .18s ease, background-color .15s ease, border-color .15s ease, color .15s ease; }
-.pz .side-toggle .swap { display: grid; animation: pz-swap .34s cubic-bezier(.2, .8, .2, 1); }
-@keyframes pz-swap { from { opacity: 0; transform: rotate(-90deg) scale(.6); } to { opacity: 1; transform: none; } }
 .pz #nav { display: grid; gap: 16px; }
 .pz .nav-group h2 { font-size: 12.5px; font-weight: 500; color: var(--ink-3); padding: 0 10px 4px; }
 .pz .nav-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
@@ -148,15 +146,11 @@
 /* Pinned to the right edge, lined up under the sidebar toggle at the top. */
 .pz .me .icon-btn { margin-left: auto; margin-right: -10px; transition: opacity .18s ease; }
 /* Collapsed rail (wide screens only; narrow screens use the drawer below).
-   Icons keep their exact positions, only the labels fade out, and the logo
-   turns into the expand button on hover. */
+   The desktop toggle stays in the top bar; the logo remains a home link. */
 @media (min-width: 861px) {
   .pz .pz-shell.collapsed { grid-template-columns: 60px minmax(0, 1fr); }
   .pz .collapsed .side .label, .pz .collapsed .nav-group h2,
   .pz .collapsed .me .who, .pz .collapsed .me .icon-btn { opacity: 0; visibility: hidden; }
-  .pz .collapsed .side-toggle { position: absolute; left: 0; top: 50%; translate: 0 -50%; opacity: 0; }
-  .pz .collapsed .brand-row:hover .side-toggle, .pz .collapsed .side-toggle:focus-visible { opacity: 1; }
-  .pz .collapsed .brand-row:hover .brand img, .pz .collapsed .brand-row:has(.side-toggle:focus-visible) .brand img { opacity: 0; }
   .pz .collapsed .nav-link .badge {
     position: absolute; top: 2px; left: 20px; min-width: 16px; height: 16px; padding: 0 4px;
     font-size: 10.5px; line-height: 16px; text-align: center;

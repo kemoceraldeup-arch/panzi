@@ -298,24 +298,35 @@ export function StackedChart({ rows, height = 240 }: { rows: Stack[]; height?: n
 }
 
 export function TrendLine({ rows, caption }: { rows: { label: string; value: number }[]; caption: string }) {
-  const W = 340, H = 108, pad = { t: 12, b: 6, l: 4, r: 44 };
-  if (rows.length < 2) return null;
-  const max = Math.max(1, ...rows.map((r) => r.value)) * 1.05;
+  const [ref, width] = useWidth<HTMLDivElement>();
+  const W = width || 340, H = 180, pad = { t: 14, b: 28, l: 38, r: 48 };
+  if (rows.length < 2) return <div ref={ref} hidden />;
+  const max = Math.max(5, Math.ceil(Math.max(...rows.map((r) => r.value)) / 5) * 5);
   const x = (i: number) => pad.l + ((W - pad.l - pad.r) * i) / (rows.length - 1);
   const y = (v: number) => pad.t + (H - pad.t - pad.b) * (1 - v / max);
   const pts = rows.map((r, i) => [x(i), y(r.value)] as const);
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('');
   const last = pts[pts.length - 1];
+  const labelEvery = Math.max(1, Math.ceil((rows.length - 1) / Math.max(1, Math.floor((W - pad.l - pad.r) / 65))));
   return (
-    <div className="trend chart">
+    <div className="trend chart" ref={ref}>
+      <div className="trend-title">{caption}</div>
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${caption}: ${rows.map((r) => `${r.label} ${r.value}%`).join(', ')}`}>
+        {[0, max / 2, max].map(value => (
+          <g key={value} className="trend-grid">
+            <line x1={pad.l} x2={W - pad.r} y1={y(value)} y2={y(value)} stroke="var(--line)" strokeDasharray="3 4" />
+            <text x={pad.l - 8} y={y(value) + 4} textAnchor="end">{value}%</text>
+          </g>
+        ))}
         <path d={`${line}L${last[0]},${y(0)}L${pts[0][0]},${y(0)}Z`} fill="var(--wasted)" opacity=".1" />
         <path d={line} fill="none" stroke="var(--wasted)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((p, i) => <circle key={rows[i].label + i} className="hit" cx={p[0]} cy={p[1]} r="12" tabIndex={0} data-tip={`${rows[i].label}\nWaste rate ${rows[i].value}%`} />)}
         <circle cx={last[0]} cy={last[1]} r="4" fill="var(--wasted)" stroke="var(--panel)" strokeWidth="2" />
         <text className="val" x={last[0] + 9} y={last[1] + 4}>{rows[rows.length - 1].value}%</text>
+        {rows.map((row, i) => (i % labelEvery === 0 && i < rows.length - 1 - labelEvery / 2) || i === rows.length - 1
+          ? <text className="trend-axis" key={row.label + i} x={x(i)} y={H - 6} textAnchor="middle">{row.label}</text>
+          : null)}
       </svg>
-      <div className="trend-cap"><span>{rows[0].label}</span><span>{caption}</span><span style={{ paddingRight: 44 }}>{rows[rows.length - 1].label}</span></div>
     </div>
   );
 }

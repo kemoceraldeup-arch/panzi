@@ -72,9 +72,22 @@ type Props = {
   onOpenRecipe: (recipe: Recipe) => void;
   onStartCooking: (recipe: Recipe) => void;
   onClose: () => void;
+  /** Opened from Home's microphone — ChatScreen starts listening. */
+  voiceNonce?: number | null;
+  /** Open this conversation rather than a fresh one — a tapped "Panzi
+   *  replied" notification. The nonce lets the same chat be reopened twice. */
+  openConversation?: { id: string; title: string; nonce: number } | null;
 };
 
-export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking, onClose }: Props) {
+export default function ChatFlow({
+  visible,
+  items,
+  onOpenRecipe,
+  onStartCooking,
+  onClose,
+  voiceNonce,
+  openConversation,
+}: Props) {
   const colors = useColors();
   const { width } = useWindowDimensions();
   const drawerWidth = Math.round(Math.min(width * WIDTH_FRACTION, MAX_WIDTH));
@@ -93,6 +106,9 @@ export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking,
   // by ChatScreen. Gates HistoryDrawer's "New chat" button so it can't spawn
   // a second empty conversation while the current one is already unused.
   const [currentIsEmpty, setCurrentIsEmpty] = useState(true);
+  // A question typed into the input for the user, from a pantry chip in the
+  // drawer. The nonce makes tapping the same chip twice still land.
+  const [draft, setDraft] = useState<{ text: string; nonce: number } | null>(null);
 
   // 0 closed (chat panel flat, full width, drawer fully hidden behind it), 1
   // open (chat panel pushed right by drawerWidth, scaled down, drawer fully
@@ -201,11 +217,23 @@ export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking,
   // opens, rather than a list to pick "New chat" from first. This is a
   // purely local placeholder — see the note on `open` above — so there is no
   // server round trip, no loading state, and nothing to fail here.
+  //
+  // A tapped reply notification names a conversation instead, and wins even
+  // if the flow is already open on something else. Each request is honoured
+  // once (by nonce), so it doesn't reassert itself the next time the flow
+  // opens normally.
+  const handledOpen = useRef<number | null>(null);
   useEffect(() => {
-    if (!visible || open) return;
-    setOpen({ id: null, title: 'New chat' });
+    if (!visible) return;
+    if (openConversation && handledOpen.current !== openConversation.nonce) {
+      handledOpen.current = openConversation.nonce;
+      setOpen({ id: openConversation.id, title: openConversation.title });
+      settle(false);
+      return;
+    }
+    if (!open) setOpen({ id: null, title: 'New chat' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [visible, openConversation]);
 
   function close() {
     onClose();
@@ -216,6 +244,7 @@ export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking,
     // own row in History if the user wants it back via the drawer.
     setTimeout(() => {
       setOpen(null);
+      setDraft(null);
       setDrawerOpen(false);
       openAmount.value = 0;
     }, 300);
@@ -243,6 +272,29 @@ export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking,
                 }}
                 onNewChat={(conversation) => {
                   setOpen({ id: conversation.id, title: conversation.title });
+                  settle(false);
+                }}
+                onConversationChanged={(conversation) =>
+                  setOpen((current) =>
+                    current && current.id === conversation.id
+                      ? { id: conversation.id, title: conversation.title }
+                      : current
+                  )
+                }
+                // The open chat was deleted or archived out from under the
+                // screen showing it — start a fresh one rather than leave a
+                // chat on screen that the list no longer has.
+                onConversationRemoved={(id) =>
+                  setOpen((current) =>
+                    current && current.id === id ? { id: null, title: 'New chat' } : current
+                  )
+                }
+                items={items}
+                onAskAbout={(prompt) => {
+                  // Always a fresh chat: the question is about the pantry, not
+                  // a follow-up to whatever was open.
+                  setOpen({ id: null, title: 'New chat' });
+                  setDraft({ text: prompt, nonce: Date.now() });
                   settle(false);
                 }}
                 onClose={() => settle(false)}
@@ -282,6 +334,8 @@ export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking,
                       onOpenHistory={openDrawer}
                       onClose={close}
                       onEmptyChange={setCurrentIsEmpty}
+                      draft={draft}
+                      voiceNonce={voiceNonce}
                       onConversationStarted={(conversation) =>
                         setOpen({ id: conversation.id, title: conversation.title })
                       }
@@ -296,7 +350,7 @@ export default function ChatFlow({ visible, items, onOpenRecipe, onStartCooking,
                         taps meant for the chat until the drawer has actually
                         settled open. */}
                     <Animated.View
-                      style={[styles.dim, { backgroundColor: colors.textPrimary }, dimStyle]}
+                      style={[styles.dim, { backgroundColor: colors.shadow }, dimStyle]}
                       pointerEvents={drawerOpen ? 'auto' : 'none'}
                     >
                       <TouchableOpacity

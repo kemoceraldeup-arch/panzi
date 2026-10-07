@@ -97,6 +97,8 @@ export interface CostBar {
   label: string;
   value: string;
   pct: number;
+  /** The bucket's spend in pesos, for the chart's axis. */
+  amount?: number;
 }
 
 export interface CostRoute {
@@ -109,7 +111,10 @@ export interface CostRoute {
 }
 
 export interface CostUser {
+  /** Firebase uid, or 'deleted' for spend from accounts that no longer exist. */
   userId: string;
+  /** The profile name, or null when the account never set one. */
+  name?: string | null;
   calls: number;
   cost: string;
 }
@@ -149,6 +154,9 @@ export interface Recipe {
   /** Dish key from the app's assets/dishes convention, e.g. `pancit_canton`.
    *  Absent means no photo exists yet and the card keeps its placeholder. */
   photo?: string;
+  /** A full photo URL — an admin upload or a generated photo — used before
+   *  `photo`, the same order the app uses. */
+  photoUrl?: string | null;
   /** Last save or rating, ISO, for "nothing since March" reading. */
   lastAt?: string | null;
   /** Set when another dish shares this title — e.g. "Version 2 of 2". The
@@ -163,11 +171,24 @@ export interface RecipesResponse {
 
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR' | 'DEBUG';
 
+/** Which record a log row came from: an AI call, an administrator's request,
+ *  or an account erasure. */
+export type LogKind = 'ai' | 'admin' | 'account';
+
 export interface LogEntry {
   id: string;
   time: string;
   level: LogLevel;
+  kind: LogKind;
+  /** The machine name, e.g. 'api.scan' or 'admin.read'. Kept for search and CSV. */
   event: string;
+  /** What happened, as a sentence: "Looked at Maria's pantry". */
+  title: string;
+  /** Who did it: a name, "You", or "Deleted account". */
+  who: string;
+  /** The account the row is about, when it can be opened in Users. */
+  userId?: string | null;
+  /** The technical specifics, shown small under the title. */
   detail: string;
 }
 
@@ -204,6 +225,8 @@ export interface HealthRow {
   label: string;
   value: string;
   color: string;
+  /** A page in this console that explains the number, when there is one. */
+  href?: string;
 }
 
 export interface ActivityRow {
@@ -211,14 +234,6 @@ export interface ActivityRow {
   text: string;
   time: string;
   color: string;
-}
-
-export interface ExpiringRow {
-  id: string;
-  name: string;
-  cat: string;
-  count: string;
-  due: string;
 }
 
 export interface Category {
@@ -288,7 +303,6 @@ export interface DashboardData {
   healthLabel?: string;
   health: HealthRow[];
   activity: ActivityRow[];
-  expiring: ExpiringRow[];
 }
 
 /** The users endpoint reports degraded reads rather than hiding them: without a
@@ -365,6 +379,8 @@ export interface ReviewFeedback {
   platform: string;
   appVersion: string;
   at: string;
+  /** ISO timestamp, for the CSV export and the hover title. */
+  sentAt?: string;
 }
 
 export interface ReviewData {
@@ -464,10 +480,80 @@ export interface LocationRow {
 }
 
 export type BrowseRange = 'all' | '7d' | '30d' | '90d';
-export interface BrowseQuery { page?: number; q?: string; range?: BrowseRange; before?: string; status?: string; level?: string }
+export interface BrowseQuery { page?: number; q?: string; range?: BrowseRange; before?: string; status?: string; level?: string; kind?: string }
 export interface PageMetadata { page: number; pageSize: number; total: number; asOf: string }
 export interface AlertsResponse {
   alerts: { id: string; title: string; detail: string; href: string; action: string; severity: 'warning' | 'error' }[];
   checkedAt: string;
   note: string;
+}
+
+/** One account, for the person panel opened from a link on another page. */
+export interface UserResponse {
+  user: AdminUser;
+  warning: string | null;
+}
+
+export type RemovalOutcome = 'eaten' | 'wasted' | 'unclassified';
+
+/** What one person did, beside their pantry. Each list is the latest few. */
+export interface UserActivity {
+  scans: { id: string; scene: string; items: number; added: number; unresolved: number; at: string }[];
+  /** Every removal this account ever recorded, by what it means for waste. */
+  outcomes: Record<RemovalOutcome, number>;
+  removals: { id: string; name: string; reason: string; note: string | null; outcome: RemovalOutcome; at: string }[];
+  feedback: { id: string; message: string; platform: string; appVersion: string; status: ReviewStatus; at: string }[];
+  cost: {
+    total: string;
+    month: string;
+    calls: number;
+    monthCalls: number;
+    /** Calls on a model with no price, left out of both totals. */
+    unpriced: number;
+    routes: { route: string; calls: number; cost: string }[];
+  };
+}
+
+export interface FeedbackResponse {
+  feedback: ReviewFeedback[];
+  /** New plus in-progress messages, whatever filter is showing. */
+  open: number;
+  pagination: PageMetadata;
+}
+
+/* ── Cookbook (create / read / update / delete) ───────────────────── */
+
+export type CookbookCategory = 'ulam' | 'quick' | 'merienda';
+
+/** One dish on the app's Recipes screen, as the console edits it. */
+export interface CookbookRecipe {
+  id: string;
+  title: string;
+  category: CookbookCategory;
+  minutes: number;
+  servings: number;
+  description: string;
+  ingredients: { name: string; amount: string }[];
+  steps: string[];
+  /** The app's bundled photo key; 'other' for dishes added here. */
+  dishKey: string;
+  look: string;
+  /** An uploaded photo, or null. */
+  photoUrl: string | null;
+  /** Sent back on save so two administrators cannot overwrite each other. */
+  revision: number;
+  updatedAt: string | null;
+}
+
+/** What the form sends. A photo is base64 JPEG without the data: prefix. */
+export interface CookbookInput {
+  title: string;
+  category: CookbookCategory;
+  minutes: number;
+  servings: number;
+  description: string;
+  ingredients: { name: string; amount: string }[];
+  steps: string[];
+  photoBase64?: string;
+  removePhoto?: boolean;
 }

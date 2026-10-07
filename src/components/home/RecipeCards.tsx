@@ -30,6 +30,8 @@ export type FeaturedRecipe = {
   title: string;
   look: DishLook;
   dishKey: DishKey;
+  /** An admin-uploaded cookbook photo; see DishTile. */
+  photoUrl?: string | null;
   minutes: number;
   /** Omitted for a browse-mode card with no pantry to match against — the
    *  on-hand line and progress bar are skipped entirely when absent, rather
@@ -97,6 +99,7 @@ export function FeaturedRecipeCard({
         <DishTile
           look={recipe.look}
           dishKey={recipe.dishKey}
+          photoUrl={recipe.photoUrl}
           title={recipe.title}
           size="card"
           style={styles.photo}

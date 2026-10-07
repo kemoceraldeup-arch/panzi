@@ -1,3 +1,4 @@
+import { AnimatedNumber } from '../components/AnimatedNumber';
 import { useCallback, useState } from 'react';
 import { getAnalytics } from '../api';
 import type { RangeKey, ScannerAccuracy } from '../api/types';
@@ -18,7 +19,7 @@ export function Analytics() {
     <>
       <PageHead
         title="Food outcomes"
-        text="Only items people marked as used up or thrown out count toward the waste rate. Items removed without a reason are counted separately."
+        text="Every ingredient has a story. See what gets used, what goes to waste, and how well scanning works."
         updatedAt={updatedAt}
         tools={<>
           <Segmented label="Date range" options={RANGE_OPTIONS} value={range} onChange={setRange} />
@@ -29,12 +30,13 @@ export function Analytics() {
       {error && <ErrorState message={error} onRetry={reload} />}
       {data && (
         <div className={loading ? 'is-busy' : ''}>
+          <div className="section-intro"><div><span className="eyebrow">FROM PANTRY TO PLATE</span><h2>Making more of what we have.</h2><p>Waste rate uses confirmed food outcomes. Items removed without a reason stay separate.</p></div></div>
           {data.note && <Notice title="About these numbers">{data.note}</Notice>}
           <section className={`panel strip${data.stats.length === 5 ? ' five' : ''}`} aria-label="Totals">
             {data.stats.map((row) => (
               <div className="metric" key={row.label}>
                 <div className="metric-label">{row.label}</div>
-                <div className="metric-value">{row.value}</div>
+                <div className="metric-value"><AnimatedNumber value={row.value} /></div>
                 <div className="metric-note">{row.note}</div>
               </div>
             ))}

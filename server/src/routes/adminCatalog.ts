@@ -7,9 +7,12 @@
 // requireAdmin, the rate limit and the audit record.
 
 import { Router } from 'express';
-import { ApiUsage, PantryItem, RecipeRating, SavedRecipe } from '../models';
+import { ApiUsage, CookbookRecipe, PantryItem, RecipeRating, SavedRecipe, User } from '../models';
+import { titleKey } from '../cookbook';
+import { supabase } from '../supabase';
+import { DISH_PHOTO_BUCKET, objectPathFor } from './dishPhoto';
 import { provenanceBucket } from './admin';
-import { costOf, formatCost } from '../usage';
+import { costOf, formatCost, perScanCost, phpPerUsd, recipeRoutes } from '../usage';
 import { withDb } from './helpers';
 
 export const adminCatalogRouter = Router();
@@ -354,8 +357,29 @@ adminCatalogRouter.get(
       return group.length > 1 ? { ...row, version: `Version ${group.indexOf(row) + 1} of ${group.length}` } : row;
     });
 
+    // The same photo the app shows for each dish, tried in the app's order
+    // (components/recipes/DishTile.tsx): a photo an admin uploaded to the
+    // cookbook, then the photo bundled with the app (the console ships the
+    // same files in public/recipes), then a generated photo already in the
+    // dish-photos bucket. A dish that was only rated carries no dishKey, so the
+    // cookbook's key for that title fills in. Nothing is generated here.
+    const cookbook: any[] = await CookbookRecipe.find().select({ titleKey: 1, dishKey: 1, photoUrl: 1 }).lean();
+    const byKey = new Map(cookbook.map((c) => [c.titleKey, c]));
+    const generated = await generatedPhotoNames();
+    const bucket = generated.size ? supabase().storage.from(DISH_PHOTO_BUCKET) : null;
+    const withPhotos = labelled.map((row) => {
+      const entry = byKey.get(titleKey(row.name));
+      const photo = row.photo ?? (entry?.dishKey && entry.dishKey !== 'other' ? entry.dishKey : undefined);
+      let photoUrl: string | null = entry?.photoUrl ?? null;
+      if (!photoUrl && !photo && bucket) {
+        const path = objectPathFor(row.name);
+        if (generated.has(path)) photoUrl = bucket.getPublicUrl(path).data.publicUrl;
+      }
+      return { ...row, photo, photoUrl };
+    });
+
     res.json({
-      recipes: labelled,
+      recipes: withPhotos,
       note:
         rows.length === 0
           ? 'No dish has been saved or rated yet. This screen is built from what people kept and what they said after cooking.'
@@ -363,6 +387,34 @@ adminCatalogRouter.get(
     });
   })
 );
+
+/**
+ * The generated dish photos in the bucket's top folder, by file name. One
+ * listing serves every row instead of one lookup per dish, and it is kept for
+ * ten minutes because a new photo only appears when someone in the app opens
+ * a dish nobody has opened before. Empty when Supabase is not configured or
+ * the listing fails, which only means those dishes show a placeholder.
+ */
+let generatedCache: { at: number; names: Set<string> } | null = null;
+const GENERATED_TTL_MS = 10 * 60 * 1000;
+
+async function generatedPhotoNames(): Promise<Set<string>> {
+  if (generatedCache && Date.now() - generatedCache.at < GENERATED_TTL_MS) return generatedCache.names;
+  const names = new Set<string>();
+  try {
+    const bucket = supabase().storage.from(DISH_PHOTO_BUCKET);
+    for (let offset = 0; offset < 10_000; offset += 1000) {
+      const { data, error } = await bucket.list('', { limit: 1000, offset });
+      if (error) throw error;
+      for (const entry of data ?? []) if (entry.name.endsWith('.png')) names.add(entry.name);
+      if (!data || data.length < 1000) break;
+    }
+    generatedCache = { at: Date.now(), names };
+  } catch (err: any) {
+    console.warn('Could not list generated dish photos', { message: err?.message });
+  }
+  return names;
+}
 
 // ------------------------------------------------------------------ /costs
 
@@ -436,7 +488,18 @@ adminCatalogRouter.get(
     const peak = Math.max(1e-9, ...buckets.map((bucket) => bucket.cost));
 
     const scanRoute = byRoute.get('scan');
-    const recipeRoute = byRoute.get('recipes');
+    const scanCost = perScanCost(byRoute);
+    const recipeRoute = recipeRoutes(byRoute);
+
+    // Most expensive first — the panel is "Top accounts by spend" — then named,
+    // so the row can be read and opened rather than matched up by uid.
+    const topUsers = [...byUser.entries()]
+      .sort(([, a], [, b]) => b.cost - a.cost || b.calls - a.calls)
+      .slice(0, 8);
+    const named = await User.find({ _id: { $in: topUsers.map(([userId]) => userId) } })
+      .select({ name: 1 })
+      .lean();
+    const nameById = new Map(named.map((row: any) => [String(row._id), row.name as string | null]));
 
     const allTokens = rows.reduce((sum, row) => sum + totalTokens(row), 0);
     const cacheTokens = rows.reduce((sum, row) => sum + (row.cacheReadTokens ?? 0), 0);
@@ -450,7 +513,7 @@ adminCatalogRouter.get(
         },
         {
           label: 'Per scan',
-          value: scanRoute ? formatCost(scanRoute.cost / scanRoute.calls) : '—',
+          value: scanCost === null ? '—' : formatCost(scanCost),
           note: scanRoute ? `${scanRoute.calls.toLocaleString()} scans` : 'no scans yet',
         },
         {
@@ -474,6 +537,7 @@ adminCatalogRouter.get(
         }),
         value: formatCost(bucket.cost),
         pct: Math.round((bucket.cost / peak) * 100),
+        amount: Math.round(bucket.cost * phpPerUsd() * 100) / 100,
       })),
       routes: [...byRoute.entries()]
         .map(([route, entry]) => ({
@@ -485,14 +549,12 @@ adminCatalogRouter.get(
           pct: spend === 0 ? 0 : Math.round((entry.cost / spend) * 100),
         }))
         .sort((a, b) => b.pct - a.pct),
-      users: [...byUser.entries()]
-        .map(([userId, entry]) => ({
-          userId,
-          calls: entry.calls,
-          cost: formatCost(entry.cost),
-        }))
-        .sort((a, b) => b.calls - a.calls)
-        .slice(0, 8),
+      users: topUsers.map(([userId, entry]) => ({
+        userId,
+        name: nameById.get(userId) || null,
+        calls: entry.calls,
+        cost: formatCost(entry.cost),
+      })),
       note:
         rows.length === 0
           ? 'No model calls recorded yet. This fills the next time someone scans, cooks or chats.'

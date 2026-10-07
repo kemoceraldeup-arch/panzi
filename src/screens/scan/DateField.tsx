@@ -11,8 +11,9 @@
 //      mounts with an unknown date — see recognition.ts.)
 //   2. No printed date detected — "I don't know" preselected, the estimate
 //      panel already showing. Never a plain "no date found" dead end.
-//   3. The user knows the date — the MM/DD/YYYY field is always tappable
-//      regardless of path 1 or 2; typing into it deselects "I don't know".
+//   3. The user knows the date — the date field is always tappable
+//      regardless of path 1 or 2 and opens month/day/year wheels
+//      (DateWheelSheet); setting a date deselects "I don't know".
 //   4. The user taps "I don't know" — the field clears and dims (stays
 //      visible and tappable) and Panzi estimates from food class, package
 //      status and storage location.
@@ -33,8 +34,9 @@
 // to paint completely before any classification runs.
 
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import { Keyboard, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import DateWheelSheet, { formatLongDate } from './DateWheelSheet';
 import Text from '../../components/Text';
 import { dateInDays } from '../../utils/freshness';
 import { formatEstimateHeadline } from '../../utils/dateLabel';
@@ -55,39 +57,7 @@ import { useColors } from '../../theme/ThemeProvider';
 import { space } from '../../theme/spacing';
 import { type } from '../../theme/typography';
 
-type Parts = { day: string; month: string; year: string };
 type PackageStatusValue = 'sealed' | 'opened' | undefined;
-
-const EMPTY: Parts = { day: '', month: '', year: '' };
-
-function toParts(iso: string | null): Parts {
-  if (!iso) return EMPTY;
-  const [y, m, d] = iso.split('-');
-  return { day: d ?? '', month: m ?? '', year: y ?? '' };
-}
-
-/**
- * Parts to an ISO date, or null while they aren't yet a real day.
- *
- * Strict about the calendar — the 31st of February and the 32nd of anything are
- * rejected rather than rounded into a neighbouring month, because a use-by date
- * silently moved by a day is exactly the kind of quiet wrongness this whole
- * feature is built to avoid.
- */
-function toIso({ day, month, year }: Parts): string | null {
-  if (day.length === 0 || month.length === 0 || year.length !== 4) return null;
-
-  const d = Number(day);
-  const m = Number(month);
-  const y = Number(year);
-  if (!d || !m || !y) return null;
-  if (m > 12 || d > 31) return null;
-
-  const probe = new Date(Date.UTC(y, m - 1, d));
-  if (probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) return null;
-
-  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-}
 
 export type EstimateResult = { date: string; inputs: EstimateInputs };
 
@@ -149,9 +119,10 @@ export default function DateField({
 }: Props) {
   const styles = useStyles();
   const colors = useColors();
-  const [parts, setParts] = useState<Parts>(() => toParts(value));
-  const dayRef = useRef<TextInput>(null);
-  const yearRef = useRef<TextInput>(null);
+  // The month/day/year wheels. They can only land on a real calendar day —
+  // month 1–12, a day the month actually has — so nothing typed here can be
+  // an impossible date.
+  const [pickerOpen, setPickerOpen] = useState(false);
   // Part C6/D6's "never change it silently" rule — a storage move (or a
   // sealed/opened flip that lands in a different window) gets a one-line
   // callout the moment it happens, not just a number that quietly ticked
@@ -160,42 +131,23 @@ export default function DateField({
   const previousBucketRef = useRef<StorageBucket | null>(null);
   const [changeNote, setChangeNote] = useState<string | null>(null);
 
-  // Adopts a date set from elsewhere — a rough-date chip below, or the
-  // ripeness screen overruling the estimate — without fighting the user
-  // mid-keystroke.
-  useEffect(() => {
-    const iso = toIso(parts);
-    if (value !== iso) setParts(toParts(value));
-    // Deliberately keyed on `value` alone: re-running when `parts` changes would
-    // reset the boxes on every digit typed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  function setPickedDate(iso: string) {
+    setPickerOpen(false);
+    // Setting a real date deselects "I don't know" — path 3 of Part C1.
+    // The two states can't both hold at once: a filled field showing a real
+    // date is the opposite claim from "I don't know". Promotes to
+    // basis:'manual' even if it started 'estimated' — the spec's own
+    // "editing and trust" rule (§7): the user setting a real date is a
+    // promotion, and the estimate underneath is dropped, not kept around as
+    // a fallback.
+    onChangeUnknown(false);
+    onChangeBasis('manual');
+    onChange(iso);
+  }
 
-  function edit(key: keyof Parts, raw: string, max: number, next?: TextInput | null) {
-    const digits = raw.replace(/[^0-9]/g, '').slice(0, max);
-    const updated = { ...parts, [key]: digits };
-    setParts(updated);
-
-    if (digits.length === max && next) next.focus();
-
-    const iso = toIso(updated);
-    // Nothing typed anywhere is a cleared date; a half-typed one is simply not
-    // reported yet, so the chip doesn't flicker through wrong dates as the user
-    // types the year.
-    if (iso) {
-      // Typing a real date deselects "I don't know" — path 3 of Part C1.
-      // The two states can't both hold at once: a filled, tappable field
-      // showing a real date is the opposite claim from "I don't know".
-      // Promotes to basis:'manual' even if it started 'estimated' — the
-      // spec's own "editing and trust" rule (§7): the user typing a real
-      // date is a promotion, and the estimate underneath is dropped, not
-      // kept around as a fallback.
-      onChangeUnknown(false);
-      onChangeBasis('manual');
-      onChange(iso);
-    } else if (!updated.day && !updated.month && !updated.year) {
-      onChange(null);
-    }
+  function clearPickedDate() {
+    setPickerOpen(false);
+    onChange(null);
   }
 
   const bucket = bucketForLocation(storageLocation);
@@ -328,47 +280,32 @@ export default function DateField({
 
       {/* The field owns the full width and stays tappable and visible even
           while "I don't know" is selected (path 4) — dimmed, not hidden or
-          disabled, so tapping into it and typing a real date is still one
-          tap away rather than a dead end. */}
-      <View style={[styles.field, unknown && styles.fieldDimmed]}>
-        <TextInput
-          style={styles.box}
-          value={parts.month}
-          onChangeText={(t) => edit('month', t, 2, dayRef.current)}
-          placeholder="MM"
-          placeholderTextColor={colors.mutedLight}
-          keyboardType="number-pad"
-          maxLength={2}
-          selectionColor={colors.primaryDark}
-          accessibilityLabel="Month"
-        />
-        <Text style={styles.slash}>/</Text>
-        <TextInput
-          ref={dayRef}
-          style={styles.box}
-          value={parts.day}
-          onChangeText={(t) => edit('day', t, 2, yearRef.current)}
-          placeholder="DD"
-          placeholderTextColor={colors.mutedLight}
-          keyboardType="number-pad"
-          maxLength={2}
-          selectionColor={colors.primaryDark}
-          accessibilityLabel="Day"
-        />
-        <Text style={styles.slash}>/</Text>
-        <TextInput
-          ref={yearRef}
-          style={[styles.box, styles.boxYear]}
-          value={parts.year}
-          onChangeText={(t) => edit('year', t, 4)}
-          placeholder="YYYY"
-          placeholderTextColor={colors.mutedLight}
-          keyboardType="number-pad"
-          maxLength={4}
-          selectionColor={colors.primaryDark}
-          accessibilityLabel="Year"
-        />
-      </View>
+          disabled, so tapping it and setting a real date is still one tap
+          away rather than a dead end. Opens the month/day/year wheels. */}
+      <TouchableOpacity
+        style={[styles.field, pickerOpen && styles.fieldFocused, unknown && styles.fieldDimmed]}
+        onPress={() => setPickerOpen(true)}
+        activeOpacity={0.75}
+        accessibilityRole="button"
+        accessibilityLabel={value ? `Expiration date, ${formatLongDate(value)}. Tap to change.` : 'Set expiration date'}
+      >
+        <Ionicons name="calendar-outline" size={20} color={value ? colors.primaryDark : colors.mutedLight} />
+        <Text style={[styles.fieldValue, !value && styles.fieldPlaceholder]} numberOfLines={1}>
+          {value ? formatLongDate(value) : 'Set expiration date'}
+        </Text>
+        <Ionicons name="chevron-down" size={18} color={colors.chevron} />
+      </TouchableOpacity>
+
+      <DateWheelSheet
+        visible={pickerOpen}
+        // Opens on the date already set, or on Panzi's own estimate when
+        // "I don't know" is showing one — the nearest sensible starting point.
+        initial={value ?? estimate?.date ?? null}
+        canClear={!!value}
+        onCancel={() => setPickerOpen(false)}
+        onConfirm={setPickedDate}
+        onClear={clearPickedDate}
+      />
 
       {/* Radio-style, directly under the field — an empty ring flips to an
           accent-filled one, never a warning colour: this is a legitimate
@@ -376,7 +313,14 @@ export default function DateField({
           uppercase, so it doesn't read as another section label. */}
       <TouchableOpacity
         style={styles.unknownRow}
-        onPress={() => (unknown ? onChangeUnknown(false) : selectUnknown())}
+        // Lowers the keyboard as well: the page's ScrollView keeps it up
+        // through taps (keyboardShouldPersistTaps), so after typing a name
+        // it would otherwise stay over the estimate panel this just opened.
+        onPress={() => {
+          Keyboard.dismiss();
+          if (unknown) onChangeUnknown(false);
+          else selectUnknown();
+        }}
         activeOpacity={0.7}
         accessibilityRole="radio"
         accessibilityState={{ checked: unknown === true }}
@@ -474,24 +418,32 @@ const useStyles = makeStyles((colors) => ({
   fieldDimmed: {
     opacity: 0.5,
   },
-  box: {
+  // The field while any of its boxes has the cursor.
+  fieldFocused: {
+    borderWidth: 2,
+    borderColor: colors.primaryDark,
+  },
+  // The one box being typed into — a tinted pill behind its digits, so it
+  // is clear which of MM / DD / YYYY the keyboard is writing to.
+  boxFocused: {
+    backgroundColor: colors.primaryLighter,
+    borderRadius: 8,
+  },
+  fieldValue: {
+    flex: 1,
     fontFamily: 'Nunito_700Bold',
     fontSize: type.bodyLarge.fontSize,
     color: colors.primaryDarker,
     paddingVertical: space.md,
-    paddingHorizontal: space.xs2,
-    textAlign: 'center',
-    minWidth: 36,
+    marginHorizontal: space.sm,
   },
-  boxYear: {
-    // Four digits at 16pt bold, plus room for the caret. The old 52 clipped
-    // the last character of the year.
-    minWidth: 62,
+  fieldPlaceholder: {
+    color: colors.mutedLight,
   },
   slash: {
     fontWeight: '700',
     fontSize: type.body.fontSize,
-    color: colors.chevron,
+    color: colors.mutedLight,
   },
   unknownRow: {
     flexDirection: 'row',

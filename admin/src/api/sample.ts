@@ -7,11 +7,11 @@
 // no real source at all say so on the page.
 
 import type {
+  CookbookRecipe,
   ActivityRow,
   AdminUser,
   AnalyticsData,
   Category,
-  ExpiringRow,
   FoodItem,
   HealthRow,
   LogEntry,
@@ -72,19 +72,16 @@ export const RECIPES: Recipe[] = [
 ];
 
 export const LOGS: LogEntry[] = [
-  { id: 'l1', time: '09:41:12', level: 'INFO', event: 'scan.completed', detail: 'user #2841 · 6 items recognized · 1.2s' },
-  { id: 'l2', time: '09:39:58', level: 'WARN', event: 'scan.low_confidence', detail: "label 'Talong' at 0.61 · queued for review" },
-  { id: 'l3', time: '09:38:04', level: 'INFO', event: 'recipe.accepted', detail: 'user #1190 accepted Tinolang Manok' },
-  { id: 'l4', time: '09:36:22', level: 'ERROR', event: 'api.timeout', detail: 'POST /v1/vision/detect · 504 after 30s' },
-  { id: 'l4b', time: '09:37:10', level: 'INFO', event: 'account.deleted', detail: 'uid 8f21c0a4 · via profile-screen · data removed, record kept' },
-  { id: 'l5', time: '09:35:47', level: 'INFO', event: 'inventory.deducted', detail: 'user #2077 cooked Chicken Adobo · 8 items' },
-  { id: 'l6', time: '09:33:10', level: 'INFO', event: 'notification.sent', detail: 'expiry reminder · 412 recipients' },
-  { id: 'l7', time: '09:31:55', level: 'WARN', event: 'chatbot.fallback', detail: "no intent matched · 'pwede ba i-freeze ang bagoong'" },
-  { id: 'l8', time: '09:30:19', level: 'INFO', event: 'user.registered', detail: 'nath.cruz@gmail.com · Android 14' },
-  { id: 'l9', time: '09:28:41', level: 'ERROR', event: 'scan.failed', detail: 'image decode error · 0 bytes payload' },
-  { id: 'l10', time: '09:27:03', level: 'INFO', event: 'shoppinglist.generated', detail: 'user #1904 · 11 items across 4 categories' },
-  { id: 'l11', time: '09:25:36', level: 'DEBUG', event: 'cache.refresh', detail: 'ingredient index rebuilt in 340ms' },
-  { id: 'l12', time: '09:24:12', level: 'INFO', event: 'scan.completed', detail: 'user #1663 · 3 items recognized · 0.9s' },
+  { id: 'l1', time: '09:41:12', level: 'INFO', kind: 'ai', event: 'api.scan', title: 'Scanned groceries', who: 'Angelica Reyes', userId: 'u3', detail: 'Claude Opus 5 · took 4.2s · cost $0.0651 · 9,840 tokens' },
+  { id: 'l2', time: '09:40:03', level: 'INFO', kind: 'admin', event: 'admin.read', title: "Looked at Paolo Mendoza's pantry", who: 'You', userId: 'u6', detail: 'GET /api/admin/users/u6/pantry · 200 OK · 88ms' },
+  { id: 'l3', time: '09:38:04', level: 'INFO', kind: 'ai', event: 'api.recipes.featured', title: "Suggested tonight's recipe", who: 'Bea Alvarez', userId: 'u11', detail: 'Claude Sonnet 5 · took 3.1s · cost $0.0390 · 6,120 tokens' },
+  { id: 'l4', time: '09:36:40', level: 'ERROR', kind: 'ai', event: 'api.scan', title: 'Failed: scanned groceries', who: 'Kristine Villanueva', userId: 'u5', detail: 'Claude Opus 5 · took 30.0s (slow) · cost not priced · 0 tokens' },
+  { id: 'l5', time: '09:35:10', level: 'INFO', kind: 'account', event: 'account.deleted', title: 'An account was deleted', who: 'Deleted account', userId: null, detail: 'Requested from Profile in the app · their data was removed, only this record is kept · account 8f21c0a4' },
+  { id: 'l6', time: '09:33:47', level: 'WARN', kind: 'ai', event: 'api.chat', title: 'Answered a chat message', who: 'Sheena Gutierrez', userId: 'u9', detail: 'Claude Sonnet 5 · took 11.4s (slow) · cost $0.0122 · 3,410 tokens' },
+  { id: 'l7', time: '09:31:55', level: 'INFO', kind: 'admin', event: 'admin.write', title: 'Updated a feedback message', who: 'You', userId: 'u9', detail: 'PATCH /api/admin/review/feedback/f2 · 200 OK · 64ms' },
+  { id: 'l8', time: '09:30:19', level: 'WARN', kind: 'admin', event: 'admin.denied', title: 'Access denied: viewed the user list', who: 'Account 7c2d91', userId: null, detail: 'GET /api/admin/users · 403 denied · 12ms' },
+  { id: 'l9', time: '09:27:03', level: 'INFO', kind: 'ai', event: 'api.scan-measure', title: 'Measured how full a container is', who: 'Angelica Reyes', userId: 'u3', detail: 'Claude Opus 5 · took 2.0s · cost $0.0180 · 2,950 tokens' },
+  { id: 'l10', time: '09:24:12', level: 'INFO', kind: 'admin', event: 'admin.read', title: 'Viewed the dashboard (last 30 days)', who: 'You', userId: null, detail: 'GET /api/admin/dashboard?range=30d · 200 OK · 482ms' },
 ];
 
 export const LOGS_DATE = 'Aug 11, 2026';
@@ -156,19 +153,11 @@ export const HEALTH: HealthRow[] = [
 
 export const ACTIVITY: ActivityRow[] = [
   { id: 'a1', text: 'Divina Ocampo scanned 7 items from a grocery photo', time: '4 minutes ago', color: 'var(--green-primary)' },
-  { id: 'a2', text: '12 low-confidence detections queued for review', time: '22 minutes ago', color: 'var(--amber)' },
+  { id: 'a2', text: '12 scanned food names corrected by their owners', time: '22 minutes ago', color: 'var(--amber)' },
   { id: 'a3', text: 'Expiry reminders sent to 412 users', time: '1 hour ago', color: 'var(--green-deep)' },
-  { id: 'a4', text: 'Kaldereta recipe saved as draft by admin', time: '3 hours ago', color: 'var(--ink-muted)' },
-  { id: 'a5', text: 'Vision model panzi-vision v2.4 health check passed', time: '5 hours ago', color: 'var(--green-deep)' },
+  { id: 'a4', text: 'Kaldereta saved to a personal recipe collection', time: '3 hours ago', color: 'var(--ink-muted)' },
+  { id: 'a5', text: 'Pantry scan completed successfully', time: '5 hours ago', color: 'var(--green-deep)' },
   { id: 'a6', text: 'Nathaniel Cruz registered a new account', time: 'Yesterday', color: 'var(--green-primary)' },
-];
-
-export const EXPIRING: ExpiringRow[] = [
-  { id: 'e1', name: 'Gatas (Milk)', cat: 'Dairy & Eggs', count: '184', due: '1 day' },
-  { id: 'e2', name: 'Manok (Chicken)', cat: 'Meat', count: '132', due: '1 day' },
-  { id: 'e3', name: 'Kamatis (Tomato)', cat: 'Produce', count: '97', due: '2 days' },
-  { id: 'e4', name: 'Baboy (Pork)', cat: 'Meat', count: '88', due: '2 days' },
-  { id: 'e5', name: 'Talong (Eggplant)', cat: 'Produce', count: '61', due: '3 days' },
 ];
 
 export const CATEGORIES: Category[] = [
@@ -262,3 +251,23 @@ export const PREVIEW_TRANSCRIPTS: Record<string, ChatTranscript> = {
     { id: 'm2', role: 'assistant', text: 'Up to 4 days in the fridge, sealed. Sinangag is a good way to use it up.', recipeTitle: null, at: '19:40' },
   ] },
 };
+
+/** A few of the app's cookbook dishes, for trying the Cookbook page offline. */
+export const COOKBOOK: CookbookRecipe[] = [
+  { id: 'c1', title: 'Chicken adobo', category: 'ulam', minutes: 45, servings: 4, dishKey: 'adobo', look: 'chicken', photoUrl: null, revision: 0, updatedAt: null,
+    description: 'A Filipino classic of chicken braised in soy sauce, vinegar and garlic.',
+    ingredients: [{ name: 'Chicken thighs', amount: '1 kg' }, { name: 'Soy sauce', amount: '½ cup' }, { name: 'Cane vinegar', amount: '⅓ cup' }, { name: 'Garlic, crushed', amount: '1 head' }],
+    steps: ['Marinate the chicken in soy sauce and garlic for 30 minutes.', 'Simmer with vinegar and bay leaves until tender.', 'Reduce the sauce until glossy and serve with rice.'] },
+  { id: 'c2', title: 'Sinigang na baboy', category: 'ulam', minutes: 50, servings: 5, dishKey: 'sinigang', look: 'soup', photoUrl: null, revision: 0, updatedAt: null,
+    description: 'A sour tamarind soup of pork and vegetables.',
+    ingredients: [{ name: 'Pork ribs', amount: '1 kg' }, { name: 'Tamarind soup base', amount: '1 pack' }, { name: 'Kangkong', amount: '1 bunch' }],
+    steps: ['Boil the pork with tomatoes and onion until tender.', 'Add radish and tamarind base.', 'Add kangkong last and season to taste.'] },
+  { id: 'c3', title: 'Pancit canton', category: 'quick', minutes: 25, servings: 5, dishKey: 'pancit_canton', look: 'noodles', photoUrl: null, revision: 0, updatedAt: null,
+    description: 'Stir-fried wheat noodles with vegetables and your choice of meat.',
+    ingredients: [{ name: 'Canton noodles', amount: '250 g' }, { name: 'Chicken strips', amount: '150 g' }, { name: 'Mixed vegetables', amount: '2 cups' }],
+    steps: ['Stir-fry the chicken and vegetables.', 'Add broth and soy sauce, then the noodles.', 'Toss until the liquid is absorbed.'] },
+  { id: 'c4', title: 'Turon', category: 'merienda', minutes: 25, servings: 6, dishKey: 'turon', look: 'merienda', photoUrl: null, revision: 0, updatedAt: null,
+    description: 'Saba banana and jackfruit wrapped and fried in caramelized sugar.',
+    ingredients: [{ name: 'Saba bananas', amount: '6' }, { name: 'Jackfruit strips', amount: '½ cup' }, { name: 'Spring roll wrappers', amount: '12' }],
+    steps: ['Roll banana and jackfruit in wrappers.', 'Fry until golden.', 'Add sugar to the oil to coat with caramel.'] },
+];
