@@ -19,26 +19,46 @@
 // stays true forever and can be re-priced.
 
 import { ApiUsage } from './models';
+import { connectMongo } from './mongo';
 
 /**
  * Per-million-token prices, USD, keyed by the model id the routes actually
- * send — `gpt-5.6-luna` for scan/recipes/intent, `gpt-5.6-terra` for chat.
+ * send — `gpt-5.6-luna` for scan/recipes/intent, `gpt-5.6-terra` for chat and
+ * the fill-level pass, `gpt-image-1` for generated dish photos.
  *
- * Empty on purpose. The table this file used to carry was written for a
- * different provider, and carrying those numbers over to these model ids would
- * have produced dollar figures that look authoritative and are simply wrong.
- * An unpriced model reports its cost as null, which the console renders as an
- * em dash — "we do not know", which is true — rather than as free.
+ * OpenAI's standard (non-batch, short-context) rates as of 2026-10-07, after
+ * the 2026-07-30 price cut. Long-context requests bill higher; this app's
+ * prompts are short, so those rates are left out.
  *
- * Fill it by setting MODEL_PRICE_OVERRIDES to `model:input:output` entries,
- * comma separated, from the current published rate card:
+ * Prices change. Override any of them without a code change by setting
+ * MODEL_PRICE_OVERRIDES to `model:input:output` entries, comma separated:
  *
  *   MODEL_PRICE_OVERRIDES=gpt-5.6-luna:0.25:2,gpt-5.6-terra:1.25:10
  *
- * Token counts already recorded re-price themselves the moment that variable
- * lands — nothing needs backfilling.
+ * Token counts already recorded re-price themselves the moment a price
+ * changes — nothing needs backfilling. A model missing from both reports its
+ * cost as null, which the console shows as "Not priced" rather than as free.
  */
-const PRICES: Record<string, { input: number; output: number }> = {};
+const PRICES: Record<string, { input: number; output: number }> = {
+  'gpt-5.6-luna': { input: 0.2, output: 1.2 },
+  'gpt-5.6-terra': { input: 2, output: 12 },
+  // Text prompt in, image tokens out. A 1024px medium photo is a few thousand
+  // output tokens, roughly $0.04 (about ₱2.60) each.
+  'gpt-image-1': { input: 5, output: 40 },
+};
+
+/**
+ * Pesos per US dollar, for display only. OpenAI bills in dollars, so every
+ * figure is computed in dollars and converted on the way out. Set PHP_PER_USD
+ * in .env to follow the current rate; the default is the mid-market rate on
+ * 2026-10-07.
+ */
+const DEFAULT_PHP_PER_USD = 62.75;
+
+export function phpPerUsd(): number {
+  const rate = Number(process.env.PHP_PER_USD);
+  return Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_PHP_PER_USD;
+}
 
 /**
  * A cached prompt token bills at a fraction of a fresh one. OpenAI's automatic
@@ -90,11 +110,15 @@ export function costOf(model: string, tokens: TokenCounts): number | null {
   );
 }
 
-/** `$0.0651`, or an em dash when the model carries no price. */
-export function formatCost(value: number | null): string {
-  if (value === null) return '—';
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  return `$${value.toFixed(2)}`;
+/**
+ * A dollar cost shown in pesos — `₱4.09`, `₱0.0125` for a fraction of a
+ * centavo, `₱1,250.00` — or an em dash when the model carries no price.
+ */
+export function formatCost(valueUsd: number | null): string {
+  if (valueUsd === null) return '—';
+  const php = valueUsd * phpPerUsd();
+  if (php > 0 && php < 0.01) return `₱${php.toFixed(4)}`;
+  return `₱${php.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /**
@@ -127,20 +151,54 @@ export interface UsageRecord extends TokenCounts {
 /**
  * Write one usage row. Never throws, never awaited by a route.
  *
- * Mongo is connected lazily by whichever route ran first; the scan and recipe
- * routes hold no other state and may never have touched it, so a failure here
- * is entirely expected on a server running without MONGODB_URI. It is logged
- * once and dropped.
+ * Mongo is connected lazily by whichever route ran first, and the scan and
+ * recipe routes never connect it themselves. Writing without connecting first
+ * left the row waiting on a connection nothing had opened, and it was dropped
+ * when that wait timed out — which is how the cost page stayed empty. So this
+ * connects first. A failure (no MONGODB_URI, cluster asleep) is still logged
+ * and dropped.
  */
 export function recordUsage(record: UsageRecord): void {
-  void ApiUsage.create({ ok: true, ...record, userId: record.userId ?? 'unknown' }).catch(
-    (err: unknown) => {
+  void connectMongo()
+    .then(() => ApiUsage.create({ ok: true, ...record, userId: record.userId ?? 'unknown' }))
+    .catch((err: unknown) => {
       console.warn('api_usage write failed', {
         route: record.route,
         message: err instanceof Error ? err.message : String(err),
       });
+    });
+}
+
+/**
+ * Pulls the counts out of an image generation's `usage` block, which names
+ * its fields differently from a chat completion (input_tokens/output_tokens).
+ */
+export function imageTokensFrom(usage: {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+} | null | undefined): TokenCounts {
+  return {
+    inputTokens: usage?.input_tokens ?? 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: usage?.output_tokens ?? 0,
+  };
+}
+
+/** Recipe calls are recorded per step ('recipes.featured', 'recipes.alternates',
+ *  …). The Per recipe figure wants them together. */
+export function recipeRoutes<T extends { calls: number; cost: number }>(
+  byRoute: Map<string, T>
+): { calls: number; cost: number } | null {
+  let calls = 0;
+  let cost = 0;
+  for (const [route, entry] of byRoute) {
+    if (route === 'recipes' || route.startsWith('recipes.')) {
+      calls += entry.calls;
+      cost += entry.cost;
     }
-  );
+  }
+  return calls ? { calls, cost } : null;
 }
 
 /**
