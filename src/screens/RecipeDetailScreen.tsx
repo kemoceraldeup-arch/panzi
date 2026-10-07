@@ -175,6 +175,7 @@ function Body({
       <DishTile
         look={recipe.look}
         dishKey={recipe.dishKey}
+        photoUrl={recipe.photoUrl}
         title={recipe.title}
         size="hero"
         style={[styles.hero, { paddingTop: insets.top + 8 }]}

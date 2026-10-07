@@ -14,6 +14,7 @@ import { auditAdmin } from './middleware/audit';
 import { requireAdmin, requireAuth } from './middleware/auth';
 import { adminRouter } from './routes/admin';
 import { chatRouter } from './routes/chat';
+import { cookbookRouter } from './routes/cookbook';
 import { dishPhotoRouter } from './routes/dishPhoto';
 import { feedbackRouter } from './routes/feedback';
 import { nutritionRouter } from './routes/nutrition';
@@ -74,6 +75,9 @@ app.use('/api/profile', express.json({ limit: '2mb' }));
 // Voice input: up to 8 MB of audio (chat.ts MAX_AUDIO_BYTES), which base64
 // grows by a third.
 app.use('/api/chat/transcribe', express.json({ limit: '12mb' }));
+// A cookbook recipe from the console can carry a photo, shrunk to well under
+// a megabyte before it is sent (adminCookbook.ts MAX_PHOTO_BASE64).
+app.use('/api/admin/cookbook', express.json({ limit: '2mb' }));
 app.use(express.json({ limit: '256kb' }));
 
 // The Expo app is not a browser and ignores CORS entirely. This exists for the
@@ -116,6 +120,7 @@ app.use('/api/scans', requireAuth, scansRouter);
 app.use('/api/feedback', requireAuth, feedbackRouter);
 app.use('/api/chat', requireAuth, chatRouter);
 app.use('/api/verify-email', requireAuth, verifyEmailRouter);
+app.use('/api/cookbook', requireAuth, cookbookRouter);
 
 // The admin console. Two middlewares rather than one: requireAuth establishes
 // who is asking, requireAdmin decides whether they may read across accounts.

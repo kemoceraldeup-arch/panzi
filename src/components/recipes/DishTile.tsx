@@ -6,7 +6,8 @@
 //
 // Three ways of drawing it, tried in order:
 //
-//   photo in assets/dishes/       →  the bundled photograph, with a scrim
+//   a photo an admin uploaded     →  the cookbook's own photo, with a scrim
+//   photo in assets/dishes/       →  the bundled photograph, same treatment
 //   a generated photo, once found →  same treatment, fetched at runtime
 //   neither                       →  the gradient and glyph from dishLooks.ts
 //
@@ -57,6 +58,9 @@ type Props = {
   /** Names the dish for the bundled-photo lookup. Absent or unknown means no
    *  bundled photo, which is when `title` gets a chance below. */
   dishKey?: DishKey | string | null;
+  /** A cookbook photo uploaded from the admin console. Wins over the bundled
+   *  photo, and stops the tile asking the server to generate one. */
+  photoUrl?: string | null;
   /** The dish's own title, used only to ask the server for a generated photo
    *  when there is no bundled one for `dishKey`. Optional so every existing
    *  caller keeps compiling — omitting it just means this tile never tries
@@ -72,6 +76,7 @@ type Props = {
 export default function DishTile({
   look,
   dishKey,
+  photoUrl,
   title,
   size = 'card',
   radius = 0,
@@ -79,6 +84,7 @@ export default function DishTile({
   children,
 }: Props) {
   const bundledPhoto = dishPhoto(dishKey);
+  const uploadedPhoto = photoUrl ? { uri: photoUrl } : null;
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(() =>
     title ? sessionPhotoCache.get(cacheKey(title)) ?? null : null
   );
@@ -87,7 +93,7 @@ export default function DishTile({
     // The bundled photo always wins when there is one — no reason to ask the
     // server for a dish the app already ships a picture for. Same when there
     // is no title to ask about at all.
-    if (bundledPhoto || !title) return;
+    if (bundledPhoto || photoUrl || !title) return;
 
     const key = cacheKey(title);
     if (sessionPhotoCache.has(key)) {
@@ -105,9 +111,11 @@ export default function DishTile({
     return () => {
       cancelled = true;
     };
-  }, [bundledPhoto, title]);
+  }, [bundledPhoto, photoUrl, title]);
 
-  const photo = bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
+  // An admin's upload wins even over a bundled photo: replacing the picture
+  // of a dish the app ships with is exactly what the upload is for.
+  const photo = uploadedPhoto ?? bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
   const frame = [{ minHeight: HEIGHTS[size], borderRadius: radius }, styles.tile, style];
 
   if (photo) {

@@ -8,9 +8,10 @@
 // tabs (All / Quick and Easy / Main Dish / Snacks), switched by the Pantry
 // Only toggle:
 //
-// Pantry Only OFF is a cookbook. The four tabs read straight from the fixed
-// 52-recipe list in data/localRecipes.ts, filtered by category client-side.
-// No network call, no pantry, no diet/allergy check — see localRecipeToRecipe
+// Pantry Only OFF is a cookbook. The four tabs read the list admins manage
+// from the console (services/cookbook.ts, falling back to the built-in list in
+// data/localRecipes.ts when the server can't be reached), filtered by
+// category client-side. No AI call, no pantry, no diet/allergy check — see localRecipeToRecipe
 // below for exactly which fields that implies leaving at their "nothing to
 // report" defaults, and why that's honest rather than a shortcut.
 //
@@ -38,7 +39,7 @@
 // back costs nothing at all. Only a real change — food added or eaten, a
 // diet edited, a new day, a mood not asked for yet, or the user asking for
 // something else — spends another. None of this applies with Pantry Only
-// off: LOCAL_RECIPES has nothing to cache, because it never fetches.
+// off: the cookbook is one cheap read with its own copy on the phone.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -58,7 +59,12 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import Text from '../components/Text';
 import { auth } from '../config/firebaseClient';
-import { LOCAL_RECIPES, LocalRecipe } from '../data/localRecipes';
+import {
+  BUILT_IN_COOKBOOK,
+  CookbookRecipe,
+  fetchCookbook,
+  loadCachedCookbook,
+} from '../services/cookbook';
 import { PantryItem, subscribeToPantryItems } from '../services/pantry';
 import { UserProfile, subscribeToProfile } from '../services/profile';
 import {
@@ -107,7 +113,7 @@ type Phase = 'loading' | 'ready' | 'failed';
 /**
  * A local cookbook entry, shaped like the AI-generated Recipe every other
  * screen already knows how to render — FeaturedRecipeCard, RecipeDetailScreen
- * and CookModeScreen all take a Recipe, not a LocalRecipe, so this is the one
+ * and CookModeScreen all take a Recipe, not a CookbookRecipe, so this is the one
  * place that difference gets papered over rather than three.
  *
  * The pantry-specific fields (have, usesExpiring, pantryUsed, needsShopping,
@@ -117,11 +123,12 @@ type Phase = 'loading' | 'ready' | 'failed';
  * answer here, not a bug: this dish was not checked against a pantry, so
  * nothing on it can truthfully be marked as already on hand.
  */
-function localRecipeToRecipe(local: LocalRecipe): Recipe {
+function localRecipeToRecipe(local: CookbookRecipe): Recipe {
   return {
     title: local.title,
     look: local.look,
     dishKey: local.dishKey,
+    photoUrl: local.photoUrl,
     minutes: local.minutes,
     servings: local.servings,
     description: local.description,
@@ -437,7 +444,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     // gate was added for: every tab used to hit the model regardless of
     // this toggle, which is exactly backwards from what Pantry Only is
     // supposed to mean. With it off, the four tabs read straight from
-    // LOCAL_RECIPES below and this effect has nothing to do.
+    // the cookbook below and this effect has nothing to do.
     if (!pantryOnly) return;
     // Both listeners must have reported before the first call. `profile` being
     // null is the gate that stops a request going out with an allergy list
@@ -466,9 +473,33 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     void build(items, profile, mood, false);
   }, [items, profile, mood, pantryOnly, build, retryTick]);
 
+  // The cookbook (Pantry Only off). Starts as the list built into the app so
+  // the first frame has cards, swaps to the copy kept from the last visit,
+  // then to what the server says now. A failed fetch keeps whatever is
+  // already showing — see services/cookbook.ts for the order.
+  const [cookbook, setCookbook] = useState<CookbookRecipe[]>(BUILT_IN_COOKBOOK);
+  const reloadCookbook = useCallback(async () => {
+    try {
+      setCookbook(await fetchCookbook());
+    } catch {
+      // Offline or server down: the list on screen stays.
+    }
+  }, []);
+  useEffect(() => {
+    if (!uid) return;
+    let alive = true;
+    loadCachedCookbook().then((cached) => {
+      if (alive && cached) setCookbook(cached);
+      if (alive) void reloadCookbook();
+    });
+    return () => {
+      alive = false;
+    };
+  }, [uid, reloadCookbook]);
+
   /** Shuffle and Try again. Both need the same two things to have landed. */
   const rebuild = useCallback(() => {
-    // Nothing to re-roll — LOCAL_RECIPES is a fixed list, not a suggestion
+    // Nothing to re-roll — the cookbook is a fixed list, not a suggestion
     // the model could come back with a different answer for. Both this and
     // onPullRefresh below are wired to Shuffle and the pull gesture, neither
     // of which the local-list render path offers in the first place (see
@@ -487,7 +518,17 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
    *  asks for a fresh set built from it, which is what "based on the
    *  current pantry stock" means for every tab alike. */
   const onPullRefresh = useCallback(async () => {
-    if (!pantryOnly) return;
+    // Pantry Only off: re-read the cookbook, so a dish an admin just added,
+    // changed or removed shows up without leaving the screen.
+    if (!pantryOnly) {
+      setRefreshing(true);
+      try {
+        await reloadCookbook();
+      } finally {
+        setRefreshing(false);
+      }
+      return;
+    }
     if (!profile || !items) return;
     setRefreshing(true);
     try {
@@ -495,7 +536,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     } finally {
       setRefreshing(false);
     }
-  }, [items, profile, mood, pantryOnly, build]);
+  }, [items, profile, mood, pantryOnly, build, reloadCookbook]);
 
   const savedKeys = useMemo(
     () => new Set(saved.map((entry) => savedKey(entry.recipe))),
@@ -556,12 +597,12 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
     [allCards, pantryOnly]
   );
 
-  // Pantry Only OFF: the fixed cookbook, not a suggestion — see the file
-  // header and localRecipes.ts's own header for why this reads a local list
-  // instead of asking the model anything. "All" is every entry; the other
-  // three tabs are LOCAL_RECIPES filtered by the matching category. No
-  // pantry, no diet/allergy gate, no loading state — this is synchronous
-  // data, not a fetch.
+  // Pantry Only OFF: the cookbook, not a suggestion — see the file header
+  // and localRecipes.ts's own header for why this reads a list instead of
+  // asking the model anything. "All" is every entry; the other three tabs
+  // are the cookbook filtered by the matching category. No pantry, no
+  // diet/allergy gate, no loading state — the list in state is always
+  // something showable (see the cookbook state above).
   //
   // A live search overrides the category tab rather than combining with it:
   // once someone is searching for a dish by name they mean to search the
@@ -574,13 +615,13 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
   const search = recipeSearch.trim();
   const localRecipes = useMemo(() => {
     if (search) {
-      return LOCAL_RECIPES.filter((r) =>
+      return cookbook.filter((r) =>
         fuzzyMatchesAny(search, [r.title, r.description, ...r.ingredients.map((i) => i.name)])
       ).map(localRecipeToRecipe);
     }
-    const filtered = mood === 'anything' ? LOCAL_RECIPES : LOCAL_RECIPES.filter((r) => r.category === mood);
+    const filtered = mood === 'anything' ? cookbook : cookbook.filter((r) => r.category === mood);
     return filtered.map(localRecipeToRecipe);
-  }, [mood, search]);
+  }, [cookbook, mood, search]);
 
   // Below every hook, deliberately — signing out flips uid to null and
   // re-renders this screen, and an early return sitting above the useMemos
@@ -679,14 +720,13 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onPullRefresh}
-            // Disabled the same moments Shuffle already is — a pull that
-            // fires off a second request while one is still in flight, or
-            // before what it needs has loaded, would race the very call it
-            // triggered. With Pantry Only off there is no call to race in
-            // the first place — onPullRefresh already no-ops there, and
-            // disabling the gesture here keeps the affordance from
-            // promising a refresh that does nothing.
-            enabled={pantryOnly && !empty && phase !== 'loading' && items !== null && profile !== null}
+            // With Pantry Only on, disabled the same moments Shuffle already
+            // is — a pull that fires off a second request while one is
+            // still in flight, or before what it needs has loaded, would
+            // race the very call it triggered. With Pantry Only off the pull
+            // re-reads the cookbook instead, which has nothing to race, so
+            // it is always on.
+            enabled={!pantryOnly || (!empty && phase !== 'loading' && items !== null && profile !== null)}
             tintColor={colors.primaryDark}
             colors={[colors.primaryDark]}
           />
@@ -726,7 +766,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
             buying, so an empty pantry isn't a reason to hide the rule the
             way it is for the other three moods (see the "Nothing to cook
             with yet" card above, which those moods show instead of a call).
-            Hidden entirely with Pantry Only off: LOCAL_RECIPES is a plain,
+            Hidden entirely with Pantry Only off: the cookbook is a plain,
             unfiltered list, and showing this chip there would claim a
             guarantee — "this is checked against your diet" — that nothing
             on the local-list path actually keeps. */}
@@ -801,7 +841,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
         )}
 
         {/* The tabs stay reachable even when the profile failed to load —
-            LOCAL_RECIPES doesn't read the profile at all, so a broken diet/
+            the cookbook doesn't read the profile at all, so a broken diet/
             allergy listener has no reason to also block browsing the fixed
             cookbook. Pantry Only itself still needs the profile (the model
             call it drives sends the diet/allergy list), so it alone stays
@@ -824,7 +864,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
             // Reading it here unguarded would leave the tabs permanently
             // disabled the moment someone turns Pantry Only off, which is
             // the opposite of what this screen is meant to do in that mode
-            // — LOCAL_RECIPES has nothing to wait on, so nothing here
+            // — the cookbook has nothing to wait on, so nothing here
             // should ever read as "loading".
             disabled={pantryOnly && phase === 'loading'}
           />
@@ -848,7 +888,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
         {/* Everything from here to the end of the scroll view is Pantry
             Only's own territory — the AI-generated, pantry-matched path.
             With the toggle off, none of this fetches, loads or renders;
-            the block right after it (LOCAL_RECIPES, below) takes over
+            the block right after it (the cookbook, below) takes over
             instead. See the ticket this split was made for: every tab used
             to call the model regardless of Pantry Only, which defeated the
             point of the toggle. */}
@@ -977,14 +1017,18 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
           </>
         )}
 
-        {/* Pantry Only OFF — the fixed cookbook. Synchronous, local,
-            unfiltered by the pantry or diet/allergy rules the AI path
-            applies: this is a browse list of real dishes, not a claim
-            about what's safe or possible to cook with what's on hand. No
-            loading state, because there is nothing to wait on; no empty
-            state either, because every category tab has at least one
-            local recipe (see localRecipes.ts) so this can never render
-            zero cards. */}
+        {/* Pantry Only OFF — the cookbook admins manage. Unfiltered by the
+            pantry or diet/allergy rules the AI path applies: this is a
+            browse list of real dishes, not a claim about what's safe or
+            possible to cook with what's on hand. No loading state, because
+            the built-in list is on screen until the server answers; an
+            empty state only because an admin can now clear a category, or a
+            search can match nothing. */}
+        {!pantryOnly && localRecipes.length === 0 && (
+          <Text style={[styles.emptyBody, { textAlign: 'center', paddingVertical: space.lg }]}>
+            {search ? `No recipe matches “${search}”.` : 'No recipes in this category yet.'}
+          </Text>
+        )}
         {!pantryOnly &&
           localRecipes.map((recipe, i) => (
             <FeaturedRecipeCard
@@ -993,6 +1037,7 @@ export default function RecipesScreen({ onOpenProfile }: Props) {
                 title: recipe.title,
                 look: recipe.look,
                 dishKey: recipe.dishKey,
+                photoUrl: recipe.photoUrl,
                 minutes: recipe.minutes,
                 usesExpiringCount: 0,
                 description: recipe.description,

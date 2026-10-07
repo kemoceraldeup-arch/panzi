@@ -36,6 +36,7 @@ import { adminAccessRouter } from './adminAccess';
 import { adminCatalogRouter } from './adminCatalog';
 import { adminReportsRouter } from './adminReports';
 import { adminAlertsRouter } from './adminAlerts';
+import { adminCookbookRouter } from './adminCookbook';
 
 export const adminRouter = Router();
 
@@ -45,6 +46,7 @@ adminRouter.use(adminReportsRouter);
 adminRouter.use(adminAlertsRouter);
 adminRouter.use(adminCatalogRouter);
 adminRouter.use(adminAccessRouter);
+adminRouter.use(adminCookbookRouter);
 
 // --------------------------------------------------------------------- time
 

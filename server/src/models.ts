@@ -521,6 +521,53 @@ const adminReviewSchema = new Schema({
   updatedBy: { type: String, required: true },
 }, { timestamps: true, collection: 'admin_reviews' });
 
+// ---------------------------------------------------------------------------
+// cookbook_recipes
+// ---------------------------------------------------------------------------
+
+// The cookbook behind the Recipes screen's category tabs with Pantry Only off.
+// It used to be a fixed list compiled into the app (src/data/localRecipes.ts);
+// it lives here now so the admin console can add, edit and remove dishes
+// without shipping a new build. That list is still in the app as the offline
+// fallback, and scripts/seed-cookbook.ts copies it in here once.
+//
+// Shared by every account, so nothing here is scoped to a user. Only the admin
+// routes write; the app's route only reads.
+const cookbookRecipeSchema = new Schema(
+  {
+    title: { type: String, required: true, trim: true, maxlength: 60 },
+    // Lower-cased title, unique, so "Chicken adobo" and "chicken Adobo" cannot
+    // both exist and show up twice on the phone.
+    titleKey: { type: String, required: true, unique: true },
+    category: { type: String, enum: ['quick', 'ulam', 'merienda'], required: true },
+    minutes: { type: Number, required: true, min: 1, max: 600 },
+    servings: { type: Number, required: true, min: 1, max: 30 },
+    description: { type: String, default: '', maxlength: 200 },
+    ingredients: {
+      type: [{ _id: false, name: { type: String, required: true }, amount: { type: String, default: '' } }],
+      default: [],
+    },
+    steps: { type: [String], default: [] },
+    // The app's bundled photo key (theme/dishPhotos.ts) for the seeded dishes;
+    // 'other' for anything added from the console, which uses photoUrl instead.
+    dishKey: { type: String, default: 'other' },
+    // The gradient tile the app draws when there is no photo.
+    look: { type: String, default: 'other' },
+    // An uploaded photo in the public dish-photos bucket, and its object path
+    // so it can be deleted when replaced or when the recipe goes.
+    photoUrl: { type: String, default: null },
+    photoPath: { type: String, default: null },
+    // Lower comes first on the phone. Seeded dishes keep the order they had in
+    // the app; new ones go above them so an admin sees what they just added.
+    position: { type: Number, default: 0, index: true },
+    // Bumped on every save. An edit sends the revision it started from, so a
+    // second administrator's save cannot silently overwrite the first.
+    revision: { type: Number, default: 0 },
+    updatedBy: { type: String, default: null },
+  },
+  { timestamps: true, collection: 'cookbook_recipes' }
+);
+
 // `mongoose.models.X ?? model(...)` rather than a bare `model(...)`: tsx watch
 // re-executes this file on every save, and registering the same model twice
 // throws OverwriteModelError, which reads as a crash rather than a reload.
@@ -548,3 +595,5 @@ export const AdminAudit =
   mongoose.models.AdminAudit ?? mongoose.model('AdminAudit', adminAuditSchema);
 export const AdminReview =
   mongoose.models.AdminReview ?? mongoose.model('AdminReview', adminReviewSchema);
+export const CookbookRecipe =
+  mongoose.models.CookbookRecipe ?? mongoose.model('CookbookRecipe', cookbookRecipeSchema);

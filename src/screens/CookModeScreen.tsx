@@ -221,7 +221,8 @@ function Body({
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (bundledPhoto) return;
+    // An admin-uploaded cookbook photo counts as having one, same as DishTile.
+    if (bundledPhoto || recipe.photoUrl) return;
     let alive = true;
     fetchDishPhoto(recipe.title).then((url) => {
       if (alive) setGeneratedUrl(url);
@@ -229,9 +230,11 @@ function Body({
     return () => {
       alive = false;
     };
-  }, [bundledPhoto, recipe.title]);
+  }, [bundledPhoto, recipe.photoUrl, recipe.title]);
 
-  const photo = bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
+  const photo = recipe.photoUrl
+    ? { uri: recipe.photoUrl }
+    : bundledPhoto ?? (generatedUrl ? { uri: generatedUrl } : null);
   const steps = stepsFromRecipe(recipe, photo);
   const stats = statsFor(recipe);
 

@@ -41,6 +41,9 @@ export type Recipe = {
   /** Which named dish this is, for the photo lookup. 'other' most of the
    *  time, and 'other' is fine — it falls back to the tile. */
   dishKey: DishKey;
+  /** A photo an admin uploaded for a cookbook dish (services/cookbook.ts).
+   *  Absent on everything the model suggests. */
+  photoUrl?: string | null;
   /** 0 when the model gave a figure that wasn't believable; screens hide it. */
   minutes: number;
   /** How many people this recipe as written feeds. 0 when the model gave a
